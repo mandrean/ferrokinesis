@@ -12,6 +12,7 @@ const RECORDS: TableDefinition<&str, &[u8]> = TableDefinition::new("records");
 const CONSUMERS: TableDefinition<&str, &[u8]> = TableDefinition::new("consumers");
 const POLICIES: TableDefinition<&str, &str> = TableDefinition::new("policies");
 const RESOURCE_TAGS: TableDefinition<&str, &[u8]> = TableDefinition::new("resource_tags");
+const ACCOUNT_SETTINGS: TableDefinition<&str, &[u8]> = TableDefinition::new("account_settings");
 
 #[derive(Debug, Clone)]
 pub struct StoreOptions {
@@ -127,6 +128,7 @@ impl Store {
         write_txn.open_table(CONSUMERS).unwrap();
         write_txn.open_table(POLICIES).unwrap();
         write_txn.open_table(RESOURCE_TAGS).unwrap();
+        write_txn.open_table(ACCOUNT_SETTINGS).unwrap();
         write_txn.commit().unwrap();
 
         Self {
@@ -500,6 +502,30 @@ impl Store {
         {
             let mut table = write_txn.open_table(RESOURCE_TAGS).unwrap();
             table.insert(resource_arn, bytes.as_slice()).unwrap();
+        }
+        write_txn.commit().unwrap();
+    }
+
+    // --- Account settings operations ---
+
+    pub async fn get_account_settings(&self) -> Value {
+        let read_txn = self.db.begin_read().unwrap();
+        let table = read_txn.open_table(ACCOUNT_SETTINGS).unwrap();
+        table
+            .get("account_settings")
+            .unwrap()
+            .map(|guard| serde_json::from_slice(guard.value()).unwrap())
+            .unwrap_or(Value::Object(Default::default()))
+    }
+
+    pub async fn put_account_settings(&self, settings: &Value) {
+        let bytes = serde_json::to_vec(settings).unwrap();
+        let write_txn = self.db.begin_write().unwrap();
+        {
+            let mut table = write_txn.open_table(ACCOUNT_SETTINGS).unwrap();
+            table
+                .insert("account_settings", bytes.as_slice())
+                .unwrap();
         }
         write_txn.commit().unwrap();
     }
