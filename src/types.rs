@@ -49,10 +49,35 @@ pub struct Consumer {
     pub consumer_creation_timestamp: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EncryptionType {
+    #[serde(rename = "KMS")]
+    Kms,
+    #[serde(rename = "NONE")]
+    None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum StreamMode {
+    Provisioned,
+    OnDemand,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ShardIteratorType {
+    TrimHorizon,
+    Latest,
+    AtSequenceNumber,
+    AfterSequenceNumber,
+    AtTimestamp,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct StreamModeDetails {
-    pub stream_mode: String,
+    pub stream_mode: StreamMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,7 +85,7 @@ pub struct StreamModeDetails {
 pub struct Stream {
     pub retention_period_hours: u32,
     pub enhanced_monitoring: Vec<EnhancedMonitoring>,
-    pub encryption_type: String,
+    pub encryption_type: EncryptionType,
     pub has_more_shards: bool,
     pub shards: Vec<Shard>,
     #[serde(rename = "StreamARN")]

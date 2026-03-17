@@ -594,3 +594,47 @@ async fn update_warm_throughput_mibps_not_integer_direct() {
     assert!(result.is_err());
     assert_eq!(result.unwrap_err().body.__type, "InvalidArgumentException");
 }
+
+#[tokio::test]
+async fn update_warm_throughput_by_arn_on_creating_stream() {
+    let server = TestServer::with_options(StoreOptions {
+        create_stream_ms: 500,
+        delete_stream_ms: 0,
+        update_stream_ms: 0,
+        shard_limit: 50,
+    })
+    .await;
+    let name = "cx-uwt-arn-creat";
+    let arn = stream_arn(name);
+
+    server
+        .request(
+            "CreateStream",
+            &json!({"StreamName": name, "ShardCount": 1}),
+        )
+        .await;
+
+    let res = server
+        .request(
+            "UpdateStreamWarmThroughput",
+            &json!({ "StreamARN": arn, "WarmThroughputMiBps": 50 }),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "ResourceInUseException");
+}
+
+#[tokio::test]
+async fn update_max_record_size_arn_without_slash() {
+    let server = TestServer::new().await;
+    let res = server
+        .request(
+            "UpdateMaxRecordSize",
+            &json!({ "StreamARN": "arn-without-any-slash-chars", "MaxRecordSizeInKiB": 4096 }),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "ResourceNotFoundException");
+}

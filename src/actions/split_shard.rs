@@ -10,8 +10,10 @@ use serde_json::Value;
 
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
-    let shard_to_split = data["ShardToSplit"].as_str().unwrap_or("");
-    let new_starting_hash_key = data["NewStartingHashKey"].as_str().unwrap_or("");
+    let shard_to_split = data[constants::SHARD_TO_SPLIT].as_str().unwrap_or("");
+    let new_starting_hash_key = data[constants::NEW_STARTING_HASH_KEY]
+        .as_str()
+        .unwrap_or("");
 
     let (shard_id, shard_ix) = sequence::resolve_shard_id(shard_to_split).map_err(|_| {
         KinesisErrorResponse::client_error(

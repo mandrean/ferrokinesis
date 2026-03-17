@@ -1,1 +1,26 @@
-/target
+# Rust
+/target/
+Cargo.lock
+
+# IDE — JetBrains (RustRover / IntelliJ)
+.idea/
+*.iml
+
+# IDE — VS Code
+.vscode/
+
+# IDE — Vim/Neovim
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Coverage
+lcov.info
+tarpaulin-report.html
+coverage/
+
+# Environment
+.env
+.env.local

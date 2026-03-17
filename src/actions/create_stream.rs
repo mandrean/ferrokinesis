@@ -13,7 +13,7 @@ const SEQ_ADJUST_MS: u64 = 2000;
 
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
-    let shard_count = data["ShardCount"].as_i64().unwrap_or(0) as u32;
+    let shard_count = data[constants::SHARD_COUNT].as_i64().unwrap_or(0) as u32;
 
     // Check if stream already exists
     if store.contains_stream(stream_name).await {
@@ -88,7 +88,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         enhanced_monitoring: vec![EnhancedMonitoring {
             shard_level_metrics: vec![],
         }],
-        encryption_type: "NONE".to_string(),
+        encryption_type: EncryptionType::None,
         has_more_shards: false,
         shards: vec![], // Start empty while CREATING
         stream_arn: format!(
@@ -99,7 +99,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         stream_status: StreamStatus::Creating,
         stream_creation_timestamp: (create_time as f64) / 1000.0,
         stream_mode_details: StreamModeDetails {
-            stream_mode: "PROVISIONED".to_string(),
+            stream_mode: StreamMode::Provisioned,
         },
         seq_ix: vec![None; (shard_count as usize).div_ceil(5)],
         tags: BTreeMap::new(),

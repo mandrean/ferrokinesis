@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
     let limit = data[constants::LIMIT].as_u64().unwrap_or(100) as usize;
-    let exclusive_start = data["ExclusiveStartTagKey"].as_str();
+    let exclusive_start = data[constants::EXCLUSIVE_START_TAG_KEY].as_str();
 
     let stream = store.get_stream(stream_name).await?;
 

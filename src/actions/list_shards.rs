@@ -24,7 +24,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     let name = stream_name.unwrap_or("");
     let stream = store.get_stream(name).await?;
 
-    let exclusive_start = data["ExclusiveStartShardId"].as_str();
+    let exclusive_start = data[constants::EXCLUSIVE_START_SHARD_ID].as_str();
 
     let filtered_shards: Vec<_> = if let Some(start_id) = exclusive_start {
         stream

@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let limit = data[constants::LIMIT].as_u64().unwrap_or(10) as usize;
-    let start_name = data["ExclusiveStartStreamName"].as_str();
+    let start_name = data[constants::EXCLUSIVE_START_STREAM_NAME].as_str();
 
     let all_names = store.list_stream_names().await;
     let names: Vec<&String> = if let Some(start) = start_name {

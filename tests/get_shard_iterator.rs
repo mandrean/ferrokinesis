@@ -436,3 +436,49 @@ async fn get_shard_iterator_invalid_shard_id_format() {
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["__type"], "ResourceNotFoundException");
 }
+
+#[tokio::test]
+async fn get_shard_iterator_at_timestamp_no_records() {
+    let server = TestServer::new().await;
+    let name = "cx-gsi-no-recs";
+    server.create_stream(name, 1).await;
+
+    let res = server
+        .request(
+            "GetShardIterator",
+            &json!({
+                "StreamName": name,
+                "ShardId": "shardId-000000000000",
+                "ShardIteratorType": "AT_TIMESTAMP",
+                "Timestamp": 1_000_000_000.0f64,
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    assert!(body["ShardIterator"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn get_shard_iterator_at_timestamp_record_after_ts() {
+    let server = TestServer::new().await;
+    let name = "cx-gsi-after-ts";
+    server.create_stream(name, 1).await;
+
+    server.put_record(name, "AAAA", "pk").await;
+
+    let res = server
+        .request(
+            "GetShardIterator",
+            &json!({
+                "StreamName": name,
+                "ShardId": "shardId-000000000000",
+                "ShardIteratorType": "AT_TIMESTAMP",
+                "Timestamp": 1.0f64,
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    assert!(body["ShardIterator"].as_str().is_some());
+}

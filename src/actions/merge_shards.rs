@@ -10,8 +10,10 @@ use serde_json::Value;
 
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
-    let shard_to_merge = data["ShardToMerge"].as_str().unwrap_or("");
-    let adjacent_shard = data["AdjacentShardToMerge"].as_str().unwrap_or("");
+    let shard_to_merge = data[constants::SHARD_TO_MERGE].as_str().unwrap_or("");
+    let adjacent_shard = data[constants::ADJACENT_SHARD_TO_MERGE]
+        .as_str()
+        .unwrap_or("");
 
     let shard_names = [shard_to_merge, adjacent_shard];
     let mut shard_ids = Vec::new();
