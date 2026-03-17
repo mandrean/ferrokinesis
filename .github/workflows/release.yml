@@ -48,7 +48,10 @@ jobs:
         if: steps.guard.outputs.skip == 'false'
       - name: Install semantic-rs
         if: steps.guard.outputs.skip == 'false'
-        run: cargo install --git https://github.com/mandrean/semantic-rs --locked
+        run: |
+          curl -fsSL https://github.com/mandrean/semantic-rs/releases/download/v2.0.2/semantic-rs-linux-amd64 \
+            -o /usr/local/bin/semantic-rs
+          chmod +x /usr/local/bin/semantic-rs
       - name: Configure git
         if: steps.guard.outputs.skip == 'false'
         run: |
