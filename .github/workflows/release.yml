@@ -26,16 +26,28 @@ jobs:
         run: cargo test
 
   build:
-    name: Build (${{ matrix.arch }})
+    name: Build (${{ matrix.name }})
     needs: check
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         include:
           - target: x86_64-unknown-linux-musl
-            arch: amd64
+            os: ubuntu-latest
+            name: linux-amd64
           - target: aarch64-unknown-linux-musl
-            arch: arm64
+            os: ubuntu-latest
+            name: linux-arm64
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            name: macos-amd64
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            name: macos-arm64
+          - target: x86_64-pc-windows-gnu
+            os: ubuntu-latest
+            name: windows-amd64
+            ext: .exe
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -44,15 +56,28 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+      - name: Cache pip packages
+        if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-zigbuild-${{ runner.os }}
       - name: Install cargo-zigbuild and zig
+        if: runner.os == 'Linux'
         run: pip3 install cargo-zigbuild ziglang
-      - name: Build release binary
+      - name: Build (zigbuild)
+        if: runner.os == 'Linux'
         run: cargo zigbuild --release --target ${{ matrix.target }}
+      - name: Build (native)
+        if: runner.os != 'Linux'
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Rename binary
+        run: cp target/${{ matrix.target }}/release/ferrokinesis${{ matrix.ext }} ferrokinesis-${{ matrix.name }}${{ matrix.ext }}
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
-          name: binary-${{ matrix.arch }}
-          path: target/${{ matrix.target }}/release/ferrokinesis
+          name: ferrokinesis-${{ matrix.name }}
+          path: ferrokinesis-${{ matrix.name }}${{ matrix.ext }}
 
   docker:
     name: Docker
@@ -62,18 +87,21 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
-      - name: Download amd64 binary
+      - name: Download linux-amd64 binary
         uses: actions/download-artifact@v4
         with:
-          name: binary-amd64
+          name: ferrokinesis-linux-amd64
           path: docker-context/amd64
-      - name: Download arm64 binary
+      - name: Download linux-arm64 binary
         uses: actions/download-artifact@v4
         with:
-          name: binary-arm64
+          name: ferrokinesis-linux-arm64
           path: docker-context/arm64
-      - name: Make binaries executable
-        run: chmod +x docker-context/*/ferrokinesis
+      - name: Prepare binaries
+        run: |
+          mv docker-context/amd64/ferrokinesis-linux-amd64 docker-context/amd64/ferrokinesis
+          mv docker-context/arm64/ferrokinesis-linux-arm64 docker-context/arm64/ferrokinesis
+          chmod +x docker-context/*/ferrokinesis
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Login to GHCR
@@ -102,24 +130,58 @@ jobs:
 
   publish:
     name: Publish
-    needs: check
+    needs: [check, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.GH_TOKEN }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Install semantic-rs
-        run: cargo install --git https://github.com/mandrean/semantic-rs
-      - name: Semantic Release
-        run: semantic-rs -r yes -w yes
+      - name: Release
+        uses: release-plz/action@v0.5
         env:
-          CI: true
-          RUST_LOG: debug
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_TOKEN }}
+      - name: Get version from Cargo.toml
+        id: version
+        run: echo "tag=v$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')" >> $GITHUB_OUTPUT
+      - name: Check if release exists and needs binaries
+        id: needs-upload
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          if gh release view "$TAG" --repo mandrean/ferrokinesis &>/dev/null; then
+            ASSET_COUNT=$(gh release view "$TAG" --repo mandrean/ferrokinesis --json assets --jq '.assets | length')
+            if [ "$ASSET_COUNT" -lt 5 ]; then
+              echo "upload=true" >> $GITHUB_OUTPUT
+            else
+              echo "upload=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "upload=false" >> $GITHUB_OUTPUT
+          fi
+        env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          CARGO_TOKEN: ${{ secrets.CARGO_TOKEN }}
-          GIT_COMMITTER_NAME: semantic-rs
-          GIT_COMMITTER_EMAIL: semantic@rs
+      - name: Download all artifacts
+        if: steps.needs-upload.outputs.upload == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: ferrokinesis-*
+      - name: Upload binaries to GitHub Release
+        if: steps.needs-upload.outputs.upload == 'true'
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          gh release upload "$TAG" \
+            artifacts/ferrokinesis-linux-amd64/ferrokinesis-linux-amd64 \
+            artifacts/ferrokinesis-linux-arm64/ferrokinesis-linux-arm64 \
+            artifacts/ferrokinesis-macos-amd64/ferrokinesis-macos-amd64 \
+            artifacts/ferrokinesis-macos-arm64/ferrokinesis-macos-arm64 \
+            artifacts/ferrokinesis-windows-amd64/ferrokinesis-windows-amd64.exe \
+            --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
