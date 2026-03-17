@@ -243,11 +243,10 @@ pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, Kines
                         || s.adjacent_parent_shard_id.as_deref() == Some(&shard_id);
                     if is_child {
                         let mut parent_shards = vec![json!(shard_id)];
-                        if let Some(ref adj) = s.adjacent_parent_shard_id {
-                            if adj != &shard_id {
+                        if let Some(ref adj) = s.adjacent_parent_shard_id
+                            && adj != &shard_id {
                                 parent_shards.push(json!(adj));
                             }
-                        }
                         child_shards.push(json!({
                             "ShardId": s.shard_id,
                             "ParentShards": parent_shards,
