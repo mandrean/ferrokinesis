@@ -14,16 +14,16 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     store.get_stream(&stream_name).await?;
 
     // Check if consumer already exists
-    if let Some(existing) = store.find_consumer(stream_arn, consumer_name).await {
-        if existing.consumer_status != ConsumerStatus::Deleting {
-            return Err(KinesisErrorResponse::client_error(
-                constants::RESOURCE_IN_USE,
-                Some(&format!(
-                    "Consumer {} under stream {} already exists.",
-                    consumer_name, stream_arn
-                )),
-            ));
-        }
+    if let Some(existing) = store.find_consumer(stream_arn, consumer_name).await
+        && existing.consumer_status != ConsumerStatus::Deleting
+    {
+        return Err(KinesisErrorResponse::client_error(
+            constants::RESOURCE_IN_USE,
+            Some(&format!(
+                "Consumer {} under stream {} already exists.",
+                consumer_name, stream_arn
+            )),
+        ));
     }
 
     // Check consumer limit (20 per stream)

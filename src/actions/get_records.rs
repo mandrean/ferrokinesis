@@ -133,18 +133,15 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     let mut millis_behind = 0u64;
 
     // If shard is closed and no items found, check if iterator should be null
-    if items.is_empty() {
-        if let Some(ref end_seq) = stream.shards[shard_ix as usize]
+    if items.is_empty()
+        && let Some(ref end_seq) = stream.shards[shard_ix as usize]
             .sequence_number_range
             .ending_sequence_number
-        {
-            if let Ok(end_seq_obj) = sequence::parse_sequence(end_seq) {
-                if seq_obj.seq_time.unwrap_or(0) >= end_seq_obj.seq_time.unwrap_or(0) {
-                    next_shard_iterator = None;
-                    millis_behind = now.saturating_sub(end_seq_obj.seq_time.unwrap_or(0));
-                }
-            }
-        }
+        && let Ok(end_seq_obj) = sequence::parse_sequence(end_seq)
+        && seq_obj.seq_time.unwrap_or(0) >= end_seq_obj.seq_time.unwrap_or(0)
+    {
+        next_shard_iterator = None;
+        millis_behind = now.saturating_sub(end_seq_obj.seq_time.unwrap_or(0));
     }
 
     // Clean up old records asynchronously

@@ -159,6 +159,7 @@ pub fn check_types(
     Ok(Value::Object(result))
 }
 
+#[allow(clippy::only_used_in_recursion)]
 fn check_type(
     val: &Value,
     field_type: &FieldType,
@@ -356,6 +357,7 @@ fn type_error(msg: &str) -> KinesisErrorResponse {
 }
 
 /// Check validation constraints on already type-checked data
+#[allow(clippy::type_complexity)]
 pub fn check_validations(
     data: &Value,
     fields: &[(&str, &FieldDef)],
@@ -405,59 +407,59 @@ pub fn check_validations(
         }
 
         // greaterThanOrEqual
-        if let Some(min) = field_def.greater_than_or_equal {
-            if let Some(n) = data.as_f64() {
-                validate(
-                    n >= min,
-                    &format!(
-                        "Member must have value greater than or equal to {}",
-                        min as i64
-                    ),
-                    data,
-                    &field_def.field_type,
-                    &field_def.member_str,
-                    parent,
-                    attr,
-                    errors,
-                );
-            }
+        if let Some(min) = field_def.greater_than_or_equal
+            && let Some(n) = data.as_f64()
+        {
+            validate(
+                n >= min,
+                &format!(
+                    "Member must have value greater than or equal to {}",
+                    min as i64
+                ),
+                data,
+                &field_def.field_type,
+                &field_def.member_str,
+                parent,
+                attr,
+                errors,
+            );
         }
 
         // lessThanOrEqual
-        if let Some(max) = field_def.less_than_or_equal {
-            if let Some(n) = data.as_f64() {
-                validate(
-                    n <= max,
-                    &format!(
-                        "Member must have value less than or equal to {}",
-                        max as i64
-                    ),
-                    data,
-                    &field_def.field_type,
-                    &field_def.member_str,
-                    parent,
-                    attr,
-                    errors,
-                );
-            }
+        if let Some(max) = field_def.less_than_or_equal
+            && let Some(n) = data.as_f64()
+        {
+            validate(
+                n <= max,
+                &format!(
+                    "Member must have value less than or equal to {}",
+                    max as i64
+                ),
+                data,
+                &field_def.field_type,
+                &field_def.member_str,
+                parent,
+                attr,
+                errors,
+            );
         }
 
         // regex
-        if let Some(ref pattern) = field_def.regex {
-            if let Some(s) = data.as_str() {
-                let full_pattern = format!("^{pattern}$");
-                let re = regex::Regex::new(&full_pattern).unwrap();
-                validate(
-                    re.is_match(s),
-                    &format!("Member must satisfy regular expression pattern: {pattern}"),
-                    data,
-                    &field_def.field_type,
-                    &field_def.member_str,
-                    parent,
-                    attr,
-                    errors,
-                );
-            }
+        if let Some(ref pattern) = field_def.regex
+            && let Some(s) = data.as_str()
+        {
+            let full_pattern = format!("^{pattern}$");
+            let re = regex::Regex::new(&full_pattern).unwrap();
+            validate(
+                re.is_match(s),
+                &format!("Member must satisfy regular expression pattern: {pattern}"),
+                data,
+                &field_def.field_type,
+                &field_def.member_str,
+                parent,
+                attr,
+                errors,
+            );
         }
 
         // lengthGreaterThanOrEqual
@@ -491,91 +493,91 @@ pub fn check_validations(
         }
 
         // enum
-        if let Some(ref values) = field_def.enum_values {
-            if let Some(s) = data.as_str() {
-                validate(
-                    values.iter().any(|v| v == s),
-                    &format!(
-                        "Member must satisfy enum value set: [{}]",
-                        values.join(", ")
-                    ),
-                    data,
-                    &field_def.field_type,
-                    &field_def.member_str,
-                    parent,
-                    attr,
-                    errors,
-                );
-            }
+        if let Some(ref values) = field_def.enum_values
+            && let Some(s) = data.as_str()
+        {
+            validate(
+                values.iter().any(|v| v == s),
+                &format!(
+                    "Member must satisfy enum value set: [{}]",
+                    values.join(", ")
+                ),
+                data,
+                &field_def.field_type,
+                &field_def.member_str,
+                parent,
+                attr,
+                errors,
+            );
         }
 
         // childLengths
-        if let Some((min, max)) = field_def.child_lengths {
-            if let Some(arr) = data.as_array() {
-                let valid = arr.iter().all(|item| {
-                    if let Some(s) = item.as_str() {
-                        s.len() >= min && s.len() <= max
-                    } else {
-                        true
-                    }
-                });
-                validate(
-                    valid,
-                    &format!(
-                        "Member must satisfy constraint: [Member must have length less than or equal to {max}, Member must have length greater than or equal to {min}]"
-                    ),
-                    data,
-                    &field_def.field_type,
-                    &field_def.member_str,
-                    parent,
-                    attr,
-                    errors,
-                );
-            }
+        if let Some((min, max)) = field_def.child_lengths
+            && let Some(arr) = data.as_array()
+        {
+            let valid = arr.iter().all(|item| {
+                if let Some(s) = item.as_str() {
+                    s.len() >= min && s.len() <= max
+                } else {
+                    true
+                }
+            });
+            validate(
+                valid,
+                &format!(
+                    "Member must satisfy constraint: [Member must have length less than or equal to {max}, Member must have length greater than or equal to {min}]"
+                ),
+                data,
+                &field_def.field_type,
+                &field_def.member_str,
+                parent,
+                attr,
+                errors,
+            );
         }
 
         // childKeyLengths
-        if let Some((min, max)) = field_def.child_key_lengths {
-            if let Some(obj) = data.as_object() {
-                let valid = obj.keys().all(|k| k.len() >= min && k.len() <= max);
-                validate(
-                    valid,
-                    &format!(
-                        "Map keys must satisfy constraint: [Member must have length less than or equal to {max}, Member must have length greater than or equal to {min}]"
-                    ),
-                    data,
-                    &field_def.field_type,
-                    &field_def.member_str,
-                    parent,
-                    attr,
-                    errors,
-                );
-            }
+        if let Some((min, max)) = field_def.child_key_lengths
+            && let Some(obj) = data.as_object()
+        {
+            let valid = obj.keys().all(|k| k.len() >= min && k.len() <= max);
+            validate(
+                valid,
+                &format!(
+                    "Map keys must satisfy constraint: [Member must have length less than or equal to {max}, Member must have length greater than or equal to {min}]"
+                ),
+                data,
+                &field_def.field_type,
+                &field_def.member_str,
+                parent,
+                attr,
+                errors,
+            );
         }
 
         // childValueLengths
-        if let Some((min, max)) = field_def.child_value_lengths {
-            if let Some(obj) = data.as_object() {
-                let valid = obj.values().all(|v| {
-                    if let Some(s) = v.as_str() {
-                        s.len() >= min && s.len() <= max
-                    } else {
-                        true
-                    }
-                });
-                validate(
-                    valid,
-                    &format!(
-                        "Map value must satisfy constraint: [Member must have length less than or equal to {max}, Member must have length greater than or equal to {min}]"
-                    ),
-                    data,
-                    &field_def.field_type,
-                    &field_def.member_str,
-                    parent,
-                    attr,
-                    errors,
-                );
-            }
+        if let Some((min, max)) = field_def.child_value_lengths
+            && let Some(obj) = data.as_object()
+        {
+            let valid = obj.values().all(|v| {
+                if let Some(s) = v.as_str() {
+                    s.len() >= min && s.len() <= max
+                } else {
+                    true
+                }
+            });
+            validate(
+                valid,
+                &format!(
+                    "Map value must satisfy constraint: [Member must have length less than or equal to {max}, Member must have length greater than or equal to {min}]"
+                ),
+                data,
+                &field_def.field_type,
+                &field_def.member_str,
+                parent,
+                attr,
+                errors,
+            );
         }
 
         // Handle children for List/Map/Structure types
@@ -643,10 +645,10 @@ pub fn check_validations(
         return Err(KinesisErrorResponse::validation_error(&msg));
     }
 
-    if let Some(custom_fn) = custom {
-        if let Some(msg) = custom_fn(data) {
-            return Err(KinesisErrorResponse::validation_error(&msg));
-        }
+    if let Some(custom_fn) = custom
+        && let Some(msg) = custom_fn(data)
+    {
+        return Err(KinesisErrorResponse::validation_error(&msg));
     }
 
     Ok(())
@@ -679,6 +681,7 @@ fn get_data_length(data: &Value, field_type: &FieldType) -> usize {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate(
     predicate: bool,
     msg: &str,

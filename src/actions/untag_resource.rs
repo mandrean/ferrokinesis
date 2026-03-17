@@ -26,18 +26,19 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         .collect();
 
     // Check if this is a stream ARN
-    if resource_arn.contains(":stream/") && !resource_arn.contains("/consumer/") {
-        if let Some(stream_name) = store.stream_name_from_arn(resource_arn) {
-            store
-                .update_stream(&stream_name, |stream| {
-                    for key in &tag_keys {
-                        stream.tags.remove(key);
-                    }
-                    Ok(())
-                })
-                .await?;
-            return Ok(None);
-        }
+    if resource_arn.contains(":stream/")
+        && !resource_arn.contains("/consumer/")
+        && let Some(stream_name) = store.stream_name_from_arn(resource_arn)
+    {
+        store
+            .update_stream(&stream_name, |stream| {
+                for key in &tag_keys {
+                    stream.tags.remove(key);
+                }
+                Ok(())
+            })
+            .await?;
+        return Ok(None);
     }
 
     // For non-stream resources
