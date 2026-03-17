@@ -1,3 +1,4 @@
+use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::store::Store;
 use serde_json::Value;
@@ -6,20 +7,20 @@ pub async fn execute(
     store: &Store,
     data: Value,
 ) -> Result<Option<Value>, KinesisErrorResponse> {
-    let resource_arn = data["ResourceARN"].as_str().unwrap_or("");
+    let resource_arn = data[constants::RESOURCE_ARN].as_str().unwrap_or("");
 
     if resource_arn.is_empty() {
         return Err(KinesisErrorResponse::client_error(
-            "InvalidArgumentException",
+            constants::INVALID_ARGUMENT,
             Some("ResourceARN is required."),
         ));
     }
 
-    let tag_keys: Vec<String> = data["TagKeys"]
+    let tag_keys: Vec<String> = data[constants::TAG_KEYS]
         .as_array()
         .ok_or_else(|| {
             KinesisErrorResponse::client_error(
-                "InvalidArgumentException",
+                constants::INVALID_ARGUMENT,
                 Some("TagKeys is required."),
             )
         })?

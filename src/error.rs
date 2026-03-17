@@ -1,3 +1,4 @@
+use crate::constants;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
@@ -43,7 +44,7 @@ impl KinesisErrorResponse {
         Self {
             status_code: 400,
             body: KinesisError {
-                __type: "SerializationException".to_string(),
+                __type: constants::SERIALIZATION_EXCEPTION.to_string(),
                 message: None,
                 message_upper: Some(msg.to_string()),
             },
@@ -54,7 +55,7 @@ impl KinesisErrorResponse {
         Self {
             status_code: 400,
             body: KinesisError {
-                __type: "ValidationException".to_string(),
+                __type: constants::VALIDATION_EXCEPTION.to_string(),
                 message: Some(msg.to_string()),
                 message_upper: None,
             },

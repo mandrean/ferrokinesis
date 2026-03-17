@@ -1,3 +1,4 @@
+use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::store::Store;
 use serde_json::Value;
@@ -6,10 +7,10 @@ pub async fn execute(
     store: &Store,
     data: Value,
 ) -> Result<Option<Value>, KinesisErrorResponse> {
-    let stream_name = data["StreamName"].as_str().unwrap_or("");
-    let tag_keys = data["TagKeys"]
+    let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
+    let tag_keys = data[constants::TAG_KEYS]
         .as_array()
-        .ok_or_else(|| KinesisErrorResponse::client_error("SerializationException", None))?;
+        .ok_or_else(|| KinesisErrorResponse::client_error(constants::SERIALIZATION_EXCEPTION, None))?;
 
     let keys: Vec<String> = tag_keys
         .iter()
@@ -22,7 +23,7 @@ pub async fn execute(
 
             if keys.iter().any(|s| invalid_char_re.is_match(s)) {
                 return Err(KinesisErrorResponse::client_error(
-                    "InvalidArgumentException",
+                    constants::INVALID_ARGUMENT,
                     Some(
                         "Some tags contain invalid characters. Valid characters: \
                          Unicode letters, digits, white space, _ . / = + - % @.",
@@ -32,7 +33,7 @@ pub async fn execute(
 
             if keys.iter().any(|s| s.contains('%')) {
                 return Err(KinesisErrorResponse::client_error(
-                    "InvalidArgumentException",
+                    constants::INVALID_ARGUMENT,
                     Some(&format!(
                         "Failed to remove tags from stream {} under account {} \
                          because some tags contained illegal characters. The allowed characters are \

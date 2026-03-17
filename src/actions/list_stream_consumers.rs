@@ -1,3 +1,4 @@
+use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::store::Store;
 use serde_json::{Value, json};
@@ -6,8 +7,8 @@ pub async fn execute(
     store: &Store,
     data: Value,
 ) -> Result<Option<Value>, KinesisErrorResponse> {
-    let stream_arn = data["StreamARN"].as_str().unwrap_or("");
-    let max_results = data["MaxResults"].as_u64().unwrap_or(100) as usize;
+    let stream_arn = data[constants::STREAM_ARN].as_str().unwrap_or("");
+    let max_results = data[constants::MAX_RESULTS].as_u64().unwrap_or(100) as usize;
 
     // Verify stream exists
     let stream_name = store

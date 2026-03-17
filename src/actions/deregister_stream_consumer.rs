@@ -1,3 +1,4 @@
+use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::store::Store;
 use crate::types::ConsumerStatus;
@@ -7,16 +8,16 @@ pub async fn execute(
     store: &Store,
     data: Value,
 ) -> Result<Option<Value>, KinesisErrorResponse> {
-    let consumer_arn = data["ConsumerARN"].as_str();
-    let stream_arn = data["StreamARN"].as_str();
-    let consumer_name = data["ConsumerName"].as_str();
+    let consumer_arn = data[constants::CONSUMER_ARN].as_str();
+    let stream_arn = data[constants::STREAM_ARN].as_str();
+    let consumer_name = data[constants::CONSUMER_NAME].as_str();
 
     let resolved_arn = if let Some(arn) = consumer_arn {
         arn.to_string()
     } else if let (Some(s_arn), Some(c_name)) = (stream_arn, consumer_name) {
         let consumer = store.find_consumer(s_arn, c_name).await.ok_or_else(|| {
             KinesisErrorResponse::client_error(
-                "ResourceNotFoundException",
+                constants::RESOURCE_NOT_FOUND,
                 Some(&format!(
                     "Consumer {} under stream {} not found.",
                     c_name, s_arn
@@ -26,14 +27,14 @@ pub async fn execute(
         consumer.consumer_arn
     } else {
         return Err(KinesisErrorResponse::client_error(
-            "InvalidArgumentException",
+            constants::INVALID_ARGUMENT,
             Some("Must specify either ConsumerARN, or both StreamARN and ConsumerName."),
         ));
     };
 
     let consumer = store.get_consumer(&resolved_arn).await.ok_or_else(|| {
         KinesisErrorResponse::client_error(
-            "ResourceNotFoundException",
+            constants::RESOURCE_NOT_FOUND,
             Some(&format!("Consumer {} not found.", resolved_arn)),
         )
     })?;

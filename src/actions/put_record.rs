@@ -1,3 +1,4 @@
+use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::sequence;
 use crate::store::Store;
@@ -11,18 +12,18 @@ pub async fn execute(
     store: &Store,
     data: Value,
 ) -> Result<Option<Value>, KinesisErrorResponse> {
-    let stream_name = data["StreamName"].as_str().unwrap_or("");
-    let partition_key = data["PartitionKey"].as_str().unwrap_or("");
-    let record_data = data["Data"].as_str().unwrap_or("");
-    let explicit_hash_key = data["ExplicitHashKey"].as_str();
-    let seq_for_ordering = data["SequenceNumberForOrdering"].as_str();
+    let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
+    let partition_key = data[constants::PARTITION_KEY].as_str().unwrap_or("");
+    let record_data = data[constants::DATA].as_str().unwrap_or("");
+    let explicit_hash_key = data[constants::EXPLICIT_HASH_KEY].as_str();
+    let seq_for_ordering = data[constants::SEQUENCE_NUMBER_FOR_ORDERING].as_str();
 
     let hash_key = if let Some(ehk) = explicit_hash_key {
         let hk: BigUint = ehk.parse().unwrap_or_else(|_| BigUint::zero());
         let pow_128 = BigUint::one() << 128;
         if hk >= pow_128 {
             return Err(KinesisErrorResponse::client_error(
-                "InvalidArgumentException",
+                constants::INVALID_ARGUMENT,
                 Some(&format!(
                     "Invalid ExplicitHashKey. ExplicitHashKey must be in the range: [0, 2^128-1]. Specified value was {ehk}"
                 )),
@@ -38,7 +39,7 @@ pub async fn execute(
             Ok(seq_obj) => {
                 if seq_obj.seq_time.unwrap_or(0) > current_time_ms() {
                     return Err(KinesisErrorResponse::client_error(
-                        "InvalidArgumentException",
+                        constants::INVALID_ARGUMENT,
                         Some(&format!(
                             "ExclusiveMinimumSequenceNumber {} used in PutRecord on stream {} under account {} is invalid.",
                             seq_ord, stream_name, store.aws_account_id
@@ -48,7 +49,7 @@ pub async fn execute(
             }
             Err(_) => {
                 return Err(KinesisErrorResponse::client_error(
-                    "InvalidArgumentException",
+                    constants::INVALID_ARGUMENT,
                     Some(&format!(
                         "ExclusiveMinimumSequenceNumber {} used in PutRecord on stream {} under account {} is invalid.",
                         seq_ord, stream_name, store.aws_account_id
@@ -62,7 +63,7 @@ pub async fn execute(
         .update_stream(stream_name, |stream| {
             if !matches!(stream.stream_status, StreamStatus::Active | StreamStatus::Updating) {
                 return Err(KinesisErrorResponse::client_error(
-                    "ResourceNotFoundException",
+                    constants::RESOURCE_NOT_FOUND,
                     Some(&format!(
                         "Stream {} under account {} not found.",
                         stream_name, store.aws_account_id

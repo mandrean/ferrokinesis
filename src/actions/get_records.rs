@@ -1,3 +1,4 @@
+use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::sequence;
 use crate::shard_iterator;
@@ -9,8 +10,8 @@ pub async fn execute(
     store: &Store,
     data: Value,
 ) -> Result<Option<Value>, KinesisErrorResponse> {
-    let iterator_str = data["ShardIterator"].as_str().unwrap_or("");
-    let limit = data["Limit"].as_u64().unwrap_or(10000) as usize;
+    let iterator_str = data[constants::SHARD_ITERATOR].as_str().unwrap_or("");
+    let limit = data[constants::LIMIT].as_u64().unwrap_or(10000) as usize;
     let now = current_time_ms();
 
     let (iterator_time, stream_name, shard_id, seq_no) =
@@ -63,7 +64,7 @@ pub async fn execute(
     let seq_obj = sequence::parse_sequence(&seq_no).map_err(|_| invalid_shard_iterator())?;
 
     let stream = store.get_stream(&stream_name).await.map_err(|mut err| {
-        if err.body.__type == "ResourceNotFoundException" {
+        if err.body.__type == constants::RESOURCE_NOT_FOUND {
             err.body.message = Some(format!(
                 "Shard {} in stream {} under account {} does not exist",
                 shard_id, stream_name, store.aws_account_id
@@ -74,7 +75,7 @@ pub async fn execute(
 
     if shard_ix >= stream.shards.len() as i64 {
         return Err(KinesisErrorResponse::client_error(
-            "ResourceNotFoundException",
+            constants::RESOURCE_NOT_FOUND,
             Some(&format!(
                 "Shard {} in stream {} under account {} does not exist",
                 shard_id, stream_name, store.aws_account_id
@@ -168,7 +169,7 @@ pub async fn execute(
 }
 
 fn invalid_shard_iterator() -> KinesisErrorResponse {
-    KinesisErrorResponse::client_error("InvalidArgumentException", Some("Invalid ShardIterator."))
+    KinesisErrorResponse::client_error(constants::INVALID_ARGUMENT, Some("Invalid ShardIterator."))
 }
 
 fn to_amz_utc_string(millis: u64) -> String {

@@ -1,3 +1,4 @@
+use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::sequence;
 use crate::store::Store;
@@ -11,7 +12,7 @@ pub async fn execute(
     store: &Store,
     data: Value,
 ) -> Result<Option<Value>, KinesisErrorResponse> {
-    let stream_name = data["StreamName"].as_str().unwrap_or("");
+    let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
     let shard_to_merge = data["ShardToMerge"].as_str().unwrap_or("");
     let adjacent_shard = data["AdjacentShardToMerge"].as_str().unwrap_or("");
 
@@ -22,7 +23,7 @@ pub async fn execute(
     for name in &shard_names {
         let (id, ix) = sequence::resolve_shard_id(name).map_err(|_| {
             KinesisErrorResponse::client_error(
-                "ResourceNotFoundException",
+                constants::RESOURCE_NOT_FOUND,
                 Some(&format!(
                     "Could not find shard {} in stream {} under account {}.",
                     name, stream_name, store.aws_account_id
@@ -37,7 +38,7 @@ pub async fn execute(
         .update_stream(stream_name, |stream| {
             if stream.stream_status != StreamStatus::Active {
                 return Err(KinesisErrorResponse::client_error(
-                    "ResourceInUseException",
+                    constants::RESOURCE_IN_USE,
                     Some(&format!(
                         "Stream {} under account {} not ACTIVE, instead in state {}",
                         stream_name, store.aws_account_id, stream.stream_status
@@ -48,7 +49,7 @@ pub async fn execute(
             for (i, &ix) in shard_ixs.iter().enumerate() {
                 if ix >= stream.shards.len() as i64 {
                     return Err(KinesisErrorResponse::client_error(
-                        "ResourceNotFoundException",
+                        constants::RESOURCE_NOT_FOUND,
                         Some(&format!(
                             "Could not find shard {} in stream {} under account {}.",
                             shard_ids[i], stream_name, store.aws_account_id
@@ -70,7 +71,7 @@ pub async fn execute(
 
             if end0 + BigUint::one() != start1 {
                 return Err(KinesisErrorResponse::client_error(
-                    "InvalidArgumentException",
+                    constants::INVALID_ARGUMENT,
                     Some(&format!(
                         "Shards {} and {} in stream {} under account {} are not an adjacent pair of shards eligible for merging",
                         shard_ids[0], shard_ids[1], stream_name, store.aws_account_id

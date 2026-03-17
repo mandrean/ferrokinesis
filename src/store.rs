@@ -1,3 +1,4 @@
+use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::types::{Consumer, StoredRecord, Stream};
 use redb::backends::InMemoryBackend;
@@ -128,7 +129,7 @@ impl Store {
         match table.get(name).unwrap() {
             Some(guard) => Ok(deserialize_stream(guard.value())),
             None => Err(KinesisErrorResponse::client_error(
-                "ResourceNotFoundException",
+                constants::RESOURCE_NOT_FOUND,
                 Some(&format!(
                     "Stream {} under account {} not found.",
                     name, self.aws_account_id

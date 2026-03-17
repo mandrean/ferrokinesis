@@ -1,3 +1,4 @@
+use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::store::Store;
 use serde_json::Value;
@@ -6,14 +7,14 @@ pub async fn execute(
     store: &Store,
     data: Value,
 ) -> Result<Option<Value>, KinesisErrorResponse> {
-    let stream_arn = data["StreamARN"].as_str().unwrap_or("");
-    let stream_mode = data["StreamModeDetails"]["StreamMode"]
+    let stream_arn = data[constants::STREAM_ARN].as_str().unwrap_or("");
+    let stream_mode = data[constants::STREAM_MODE_DETAILS]["StreamMode"]
         .as_str()
         .unwrap_or("");
 
     if stream_mode != "PROVISIONED" && stream_mode != "ON_DEMAND" {
         return Err(KinesisErrorResponse::client_error(
-            "InvalidArgumentException",
+            constants::INVALID_ARGUMENT,
             Some("StreamMode must be PROVISIONED or ON_DEMAND."),
         ));
     }

@@ -1,3 +1,4 @@
+use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::sequence;
 use crate::store::Store;
@@ -11,14 +12,14 @@ pub async fn execute(
     store: &Store,
     data: Value,
 ) -> Result<Option<Value>, KinesisErrorResponse> {
-    let stream_name = data["StreamName"].as_str().unwrap_or("");
-    let target_shard_count = data["TargetShardCount"].as_i64().unwrap_or(0) as u32;
+    let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
+    let target_shard_count = data[constants::TARGET_SHARD_COUNT].as_i64().unwrap_or(0) as u32;
 
     let (current_count, stream_name_owned) = store
         .update_stream(stream_name, |stream| {
             if stream.stream_status != StreamStatus::Active {
                 return Err(KinesisErrorResponse::client_error(
-                    "ResourceInUseException",
+                    constants::RESOURCE_IN_USE,
                     Some(&format!(
                         "Stream {} under account {} not ACTIVE, instead in state {}",
                         stream_name, store.aws_account_id, stream.stream_status
@@ -34,7 +35,7 @@ pub async fn execute(
 
             if target_shard_count == current_count {
                 return Err(KinesisErrorResponse::client_error(
-                    "InvalidArgumentException",
+                    constants::INVALID_ARGUMENT,
                     Some(&format!(
                         "TargetShardCount {} is the same as the current shard count {}.",
                         target_shard_count, current_count

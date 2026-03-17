@@ -1,3 +1,4 @@
+use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::store::Store;
 use serde_json::{Value, json};
@@ -15,7 +16,7 @@ pub async fn execute(
 
     if status.is_empty() {
         return Err(KinesisErrorResponse::client_error(
-            "InvalidArgumentException",
+            constants::INVALID_ARGUMENT,
             Some("MinimumThroughputBillingCommitment.Status is required."),
         ));
     }

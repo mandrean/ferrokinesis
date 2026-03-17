@@ -1,4 +1,5 @@
 use crate::actions;
+use crate::constants;
 use crate::store::Store;
 use crate::validation;
 use crate::validation::rules;
@@ -146,9 +147,9 @@ pub async fn handler(
     // Check body
     if body.is_empty() {
         let error_type = if service_valid && operation_valid {
-            "SerializationException"
+            constants::SERIALIZATION_EXCEPTION
         } else {
-            "UnknownOperationException"
+            constants::UNKNOWN_OPERATION
         };
         return send_json_response(
             &response_headers,
@@ -172,7 +173,7 @@ pub async fn handler(
                 403,
             );
         }
-        return send_xml_error_code(&response_headers, "UnknownOperationException", 404);
+        return send_xml_error_code(&response_headers, constants::UNKNOWN_OPERATION, 404);
     }
 
     // Parse body
@@ -200,7 +201,7 @@ pub async fn handler(
             return send_json_response(
                 &response_headers,
                 response_content_type,
-                &json!({"__type": "SerializationException"}),
+                &json!({"__type": constants::SERIALIZATION_EXCEPTION}),
                 400,
             );
         }
@@ -223,7 +224,7 @@ pub async fn handler(
         return send_json_response(
             &response_headers,
             response_content_type,
-            &json!({"__type": "UnknownOperationException"}),
+            &json!({"__type": constants::UNKNOWN_OPERATION}),
             400,
         );
     }

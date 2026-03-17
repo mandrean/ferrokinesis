@@ -1,3 +1,4 @@
+use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::store::Store;
 use crate::types::StreamStatus;
@@ -7,12 +8,12 @@ pub async fn execute(
     store: &Store,
     data: Value,
 ) -> Result<Option<Value>, KinesisErrorResponse> {
-    let stream_name = data["StreamName"].as_str().unwrap_or("");
-    let encryption_type = data["EncryptionType"].as_str().unwrap_or("");
+    let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
+    let encryption_type = data[constants::ENCRYPTION_TYPE].as_str().unwrap_or("");
 
     if encryption_type != "KMS" {
         return Err(KinesisErrorResponse::client_error(
-            "InvalidArgumentException",
+            constants::INVALID_ARGUMENT,
             Some("EncryptionType must be KMS."),
         ));
     }
@@ -21,7 +22,7 @@ pub async fn execute(
         .update_stream(stream_name, |stream| {
             if stream.stream_status != StreamStatus::Active {
                 return Err(KinesisErrorResponse::client_error(
-                    "ResourceInUseException",
+                    constants::RESOURCE_IN_USE,
                     Some(&format!(
                         "Stream {} under account {} not ACTIVE, instead in state {}",
                         stream_name, store.aws_account_id, stream.stream_status
@@ -31,7 +32,7 @@ pub async fn execute(
 
             if stream.encryption_type != "KMS" {
                 return Err(KinesisErrorResponse::client_error(
-                    "InvalidArgumentException",
+                    constants::INVALID_ARGUMENT,
                     Some(&format!(
                         "Stream {} under account {} is not encrypted with KMS.",
                         stream_name, store.aws_account_id

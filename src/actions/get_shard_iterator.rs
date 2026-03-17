@@ -1,3 +1,4 @@
+use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::sequence;
 use crate::shard_iterator;
@@ -10,15 +11,15 @@ pub async fn execute(
     store: &Store,
     data: Value,
 ) -> Result<Option<Value>, KinesisErrorResponse> {
-    let stream_name = data["StreamName"].as_str().unwrap_or("");
-    let shard_id_input = data["ShardId"].as_str().unwrap_or("");
-    let iterator_type = data["ShardIteratorType"].as_str().unwrap_or("");
-    let starting_seq = data["StartingSequenceNumber"].as_str();
+    let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
+    let shard_id_input = data[constants::SHARD_ID].as_str().unwrap_or("");
+    let iterator_type = data[constants::SHARD_ITERATOR_TYPE].as_str().unwrap_or("");
+    let starting_seq = data[constants::STARTING_SEQUENCE_NUMBER].as_str();
     let timestamp = data["Timestamp"].as_f64();
 
     let (shard_id, shard_ix) = sequence::resolve_shard_id(shard_id_input).map_err(|_| {
         KinesisErrorResponse::client_error(
-            "ResourceNotFoundException",
+            constants::RESOURCE_NOT_FOUND,
             Some(&format!(
                 "Could not find shard {} in stream {} under account {}.",
                 shard_id_input, stream_name, store.aws_account_id
@@ -27,7 +28,7 @@ pub async fn execute(
     })?;
 
     let stream = store.get_stream(stream_name).await.map_err(|mut err| {
-        if err.body.__type == "ResourceNotFoundException" {
+        if err.body.__type == constants::RESOURCE_NOT_FOUND {
             err.body.message = Some(format!(
                 "Shard {} in stream {} under account {} does not exist",
                 shard_id, stream_name, store.aws_account_id
@@ -38,7 +39,7 @@ pub async fn execute(
 
     if shard_ix >= stream.shards.len() as i64 {
         return Err(KinesisErrorResponse::client_error(
-            "ResourceNotFoundException",
+            constants::RESOURCE_NOT_FOUND,
             Some(&format!(
                 "Shard {} in stream {} under account {} does not exist",
                 shard_id, stream_name, store.aws_account_id
@@ -60,7 +61,7 @@ pub async fn execute(
     if let Some(start_seq) = starting_seq {
         if iterator_type == "TRIM_HORIZON" || iterator_type == "LATEST" {
             return Err(KinesisErrorResponse::client_error(
-                "InvalidArgumentException",
+                constants::INVALID_ARGUMENT,
                 Some(&format!(
                     "Must either specify (1) AT_SEQUENCE_NUMBER or AFTER_SEQUENCE_NUMBER and StartingSequenceNumber or \
                      (2) TRIM_HORIZON or LATEST and no StartingSequenceNumber. \
@@ -72,7 +73,7 @@ pub async fn execute(
 
         let seq_obj = sequence::parse_sequence(start_seq).map_err(|_| {
             KinesisErrorResponse::client_error(
-                "InvalidArgumentException",
+                constants::INVALID_ARGUMENT,
                 Some(&format!(
                     "StartingSequenceNumber {} used in GetShardIterator on shard {} in stream {} under account {} is invalid.",
                     start_seq, shard_id, stream_name, store.aws_account_id
@@ -82,7 +83,7 @@ pub async fn execute(
 
         if seq_obj.shard_ix != shard_ix {
             return Err(KinesisErrorResponse::client_error(
-                "InvalidArgumentException",
+                constants::INVALID_ARGUMENT,
                 Some(&format!(
                     "Invalid StartingSequenceNumber. It encodes {}, while it was used in a call to a shard with {}",
                     sequence::shard_id_name(seq_obj.shard_ix),
@@ -98,7 +99,7 @@ pub async fn execute(
                 return Err(KinesisErrorResponse::server_error(None, None));
             }
             return Err(KinesisErrorResponse::client_error(
-                "InvalidArgumentException",
+                constants::INVALID_ARGUMENT,
                 Some(&format!(
                     "StartingSequenceNumber {} used in GetShardIterator on shard {} in stream {} under account {} is invalid because it did not come from this stream.",
                     start_seq, shard_id, stream_name, store.aws_account_id
@@ -132,7 +133,7 @@ pub async fn execute(
     } else if iterator_type == "AT_TIMESTAMP" {
         if timestamp.is_none() {
             return Err(KinesisErrorResponse::client_error(
-                "InvalidArgumentException",
+                constants::INVALID_ARGUMENT,
                 Some("Must specify timestampInMillis parameter for iterator of type AT_TIMESTAMP. Current request has no timestamp parameter."),
             ));
         }
@@ -140,7 +141,7 @@ pub async fn execute(
         let timestamp_millis = (ts * 1000.0) as u64;
         if timestamp_millis > now {
             return Err(KinesisErrorResponse::client_error(
-                "InvalidArgumentException",
+                constants::INVALID_ARGUMENT,
                 Some(&format!(
                     "The timestampInMillis parameter cannot be greater than the currentTimestampInMillis. timestampInMillis: {}, currentTimestampInMillis: {}",
                     timestamp_millis, now
@@ -172,7 +173,7 @@ pub async fn execute(
         return Ok(Some(json!({ "ShardIterator": result })));
     } else {
         return Err(KinesisErrorResponse::client_error(
-            "InvalidArgumentException",
+            constants::INVALID_ARGUMENT,
             Some(&format!(
                 "Must either specify (1) AT_SEQUENCE_NUMBER or AFTER_SEQUENCE_NUMBER and StartingSequenceNumber or \
                  (2) TRIM_HORIZON or LATEST and no StartingSequenceNumber. \

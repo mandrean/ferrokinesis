@@ -1,3 +1,4 @@
+use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::store::Store;
 use serde_json::Value;
@@ -6,12 +7,12 @@ pub async fn execute(
     store: &Store,
     data: Value,
 ) -> Result<Option<Value>, KinesisErrorResponse> {
-    let resource_arn = data["ResourceARN"].as_str().unwrap_or("");
-    let policy = data["Policy"].as_str().unwrap_or("");
+    let resource_arn = data[constants::RESOURCE_ARN].as_str().unwrap_or("");
+    let policy = data[constants::POLICY].as_str().unwrap_or("");
 
     if resource_arn.is_empty() {
         return Err(KinesisErrorResponse::client_error(
-            "InvalidArgumentException",
+            constants::INVALID_ARGUMENT,
             Some("ResourceARN is required."),
         ));
     }
@@ -19,7 +20,7 @@ pub async fn execute(
     // Validate the policy is valid JSON
     if serde_json::from_str::<Value>(policy).is_err() {
         return Err(KinesisErrorResponse::client_error(
-            "InvalidArgumentException",
+            constants::INVALID_ARGUMENT,
             Some("Policy must be valid JSON."),
         ));
     }

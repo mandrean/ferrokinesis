@@ -1,3 +1,4 @@
+use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::sequence;
 use crate::store::Store;
@@ -14,13 +15,13 @@ pub async fn execute(
     store: &Store,
     data: Value,
 ) -> Result<Option<Value>, KinesisErrorResponse> {
-    let stream_name = data["StreamName"].as_str().unwrap_or("");
+    let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
     let shard_count = data["ShardCount"].as_i64().unwrap_or(0) as u32;
 
     // Check if stream already exists
     if store.contains_stream(stream_name).await {
         return Err(KinesisErrorResponse::client_error(
-            "ResourceInUseException",
+            constants::RESOURCE_IN_USE,
             Some(&format!(
                 "Stream {} under account {} already exists.",
                 stream_name, store.aws_account_id
@@ -32,7 +33,7 @@ pub async fn execute(
     let shard_sum = store.sum_open_shards().await;
     if shard_sum + shard_count > store.options.shard_limit {
         return Err(KinesisErrorResponse::client_error(
-            "LimitExceededException",
+            constants::LIMIT_EXCEEDED,
             Some(&format!(
                 "This request would exceed the shard limit for the account {} in {}. \
                  Current shard count for the account: {}. Limit: {}. \

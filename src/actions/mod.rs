@@ -35,6 +35,7 @@ pub mod update_account_settings;
 pub mod update_shard_count;
 pub mod update_stream_mode;
 
+use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::store::Store;
 use serde_json::Value;
@@ -86,7 +87,7 @@ pub async fn dispatch(
         "UpdateShardCount" => update_shard_count::execute(store, data).await,
         "UpdateStreamMode" => update_stream_mode::execute(store, data).await,
         _ => Err(KinesisErrorResponse::client_error(
-            "UnknownOperationException",
+            constants::UNKNOWN_OPERATION,
             None,
         )),
     }

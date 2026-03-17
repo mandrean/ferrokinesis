@@ -1,3 +1,4 @@
+use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::sequence;
 use crate::store::Store;
@@ -11,13 +12,13 @@ pub async fn execute(
     store: &Store,
     data: Value,
 ) -> Result<Option<Value>, KinesisErrorResponse> {
-    let stream_name = data["StreamName"].as_str().unwrap_or("");
+    let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
     let shard_to_split = data["ShardToSplit"].as_str().unwrap_or("");
     let new_starting_hash_key = data["NewStartingHashKey"].as_str().unwrap_or("");
 
     let (shard_id, shard_ix) = sequence::resolve_shard_id(shard_to_split).map_err(|_| {
         KinesisErrorResponse::client_error(
-            "ResourceNotFoundException",
+            constants::RESOURCE_NOT_FOUND,
             Some(&format!(
                 "Could not find shard {} in stream {} under account {}.",
                 shard_to_split, stream_name, store.aws_account_id
@@ -32,7 +33,7 @@ pub async fn execute(
         .update_stream(stream_name, |stream| {
             if stream.stream_status != StreamStatus::Active {
                 return Err(KinesisErrorResponse::client_error(
-                    "ResourceInUseException",
+                    constants::RESOURCE_IN_USE,
                     Some(&format!(
                         "Stream {} under account {} not ACTIVE, instead in state {}",
                         stream_name, store.aws_account_id, stream.stream_status
@@ -42,7 +43,7 @@ pub async fn execute(
 
             if shard_ix >= stream.shards.len() as i64 {
                 return Err(KinesisErrorResponse::client_error(
-                    "ResourceNotFoundException",
+                    constants::RESOURCE_NOT_FOUND,
                     Some(&format!(
                         "Could not find shard {} in stream {} under account {}.",
                         shard_id, stream_name, store.aws_account_id
@@ -52,7 +53,7 @@ pub async fn execute(
 
             if shard_sum + 1 > store.options.shard_limit {
                 return Err(KinesisErrorResponse::client_error(
-                    "LimitExceededException",
+                    constants::LIMIT_EXCEEDED,
                     Some(&format!(
                         "This request would exceed the shard limit for the account {} in {}. \
                          Current shard count for the account: {}. Limit: {}. \
@@ -82,7 +83,7 @@ pub async fn execute(
 
             if hash_key <= &shard_start + BigUint::one() || hash_key >= shard_end {
                 return Err(KinesisErrorResponse::client_error(
-                    "InvalidArgumentException",
+                    constants::INVALID_ARGUMENT,
                     Some(&format!(
                         "NewStartingHashKey {} used in SplitShard() on shard {} in stream {} under account {} \
                          is not both greater than one plus the shard's StartingHashKey {} and less than the shard's EndingHashKey {}.",

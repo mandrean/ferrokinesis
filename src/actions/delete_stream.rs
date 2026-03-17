@@ -1,3 +1,4 @@
+use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::store::Store;
 use crate::types::StreamStatus;
@@ -7,7 +8,7 @@ pub async fn execute(
     store: &Store,
     data: Value,
 ) -> Result<Option<Value>, KinesisErrorResponse> {
-    let stream_name = data["StreamName"].as_str().unwrap_or("");
+    let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
 
     // Verify stream exists and set to DELETING
     store

@@ -1,3 +1,4 @@
+use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::sequence;
 use crate::store::Store;
@@ -17,9 +18,9 @@ pub async fn execute(
     store: &Store,
     data: Value,
 ) -> Result<Option<Value>, KinesisErrorResponse> {
-    let stream_name = data["StreamName"].as_str().unwrap_or("");
-    let records = data["Records"].as_array().ok_or_else(|| {
-        KinesisErrorResponse::client_error("SerializationException", None)
+    let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
+    let records = data[constants::RECORDS].as_array().ok_or_else(|| {
+        KinesisErrorResponse::client_error(constants::SERIALIZATION_EXCEPTION, None)
     })?;
 
     // Pre-compute hash keys (no stream access needed)
@@ -34,7 +35,7 @@ pub async fn execute(
             let hk: BigUint = ehk.parse().unwrap_or_else(|_| BigUint::zero());
             if hk >= pow_128 {
                 return Err(KinesisErrorResponse::client_error(
-                    "InvalidArgumentException",
+                    constants::INVALID_ARGUMENT,
                     Some(&format!(
                         "Invalid ExplicitHashKey. ExplicitHashKey must be in the range: [0, 2^128-1]. Specified value was {ehk}"
                     )),
@@ -51,7 +52,7 @@ pub async fn execute(
         .update_stream(stream_name, |stream| {
             if !matches!(stream.stream_status, StreamStatus::Active | StreamStatus::Updating) {
                 return Err(KinesisErrorResponse::client_error(
-                    "ResourceNotFoundException",
+                    constants::RESOURCE_NOT_FOUND,
                     Some(&format!(
                         "Stream {} under account {} not found.",
                         stream_name, store.aws_account_id

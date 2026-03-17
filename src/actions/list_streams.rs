@@ -1,3 +1,4 @@
+use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::store::Store;
 use serde_json::{Value, json};
@@ -6,7 +7,7 @@ pub async fn execute(
     store: &Store,
     data: Value,
 ) -> Result<Option<Value>, KinesisErrorResponse> {
-    let limit = data["Limit"].as_u64().unwrap_or(10) as usize;
+    let limit = data[constants::LIMIT].as_u64().unwrap_or(10) as usize;
     let start_name = data["ExclusiveStartStreamName"].as_str();
 
     let all_names = store.list_stream_names().await;

@@ -1,3 +1,4 @@
+use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::store::Store;
 use crate::types::{Consumer, ConsumerStatus};
@@ -8,8 +9,8 @@ pub async fn execute(
     store: &Store,
     data: Value,
 ) -> Result<Option<Value>, KinesisErrorResponse> {
-    let stream_arn = data["StreamARN"].as_str().unwrap_or("");
-    let consumer_name = data["ConsumerName"].as_str().unwrap_or("");
+    let stream_arn = data[constants::STREAM_ARN].as_str().unwrap_or("");
+    let consumer_name = data[constants::CONSUMER_NAME].as_str().unwrap_or("");
 
     // Verify stream exists
     let stream_name = store
@@ -21,7 +22,7 @@ pub async fn execute(
     if let Some(existing) = store.find_consumer(stream_arn, consumer_name).await {
         if existing.consumer_status != ConsumerStatus::Deleting {
             return Err(KinesisErrorResponse::client_error(
-                "ResourceInUseException",
+                constants::RESOURCE_IN_USE,
                 Some(&format!(
                     "Consumer {} under stream {} already exists.",
                     consumer_name, stream_arn
@@ -38,7 +39,7 @@ pub async fn execute(
         .count();
     if active_count >= 20 {
         return Err(KinesisErrorResponse::client_error(
-            "LimitExceededException",
+            constants::LIMIT_EXCEEDED,
             Some("You have reached the maximum number of registered consumers for this stream."),
         ));
     }

@@ -1,3 +1,4 @@
+use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::store::Store;
 use serde_json::Value;
@@ -6,20 +7,20 @@ pub async fn execute(
     store: &Store,
     data: Value,
 ) -> Result<Option<Value>, KinesisErrorResponse> {
-    let resource_arn = data["ResourceARN"].as_str().unwrap_or("");
+    let resource_arn = data[constants::RESOURCE_ARN].as_str().unwrap_or("");
 
     if resource_arn.is_empty() {
         return Err(KinesisErrorResponse::client_error(
-            "InvalidArgumentException",
+            constants::INVALID_ARGUMENT,
             Some("ResourceARN is required."),
         ));
     }
 
-    let tags = data["Tags"]
+    let tags = data[constants::TAGS]
         .as_object()
         .ok_or_else(|| {
             KinesisErrorResponse::client_error(
-                "InvalidArgumentException",
+                constants::INVALID_ARGUMENT,
                 Some("Tags is required."),
             )
         })?
@@ -31,7 +32,7 @@ pub async fn execute(
         let val_str = value.as_str().unwrap_or("");
         if invalid_char_re.is_match(key) || invalid_char_re.is_match(val_str) {
             return Err(KinesisErrorResponse::client_error(
-                "InvalidArgumentException",
+                constants::INVALID_ARGUMENT,
                 Some(
                     "Some tags contain invalid characters. Valid characters: \
                      Unicode letters, digits, white space, _ . / = + - % @.",
@@ -52,7 +53,7 @@ pub async fn execute(
                     }
                     if all_keys.len() > 50 {
                         return Err(KinesisErrorResponse::client_error(
-                            "InvalidArgumentException",
+                            constants::INVALID_ARGUMENT,
                             Some("A resource cannot have more than 50 tags."),
                         ));
                     }
@@ -78,7 +79,7 @@ pub async fn execute(
     }
     if existing.len() > 50 {
         return Err(KinesisErrorResponse::client_error(
-            "InvalidArgumentException",
+            constants::INVALID_ARGUMENT,
             Some("A resource cannot have more than 50 tags."),
         ));
     }

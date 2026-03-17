@@ -1,3 +1,4 @@
+use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::store::Store;
 use serde_json::{Value, json};
@@ -6,11 +7,11 @@ pub async fn execute(
     store: &Store,
     data: Value,
 ) -> Result<Option<Value>, KinesisErrorResponse> {
-    let stream_name = data["StreamName"].as_str().unwrap_or("");
-    let metrics = data["ShardLevelMetrics"]
+    let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
+    let metrics = data[constants::SHARD_LEVEL_METRICS]
         .as_array()
         .ok_or_else(|| {
-            KinesisErrorResponse::client_error("SerializationException", None)
+            KinesisErrorResponse::client_error(constants::SERIALIZATION_EXCEPTION, None)
         })?;
 
     let to_remove: Vec<String> = metrics

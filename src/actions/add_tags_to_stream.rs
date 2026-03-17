@@ -1,3 +1,4 @@
+use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::store::Store;
 use serde_json::Value;
@@ -6,10 +7,10 @@ pub async fn execute(
     store: &Store,
     data: Value,
 ) -> Result<Option<Value>, KinesisErrorResponse> {
-    let stream_name = data["StreamName"].as_str().unwrap_or("");
-    let tags = data["Tags"]
+    let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
+    let tags = data[constants::TAGS]
         .as_object()
-        .ok_or_else(|| KinesisErrorResponse::client_error("SerializationException", None))?
+        .ok_or_else(|| KinesisErrorResponse::client_error(constants::SERIALIZATION_EXCEPTION, None))?
         .clone();
 
     store
@@ -26,7 +27,7 @@ pub async fn execute(
 
             if all_strings.iter().any(|s| invalid_char_re.is_match(s)) {
                 return Err(KinesisErrorResponse::client_error(
-                    "InvalidArgumentException",
+                    constants::INVALID_ARGUMENT,
                     Some(
                         "Some tags contain invalid characters. Valid characters: \
                          Unicode letters, digits, white space, _ . / = + - % @.",
@@ -36,7 +37,7 @@ pub async fn execute(
 
             if all_strings.iter().any(|s| s.contains('%')) {
                 return Err(KinesisErrorResponse::client_error(
-                    "InvalidArgumentException",
+                    constants::INVALID_ARGUMENT,
                     Some(&format!(
                         "Failed to add tags to stream {} under account {} \
                          because some tags contained illegal characters. The allowed characters are \
@@ -55,7 +56,7 @@ pub async fn execute(
 
             if all_keys.len() > 50 {
                 return Err(KinesisErrorResponse::client_error(
-                    "InvalidArgumentException",
+                    constants::INVALID_ARGUMENT,
                     Some(&format!(
                         "Failed to add tags to stream {} under account {} \
                          because a given stream cannot have more than 10 tags associated with it.",
