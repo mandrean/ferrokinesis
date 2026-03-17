@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use ferrokinesis::store::StoreOptions;
 use reqwest::Client;
 use reqwest::header::{HeaderMap, HeaderValue};
