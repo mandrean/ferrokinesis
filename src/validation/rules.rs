@@ -476,6 +476,39 @@ pub fn list_tags_for_resource() -> Vec<(&'static str, FieldDef)> {
     ]
 }
 
+pub fn subscribe_to_shard() -> Vec<(&'static str, FieldDef)> {
+    vec![
+        (
+            "ConsumerARN",
+            FieldDef::new(FieldType::String).not_null().len_gte(1).len_lte(2048),
+        ),
+        (
+            "ShardId",
+            FieldDef::new(FieldType::String)
+                .not_null()
+                .regex("[a-zA-Z0-9_.-]+")
+                .len_gte(1)
+                .len_lte(128),
+        ),
+        (
+            "StartingPosition",
+            FieldDef::new(FieldType::Structure {
+                children: vec![(
+                    "Type".to_string(),
+                    FieldDef::new(FieldType::String).not_null().enum_values(vec![
+                        "AFTER_SEQUENCE_NUMBER",
+                        "LATEST",
+                        "AT_TIMESTAMP",
+                        "AT_SEQUENCE_NUMBER",
+                        "TRIM_HORIZON",
+                    ]),
+                )],
+            })
+            .not_null(),
+        ),
+    ]
+}
+
 pub fn update_stream_warm_throughput() -> Vec<(&'static str, FieldDef)> {
     vec![
         ("StreamARN", stream_arn_field()),

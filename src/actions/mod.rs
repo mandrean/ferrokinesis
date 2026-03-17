@@ -28,6 +28,7 @@ pub mod register_stream_consumer;
 pub mod remove_tags_from_stream;
 pub mod split_shard;
 pub mod start_stream_encryption;
+pub mod subscribe_to_shard;
 pub mod stop_stream_encryption;
 pub mod tag_resource;
 pub mod untag_resource;

@@ -46,6 +46,7 @@ const VALID_OPERATIONS: &[&str] = &[
     "SplitShard",
     "StartStreamEncryption",
     "StopStreamEncryption",
+    "SubscribeToShard",
     "TagResource",
     "UntagResource",
     "UpdateAccountSettings",
@@ -362,6 +363,25 @@ pub async fn handler(
         );
     }
 
+    // Handle SubscribeToShard separately (streaming response)
+    if operation == "SubscribeToShard" {
+        return match actions::subscribe_to_shard::execute_streaming(&store, data).await {
+            Ok(body) => {
+                response_headers.insert(
+                    "Content-Type",
+                    "application/vnd.amazon.eventstream".parse().unwrap(),
+                );
+                (StatusCode::OK, response_headers, body).into_response()
+            }
+            Err(err) => send_json_response(
+                &response_headers,
+                response_content_type,
+                &json!({"__type": err.body.__type, "message": err.body.message}),
+                err.status_code,
+            ),
+        };
+    }
+
     // Execute action
     match actions::dispatch(&store, operation, data).await {
         Ok(Some(result)) => {
@@ -414,6 +434,7 @@ fn get_validation_rules(operation: &str) -> Vec<(&'static str, validation::Field
         "SplitShard" => rules::split_shard(),
         "StartStreamEncryption" => rules::start_stream_encryption(),
         "StopStreamEncryption" => rules::stop_stream_encryption(),
+        "SubscribeToShard" => rules::subscribe_to_shard(),
         "TagResource" => rules::tag_resource(),
         "UntagResource" => rules::untag_resource(),
         "UpdateAccountSettings" => vec![],
