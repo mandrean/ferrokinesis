@@ -585,10 +585,7 @@ pub fn update_account_settings() -> Vec<(&'static str, FieldDef)> {
         "MinimumThroughputBillingCommitment",
         FieldDef::new(FieldType::Structure {
             children: vec![
-                (
-                    "Status".to_string(),
-                    FieldDef::new(FieldType::String),
-                ),
+                ("Status".to_string(), FieldDef::new(FieldType::String)),
                 (
                     "MinimumWriteCapacityUnits".to_string(),
                     FieldDef::new(FieldType::Integer),

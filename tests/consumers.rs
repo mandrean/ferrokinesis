@@ -61,7 +61,10 @@ async fn describe_consumer_by_arn() {
         .to_string();
 
     let res = server
-        .request("DescribeStreamConsumer", &json!({ "ConsumerARN": consumer_arn }))
+        .request(
+            "DescribeStreamConsumer",
+            &json!({ "ConsumerARN": consumer_arn }),
+        )
         .await;
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
@@ -99,7 +102,10 @@ async fn describe_consumer_not_found() {
     let server = TestServer::new().await;
     let fake_arn = format!("{}/consumer/nobody:1700000000", stream_arn("dsc-missing"));
     let res = server
-        .request("DescribeStreamConsumer", &json!({ "ConsumerARN": fake_arn }))
+        .request(
+            "DescribeStreamConsumer",
+            &json!({ "ConsumerARN": fake_arn }),
+        )
         .await;
     assert_eq!(res.status(), 400);
     let body: Value = res.json().await.unwrap();
@@ -203,9 +209,7 @@ async fn deregister_consumer_not_found_by_name() {
 #[tokio::test]
 async fn deregister_consumer_missing_identifiers() {
     let server = TestServer::new().await;
-    let res = server
-        .request("DeregisterStreamConsumer", &json!({}))
-        .await;
+    let res = server.request("DeregisterStreamConsumer", &json!({})).await;
     assert_eq!(res.status(), 400);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["__type"], "InvalidArgumentException");
@@ -233,7 +237,10 @@ async fn consumer_full_lifecycle() {
 
     // Describe
     let body: Value = server
-        .request("DescribeStreamConsumer", &json!({ "ConsumerARN": consumer_arn }))
+        .request(
+            "DescribeStreamConsumer",
+            &json!({ "ConsumerARN": consumer_arn }),
+        )
         .await
         .json()
         .await
@@ -248,4 +255,64 @@ async fn consumer_full_lifecycle() {
         )
         .await;
     assert_eq!(res.status(), 200);
+}
+
+#[tokio::test]
+async fn register_consumer_already_exists() {
+    let server = TestServer::new().await;
+    let name = "test-rsc-exists";
+    server.create_stream(name, 1).await;
+    let arn = stream_arn(name);
+
+    let res = server
+        .request(
+            "RegisterStreamConsumer",
+            &json!({ "StreamARN": arn, "ConsumerName": "c-dup" }),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    tokio::time::sleep(tokio::time::Duration::from_millis(600)).await;
+
+    let res = server
+        .request(
+            "RegisterStreamConsumer",
+            &json!({ "StreamARN": arn, "ConsumerName": "c-dup" }),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "ResourceInUseException");
+    assert!(body["message"].as_str().unwrap().contains("already exists"));
+}
+
+#[tokio::test]
+async fn register_consumer_limit_exceeded() {
+    let server = TestServer::new().await;
+    let name = "test-rsc-limit";
+    server.create_stream(name, 1).await;
+    let arn = stream_arn(name);
+
+    for i in 0..20 {
+        let res = server
+            .request(
+                "RegisterStreamConsumer",
+                &json!({ "StreamARN": arn, "ConsumerName": format!("c-{i:02}") }),
+            )
+            .await;
+        assert_eq!(
+            res.status(),
+            200,
+            "consumer {i} registration should succeed"
+        );
+    }
+
+    let res = server
+        .request(
+            "RegisterStreamConsumer",
+            &json!({ "StreamARN": arn, "ConsumerName": "c-21" }),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "LimitExceededException");
 }

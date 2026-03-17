@@ -1,4 +1,6 @@
-use ferrokinesis::event_stream::{encode_exception, encode_initial_response, encode_subscribe_event};
+use ferrokinesis::event_stream::{
+    encode_exception, encode_initial_response, encode_subscribe_event,
+};
 
 // -- encode_exception --
 

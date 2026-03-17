@@ -508,3 +508,14 @@ async fn store_get_records_range_direct() {
         .await;
     assert_eq!(empty.len(), 0);
 }
+
+#[tokio::test]
+async fn store_with_streams_write_direct() {
+    use ferrokinesis::store::Store;
+    let store = Store::new(StoreOptions::default());
+
+    let count = store
+        .with_streams_write(|streams, _opts, _account, _region| streams.len())
+        .await;
+    assert_eq!(count, 0);
+}

@@ -99,10 +99,7 @@ async fn enable_monitoring_missing_metrics() {
     let name = "em-no-metrics";
     server.create_stream(name, 1).await;
     let res = server
-        .request(
-            "EnableEnhancedMonitoring",
-            &json!({ "StreamName": name }),
-        )
+        .request("EnableEnhancedMonitoring", &json!({ "StreamName": name }))
         .await;
     assert_eq!(res.status(), 400);
 }
@@ -184,10 +181,7 @@ async fn disable_monitoring_missing_metrics() {
     let name = "dm-no-metrics";
     server.create_stream(name, 1).await;
     let res = server
-        .request(
-            "DisableEnhancedMonitoring",
-            &json!({ "StreamName": name }),
-        )
+        .request("DisableEnhancedMonitoring", &json!({ "StreamName": name }))
         .await;
     assert_eq!(res.status(), 400);
 }

@@ -74,8 +74,7 @@ async fn get_records_expired_iterator_returns_error() {
 
     // Create an iterator whose timestamp is 10 minutes in the past
     let old_ts = now_ms() - 600_001;
-    let expired_iter =
-        create_iterator_with_timestamp(name, "shardId-000000000000", &seq, old_ts);
+    let expired_iter = create_iterator_with_timestamp(name, "shardId-000000000000", &seq, old_ts);
 
     let res = server
         .request("GetRecords", &json!({ "ShardIterator": expired_iter }))
@@ -119,8 +118,7 @@ async fn get_records_future_timestamp_iterator_is_invalid() {
     let seq = put_body["SequenceNumber"].as_str().unwrap().to_string();
 
     let future_ts = now_ms() + 60_000; // 1 minute in the future
-    let iter =
-        create_iterator_with_timestamp(name, "shardId-000000000000", &seq, future_ts);
+    let iter = create_iterator_with_timestamp(name, "shardId-000000000000", &seq, future_ts);
 
     let res = server
         .request("GetRecords", &json!({ "ShardIterator": iter }))

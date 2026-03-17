@@ -45,13 +45,19 @@ async fn tag_resource_consumer_arn() {
 
     // Verify tags are retrievable
     let body: Value = server
-        .request("ListTagsForResource", &json!({ "ResourceARN": consumer_arn }))
+        .request(
+            "ListTagsForResource",
+            &json!({ "ResourceARN": consumer_arn }),
+        )
         .await
         .json()
         .await
         .unwrap();
     let tags = body["Tags"].as_array().unwrap();
-    assert!(tags.iter().any(|t| t["Key"] == "env" && t["Value"] == "test"));
+    assert!(
+        tags.iter()
+            .any(|t| t["Key"] == "env" && t["Value"] == "test")
+    );
 }
 
 #[tokio::test]
@@ -92,7 +98,10 @@ async fn untag_resource_consumer_arn() {
     assert_eq!(res.status(), 200);
 
     let body: Value = server
-        .request("ListTagsForResource", &json!({ "ResourceARN": consumer_arn }))
+        .request(
+            "ListTagsForResource",
+            &json!({ "ResourceARN": consumer_arn }),
+        )
         .await
         .json()
         .await

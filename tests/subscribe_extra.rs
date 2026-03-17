@@ -28,7 +28,11 @@ async fn register_and_activate(server: &TestServer, stream_arn: &str, name: &str
 }
 
 /// Helper: send a subscribe request and assert it opens a streaming response.
-async fn assert_subscribe_streams(server: &TestServer, consumer_arn: &str, request: serde_json::Value) {
+async fn assert_subscribe_streams(
+    server: &TestServer,
+    consumer_arn: &str,
+    request: serde_json::Value,
+) {
     let mut response = server
         .client
         .post(server.url())
@@ -265,8 +269,7 @@ async fn subscribe_invalid_starting_position_type() {
     let body: Value = res.json().await.unwrap();
     // Validation layer catches unknown enum values before the action sees them
     assert!(
-        body["__type"] == "InvalidArgumentException"
-            || body["__type"] == "ValidationException",
+        body["__type"] == "InvalidArgumentException" || body["__type"] == "ValidationException",
         "expected validation/argument error, got: {}",
         body["__type"]
     );
@@ -314,13 +317,10 @@ async fn subscribe_trim_horizon_reads_records_in_loop() {
     assert!(chunk1.is_some(), "expected initial-response frame");
 
     // Second chunk: first SubscribeToShardEvent (exercises the streaming loop body)
-    let chunk2 = tokio::time::timeout(
-        tokio::time::Duration::from_secs(2),
-        response.chunk(),
-    )
-    .await
-    .expect("timed out waiting for first SubscribeToShardEvent")
-    .unwrap();
+    let chunk2 = tokio::time::timeout(tokio::time::Duration::from_secs(2), response.chunk())
+        .await
+        .expect("timed out waiting for first SubscribeToShardEvent")
+        .unwrap();
     assert!(chunk2.is_some(), "expected first event frame from loop");
 }
 
@@ -376,12 +376,9 @@ async fn subscribe_closed_shard_child_shards() {
     assert!(chunk1.is_some());
 
     // Read next frame (exercises shard_closed + child_shards path, then breaks)
-    let chunk2 = tokio::time::timeout(
-        tokio::time::Duration::from_secs(2),
-        response.chunk(),
-    )
-    .await
-    .expect("timed out")
-    .unwrap();
+    let chunk2 = tokio::time::timeout(tokio::time::Duration::from_secs(2), response.chunk())
+        .await
+        .expect("timed out")
+        .unwrap();
     assert!(chunk2.is_some(), "expected event frame for closed shard");
 }

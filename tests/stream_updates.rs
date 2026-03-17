@@ -1,7 +1,8 @@
 mod common;
 
 use common::*;
-use serde_json::{json, Value};
+use ferrokinesis::store::{Store, StoreOptions};
+use serde_json::{Value, json};
 
 const ACCOUNT: &str = "0000-0000-0000";
 const REGION: &str = "us-east-1";
@@ -150,10 +151,7 @@ async fn update_warm_throughput_missing_value() {
     server.create_stream(name, 1).await;
 
     let res = server
-        .request(
-            "UpdateStreamWarmThroughput",
-            &json!({ "StreamName": name }),
-        )
+        .request("UpdateStreamWarmThroughput", &json!({ "StreamName": name }))
         .await;
     assert_eq!(res.status(), 400);
     let body: Value = res.json().await.unwrap();
@@ -254,7 +252,11 @@ async fn update_max_record_size_out_of_range() {
                 &json!({ "StreamARN": stream_arn(name), "MaxRecordSizeInKiB": invalid }),
             )
             .await;
-        assert_eq!(res.status(), 400, "Expected 400 for MaxRecordSizeInKiB={invalid}");
+        assert_eq!(
+            res.status(),
+            400,
+            "Expected 400 for MaxRecordSizeInKiB={invalid}"
+        );
         let body: Value = res.json().await.unwrap();
         assert_eq!(body["__type"], "ValidationException");
     }
@@ -321,9 +323,7 @@ async fn update_account_settings_success() {
 async fn update_account_settings_missing_commitment() {
     let server = TestServer::new().await;
 
-    let res = server
-        .request("UpdateAccountSettings", &json!({}))
-        .await;
+    let res = server.request("UpdateAccountSettings", &json!({})).await;
     assert_eq!(res.status(), 400);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["__type"], "InvalidArgumentException");
@@ -357,9 +357,7 @@ async fn update_account_settings_persisted_across_describe() {
         )
         .await;
 
-    let res = server
-        .request("DescribeAccountSettings", &json!({}))
-        .await;
+    let res = server.request("DescribeAccountSettings", &json!({})).await;
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
     assert_eq!(
@@ -469,4 +467,130 @@ async fn update_shard_count_stream_not_found() {
     assert_eq!(res.status(), 400);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["__type"], "ResourceNotFoundException");
+}
+
+#[tokio::test]
+async fn update_warm_throughput_arn_without_slash() {
+    let server = TestServer::new().await;
+
+    let res = server
+        .request(
+            "UpdateStreamWarmThroughput",
+            &json!({ "StreamARN": "arn-without-slash", "WarmThroughputMiBps": 50 }),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "ResourceNotFoundException");
+}
+
+#[tokio::test]
+async fn update_stream_mode_invalid_mode_direct() {
+    let store = Store::new(StoreOptions::default());
+    let result = ferrokinesis::actions::update_stream_mode::execute(
+        &store,
+        json!({
+            "StreamARN": "arn:aws:kinesis:us-east-1:000000000000:stream/test",
+            "StreamModeDetails": { "StreamMode": "UNKNOWN_MODE" },
+        }),
+    )
+    .await;
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().body.__type, "InvalidArgumentException");
+}
+
+#[tokio::test]
+async fn update_stream_mode_stream_not_found() {
+    let server = TestServer::new().await;
+    let arn = stream_arn("test-usm-notfound");
+
+    let res = server
+        .request(
+            "UpdateStreamMode",
+            &json!({
+                "StreamARN": arn,
+                "StreamModeDetails": { "StreamMode": "ON_DEMAND" },
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "ResourceNotFoundException");
+}
+
+#[tokio::test]
+async fn update_max_record_size_empty_arn_direct() {
+    let store = Store::new(StoreOptions::default());
+    let result = ferrokinesis::actions::update_max_record_size::execute(
+        &store,
+        json!({ "StreamARN": "", "MaxRecordSizeInKiB": 4096 }),
+    )
+    .await;
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().body.__type, "InvalidArgumentException");
+}
+
+#[tokio::test]
+async fn update_max_record_size_kib_not_integer_direct() {
+    let store = Store::new(StoreOptions::default());
+    let result = ferrokinesis::actions::update_max_record_size::execute(
+        &store,
+        json!({
+            "StreamARN": "arn:aws:kinesis:us-east-1:000000000000:stream/test",
+            "MaxRecordSizeInKiB": "not-an-integer",
+        }),
+    )
+    .await;
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().body.__type, "InvalidArgumentException");
+}
+
+#[tokio::test]
+async fn update_max_record_size_kib_below_range_direct() {
+    let store = Store::new(StoreOptions::default());
+    let result = ferrokinesis::actions::update_max_record_size::execute(
+        &store,
+        json!({
+            "StreamARN": "arn:aws:kinesis:us-east-1:000000000000:stream/test",
+            "MaxRecordSizeInKiB": 512,
+        }),
+    )
+    .await;
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert_eq!(err.body.__type, "InvalidArgumentException");
+    assert!(
+        err.body
+            .message
+            .as_deref()
+            .unwrap_or("")
+            .contains("between 1024 and 10240")
+    );
+}
+
+#[tokio::test]
+async fn update_warm_throughput_both_empty_direct() {
+    let store = Store::new(StoreOptions::default());
+    let result = ferrokinesis::actions::update_stream_warm_throughput::execute(
+        &store,
+        json!({ "WarmThroughputMiBps": 50 }),
+    )
+    .await;
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().body.__type, "InvalidArgumentException");
+}
+
+#[tokio::test]
+async fn update_warm_throughput_mibps_not_integer_direct() {
+    let store = Store::new(StoreOptions::default());
+    let result = ferrokinesis::actions::update_stream_warm_throughput::execute(
+        &store,
+        json!({
+            "StreamName": "test",
+            "WarmThroughputMiBps": "not-an-integer",
+        }),
+    )
+    .await;
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().body.__type, "InvalidArgumentException");
 }

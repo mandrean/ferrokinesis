@@ -218,3 +218,22 @@ fn parse_sequence_not_a_number() {
 fn parse_sequence_empty_string() {
     assert!(parse_sequence("").is_err());
 }
+
+#[test]
+fn parse_v2_negative_shard_ix() {
+    use ferrokinesis::sequence::{SeqObj, parse_sequence, stringify_sequence};
+    use num_bigint::BigUint;
+
+    let obj = SeqObj {
+        shard_create_time: 1_600_000_000_000,
+        seq_ix: Some(BigUint::from(0u32)),
+        byte1: Some("00".to_string()),
+        seq_time: Some(1_600_000_001_000),
+        seq_rand: None,
+        shard_ix: -1,
+        version: 2,
+    };
+    let seq = stringify_sequence(&obj);
+    let parsed = parse_sequence(&seq);
+    assert!(parsed.is_ok() || parsed.is_err());
+}

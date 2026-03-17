@@ -1,7 +1,8 @@
 mod common;
 
 use common::*;
-use serde_json::{json, Value};
+use ferrokinesis::store::{Store, StoreOptions};
+use serde_json::{Value, json};
 
 const ACCOUNT: &str = "0000-0000-0000";
 const REGION: &str = "us-east-1";
@@ -68,7 +69,10 @@ async fn get_resource_policy_after_put() {
     let arn = stream_arn(name);
 
     server
-        .request("PutResourcePolicy", &json!({ "ResourceARN": arn, "Policy": POLICY }))
+        .request(
+            "PutResourcePolicy",
+            &json!({ "ResourceARN": arn, "Policy": POLICY }),
+        )
         .await;
 
     let res = server
@@ -98,9 +102,7 @@ async fn get_resource_policy_empty_returns_empty_string() {
 #[tokio::test]
 async fn get_resource_policy_missing_arn() {
     let server = TestServer::new().await;
-    let res = server
-        .request("GetResourcePolicy", &json!({}))
-        .await;
+    let res = server.request("GetResourcePolicy", &json!({})).await;
     assert_eq!(res.status(), 400);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["__type"], "ValidationException");
@@ -116,7 +118,10 @@ async fn delete_resource_policy_success() {
     let arn = stream_arn(name);
 
     server
-        .request("PutResourcePolicy", &json!({ "ResourceARN": arn, "Policy": POLICY }))
+        .request(
+            "PutResourcePolicy",
+            &json!({ "ResourceARN": arn, "Policy": POLICY }),
+        )
         .await;
 
     let res = server
@@ -137,9 +142,7 @@ async fn delete_resource_policy_success() {
 #[tokio::test]
 async fn delete_resource_policy_missing_arn() {
     let server = TestServer::new().await;
-    let res = server
-        .request("DeleteResourcePolicy", &json!({}))
-        .await;
+    let res = server.request("DeleteResourcePolicy", &json!({})).await;
     assert_eq!(res.status(), 400);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["__type"], "ValidationException");
@@ -169,7 +172,10 @@ async fn resource_policy_full_lifecycle() {
     let arn = stream_arn(name);
 
     server
-        .request("PutResourcePolicy", &json!({ "ResourceARN": arn, "Policy": POLICY }))
+        .request(
+            "PutResourcePolicy",
+            &json!({ "ResourceARN": arn, "Policy": POLICY }),
+        )
         .await;
 
     let body: Value = server
@@ -183,7 +189,10 @@ async fn resource_policy_full_lifecycle() {
     // Overwrite with a different policy
     let policy2 = r#"{"Version":"2012-10-17","Statement":[]}"#;
     server
-        .request("PutResourcePolicy", &json!({ "ResourceARN": arn, "Policy": policy2 }))
+        .request(
+            "PutResourcePolicy",
+            &json!({ "ResourceARN": arn, "Policy": policy2 }),
+        )
         .await;
 
     let body: Value = server
@@ -205,4 +214,39 @@ async fn resource_policy_full_lifecycle() {
         .await
         .unwrap();
     assert_eq!(body["Policy"].as_str().unwrap_or(""), "");
+}
+
+#[tokio::test]
+async fn delete_resource_policy_empty_arn_direct() {
+    let store = Store::new(StoreOptions::default());
+    let result = ferrokinesis::actions::delete_resource_policy::execute(
+        &store,
+        json!({ "ResourceARN": "" }),
+    )
+    .await;
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert_eq!(err.body.__type, "InvalidArgumentException");
+}
+
+#[tokio::test]
+async fn get_resource_policy_empty_arn_direct() {
+    let store = Store::new(StoreOptions::default());
+    let result =
+        ferrokinesis::actions::get_resource_policy::execute(&store, json!({ "ResourceARN": "" }))
+            .await;
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().body.__type, "InvalidArgumentException");
+}
+
+#[tokio::test]
+async fn put_resource_policy_empty_arn_direct() {
+    let store = Store::new(StoreOptions::default());
+    let result = ferrokinesis::actions::put_resource_policy::execute(
+        &store,
+        json!({ "ResourceARN": "", "Policy": "{}" }),
+    )
+    .await;
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().body.__type, "InvalidArgumentException");
 }
