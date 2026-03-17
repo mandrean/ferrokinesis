@@ -301,3 +301,138 @@ pub fn decrease_stream_retention_period() -> Vec<(&'static str, FieldDef)> {
         ("StreamName", stream_name_field()),
     ]
 }
+
+fn stream_arn_field() -> FieldDef {
+    FieldDef::new(FieldType::String).len_gte(1).len_lte(2048)
+}
+
+fn consumer_name_field() -> FieldDef {
+    FieldDef::new(FieldType::String)
+        .regex("[a-zA-Z0-9_.-]+")
+        .len_gte(1)
+        .len_lte(128)
+}
+
+pub fn enable_enhanced_monitoring() -> Vec<(&'static str, FieldDef)> {
+    vec![
+        (
+            "ShardLevelMetrics",
+            FieldDef::new(FieldType::List {
+                children: Box::new(FieldDef::new(FieldType::String)),
+            })
+            .not_null()
+            .len_gte(1)
+            .len_lte(7),
+        ),
+        ("StreamName", stream_name_field()),
+        ("StreamARN", stream_arn_field()),
+    ]
+}
+
+pub fn disable_enhanced_monitoring() -> Vec<(&'static str, FieldDef)> {
+    enable_enhanced_monitoring()
+}
+
+pub fn start_stream_encryption() -> Vec<(&'static str, FieldDef)> {
+    vec![
+        (
+            "EncryptionType",
+            FieldDef::new(FieldType::String).not_null().enum_values(vec!["KMS"]),
+        ),
+        (
+            "KeyId",
+            FieldDef::new(FieldType::String).not_null().len_gte(1).len_lte(2048),
+        ),
+        ("StreamName", stream_name_field()),
+        ("StreamARN", stream_arn_field()),
+    ]
+}
+
+pub fn stop_stream_encryption() -> Vec<(&'static str, FieldDef)> {
+    vec![
+        (
+            "EncryptionType",
+            FieldDef::new(FieldType::String).not_null().enum_values(vec!["KMS"]),
+        ),
+        (
+            "KeyId",
+            FieldDef::new(FieldType::String).not_null().len_gte(1).len_lte(2048),
+        ),
+        ("StreamName", stream_name_field()),
+        ("StreamARN", stream_arn_field()),
+    ]
+}
+
+pub fn register_stream_consumer() -> Vec<(&'static str, FieldDef)> {
+    vec![
+        ("ConsumerName", consumer_name_field().not_null()),
+        ("StreamARN", stream_arn_field().not_null()),
+    ]
+}
+
+pub fn deregister_stream_consumer() -> Vec<(&'static str, FieldDef)> {
+    vec![
+        ("ConsumerARN", FieldDef::new(FieldType::String).len_gte(1).len_lte(2048)),
+        ("ConsumerName", consumer_name_field()),
+        ("StreamARN", stream_arn_field()),
+    ]
+}
+
+pub fn describe_stream_consumer() -> Vec<(&'static str, FieldDef)> {
+    deregister_stream_consumer()
+}
+
+pub fn list_stream_consumers() -> Vec<(&'static str, FieldDef)> {
+    vec![
+        ("MaxResults", FieldDef::new(FieldType::Integer).gte(1.0).lte(10000.0)),
+        ("NextToken", FieldDef::new(FieldType::String).len_gte(1).len_lte(1048576)),
+        ("StreamARN", stream_arn_field().not_null()),
+        ("StreamCreationTimestamp", FieldDef::new(FieldType::Timestamp)),
+    ]
+}
+
+pub fn update_shard_count() -> Vec<(&'static str, FieldDef)> {
+    vec![
+        ("ScalingType", FieldDef::new(FieldType::String).not_null().enum_values(vec!["UNIFORM_SCALING"])),
+        ("StreamARN", stream_arn_field()),
+        ("StreamName", stream_name_field()),
+        ("TargetShardCount", FieldDef::new(FieldType::Integer).not_null().gte(1.0).lte(100000.0)),
+    ]
+}
+
+pub fn update_stream_mode() -> Vec<(&'static str, FieldDef)> {
+    vec![
+        ("StreamARN", stream_arn_field().not_null()),
+        (
+            "StreamModeDetails",
+            FieldDef::new(FieldType::Structure {
+                children: vec![(
+                    "StreamMode".to_string(),
+                    FieldDef::new(FieldType::String)
+                        .not_null()
+                        .enum_values(vec!["PROVISIONED", "ON_DEMAND"]),
+                )],
+            })
+            .not_null(),
+        ),
+    ]
+}
+
+pub fn put_resource_policy() -> Vec<(&'static str, FieldDef)> {
+    vec![
+        ("Policy", FieldDef::new(FieldType::String).not_null()),
+        ("ResourceARN", stream_arn_field().not_null()),
+    ]
+}
+
+pub fn get_resource_policy() -> Vec<(&'static str, FieldDef)> {
+    vec![
+        ("ResourceARN", stream_arn_field().not_null()),
+    ]
+}
+
+pub fn delete_resource_policy() -> Vec<(&'static str, FieldDef)> {
+    vec![
+        ("ResourceARN", stream_arn_field().not_null()),
+    ]
+}

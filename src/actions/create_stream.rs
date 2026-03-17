@@ -102,8 +102,12 @@ pub async fn execute(
         stream_name: stream_name.to_string(),
         stream_status: StreamStatus::Creating,
         stream_creation_timestamp: (create_time as f64) / 1000.0,
+        stream_mode_details: StreamModeDetails {
+            stream_mode: "PROVISIONED".to_string(),
+        },
         seq_ix: vec![None; (shard_count as usize).div_ceil(5)],
         tags: BTreeMap::new(),
+        key_id: None,
     };
 
     store.put_stream(stream_name, stream).await;

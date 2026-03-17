@@ -15,17 +15,21 @@ pub async fn execute(
         .filter(|s| s.sequence_number_range.ending_sequence_number.is_none())
         .count();
 
+    let consumer_count = store.list_consumers_for_stream(&stream.stream_arn).await.len();
+
     Ok(Some(json!({
         "StreamDescriptionSummary": {
             "RetentionPeriodHours": stream.retention_period_hours,
             "EnhancedMonitoring": stream.enhanced_monitoring,
             "EncryptionType": stream.encryption_type,
+            "KeyId": stream.key_id,
             "StreamARN": stream.stream_arn,
             "StreamName": stream.stream_name,
             "StreamStatus": stream.stream_status,
             "StreamCreationTimestamp": stream.stream_creation_timestamp,
+            "StreamModeDetails": stream.stream_mode_details,
             "OpenShardCount": open_shard_count,
-            "ConsumerCount": 0,
+            "ConsumerCount": consumer_count,
         }
     })))
 }

@@ -1,5 +1,5 @@
 use crate::error::KinesisErrorResponse;
-use crate::types::{StoredRecord, Stream};
+use crate::types::{Consumer, StoredRecord, Stream};
 use redb::backends::InMemoryBackend;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde_json::Value;
@@ -8,6 +8,8 @@ use std::sync::Arc;
 
 const STREAMS: TableDefinition<&str, &[u8]> = TableDefinition::new("streams");
 const RECORDS: TableDefinition<&str, &[u8]> = TableDefinition::new("records");
+const CONSUMERS: TableDefinition<&str, &[u8]> = TableDefinition::new("consumers");
+const POLICIES: TableDefinition<&str, &str> = TableDefinition::new("policies");
 
 #[derive(Debug, Clone)]
 pub struct StoreOptions {
@@ -48,6 +50,12 @@ fn serialize_stream(stream: &Stream) -> Vec<u8> {
         "_tags".to_string(),
         serde_json::to_value(&stream.tags).unwrap(),
     );
+    if let Some(ref key_id) = stream.key_id {
+        obj.insert(
+            "_key_id".to_string(),
+            serde_json::to_value(key_id).unwrap(),
+        );
+    }
     serde_json::to_vec(&val).unwrap()
 }
 
@@ -60,6 +68,9 @@ fn deserialize_stream(bytes: &[u8]) -> Stream {
     }
     if let Some(obj) = val.get("_tags") {
         stream.tags = serde_json::from_value(obj.clone()).unwrap_or_default();
+    }
+    if let Some(key_id) = val.get("_key_id") {
+        stream.key_id = serde_json::from_value(key_id.clone()).ok();
     }
     stream
 }
@@ -97,6 +108,8 @@ impl Store {
         let write_txn = db.begin_write().unwrap();
         write_txn.open_table(STREAMS).unwrap();
         write_txn.open_table(RECORDS).unwrap();
+        write_txn.open_table(CONSUMERS).unwrap();
+        write_txn.open_table(POLICIES).unwrap();
         write_txn.commit().unwrap();
 
         Self {
@@ -368,5 +381,87 @@ impl Store {
                 (shard_key, record)
             })
             .collect()
+    }
+
+    // --- Consumer operations ---
+
+    pub async fn put_consumer(&self, consumer_arn: &str, consumer: Consumer) {
+        let bytes = serde_json::to_vec(&consumer).unwrap();
+        let write_txn = self.db.begin_write().unwrap();
+        {
+            let mut table = write_txn.open_table(CONSUMERS).unwrap();
+            table.insert(consumer_arn, bytes.as_slice()).unwrap();
+        }
+        write_txn.commit().unwrap();
+    }
+
+    pub async fn get_consumer(&self, consumer_arn: &str) -> Option<Consumer> {
+        let read_txn = self.db.begin_read().unwrap();
+        let table = read_txn.open_table(CONSUMERS).unwrap();
+        table.get(consumer_arn).unwrap().map(|guard| {
+            serde_json::from_slice(guard.value()).unwrap()
+        })
+    }
+
+    pub async fn delete_consumer(&self, consumer_arn: &str) {
+        let write_txn = self.db.begin_write().unwrap();
+        {
+            let mut table = write_txn.open_table(CONSUMERS).unwrap();
+            table.remove(consumer_arn).unwrap();
+        }
+        write_txn.commit().unwrap();
+    }
+
+    pub async fn list_consumers_for_stream(&self, stream_arn: &str) -> Vec<Consumer> {
+        let prefix = format!("{stream_arn}/consumer/");
+        let prefix_end = format!("{stream_arn}/consumer0"); // '0' > '/'
+        let read_txn = self.db.begin_read().unwrap();
+        let table = read_txn.open_table(CONSUMERS).unwrap();
+        table
+            .range(prefix.as_str()..prefix_end.as_str())
+            .unwrap()
+            .map(|r| {
+                let (_, v) = r.unwrap();
+                serde_json::from_slice(v.value()).unwrap()
+            })
+            .collect()
+    }
+
+    /// Find a consumer by stream ARN + consumer name
+    pub async fn find_consumer(&self, stream_arn: &str, consumer_name: &str) -> Option<Consumer> {
+        let consumers = self.list_consumers_for_stream(stream_arn).await;
+        consumers.into_iter().find(|c| c.consumer_name == consumer_name)
+    }
+
+    // --- Resource policy operations ---
+
+    pub async fn put_policy(&self, resource_arn: &str, policy: &str) {
+        let write_txn = self.db.begin_write().unwrap();
+        {
+            let mut table = write_txn.open_table(POLICIES).unwrap();
+            table.insert(resource_arn, policy).unwrap();
+        }
+        write_txn.commit().unwrap();
+    }
+
+    pub async fn get_policy(&self, resource_arn: &str) -> Option<String> {
+        let read_txn = self.db.begin_read().unwrap();
+        let table = read_txn.open_table(POLICIES).unwrap();
+        table.get(resource_arn).unwrap().map(|guard| guard.value().to_string())
+    }
+
+    pub async fn delete_policy(&self, resource_arn: &str) {
+        let write_txn = self.db.begin_write().unwrap();
+        {
+            let mut table = write_txn.open_table(POLICIES).unwrap();
+            table.remove(resource_arn).unwrap();
+        }
+        write_txn.commit().unwrap();
+    }
+
+    /// Resolve a stream name from a stream ARN
+    pub fn stream_name_from_arn(&self, arn: &str) -> Option<String> {
+        // Format: arn:aws:kinesis:{region}:{account}:stream/{name}
+        arn.split("/").nth(1).map(|s| s.to_string())
     }
 }

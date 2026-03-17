@@ -21,6 +21,40 @@ impl std::fmt::Display for StreamStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ConsumerStatus {
+    Creating,
+    Deleting,
+    Active,
+}
+
+impl std::fmt::Display for ConsumerStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Creating => write!(f, "CREATING"),
+            Self::Deleting => write!(f, "DELETING"),
+            Self::Active => write!(f, "ACTIVE"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct Consumer {
+    pub consumer_name: String,
+    #[serde(rename = "ConsumerARN")]
+    pub consumer_arn: String,
+    pub consumer_status: ConsumerStatus,
+    pub consumer_creation_timestamp: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct StreamModeDetails {
+    pub stream_mode: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct Stream {
@@ -34,12 +68,15 @@ pub struct Stream {
     pub stream_name: String,
     pub stream_status: StreamStatus,
     pub stream_creation_timestamp: f64,
+    pub stream_mode_details: StreamModeDetails,
 
     // Hidden fields (not returned in API responses)
     #[serde(skip)]
     pub seq_ix: Vec<Option<u64>>,
     #[serde(skip)]
     pub tags: BTreeMap<String, String>,
+    #[serde(skip)]
+    pub key_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
