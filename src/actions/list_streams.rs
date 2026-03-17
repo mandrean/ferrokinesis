@@ -3,10 +3,7 @@ use crate::error::KinesisErrorResponse;
 use crate::store::Store;
 use serde_json::{Value, json};
 
-pub async fn execute(
-    store: &Store,
-    data: Value,
-) -> Result<Option<Value>, KinesisErrorResponse> {
+pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let limit = data[constants::LIMIT].as_u64().unwrap_or(10) as usize;
     let start_name = data["ExclusiveStartStreamName"].as_str();
 
@@ -22,11 +19,7 @@ pub async fn execute(
     };
 
     let has_more = names.len() > limit;
-    let stream_names: Vec<&str> = names
-        .iter()
-        .take(limit)
-        .map(|s| s.as_str())
-        .collect();
+    let stream_names: Vec<&str> = names.iter().take(limit).map(|s| s.as_str()).collect();
 
     Ok(Some(json!({
         "StreamNames": stream_names,

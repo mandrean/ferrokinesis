@@ -7,10 +7,7 @@ use crate::util::current_time_ms;
 use num_bigint::BigUint;
 use serde_json::{Value, json};
 
-pub async fn execute(
-    store: &Store,
-    data: Value,
-) -> Result<Option<Value>, KinesisErrorResponse> {
+pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
     let shard_id_input = data[constants::SHARD_ID].as_str().unwrap_or("");
     let iterator_type = data[constants::SHARD_ITERATOR_TYPE].as_str().unwrap_or("");
@@ -50,9 +47,8 @@ pub async fn execute(
     let shard_seq = &stream.shards[shard_ix as usize]
         .sequence_number_range
         .starting_sequence_number;
-    let shard_seq_obj = sequence::parse_sequence(shard_seq).map_err(|_| {
-        KinesisErrorResponse::server_error(None, None)
-    })?;
+    let shard_seq_obj = sequence::parse_sequence(shard_seq)
+        .map_err(|_| KinesisErrorResponse::server_error(None, None))?;
 
     let now = current_time_ms();
 
@@ -134,7 +130,9 @@ pub async fn execute(
         if timestamp.is_none() {
             return Err(KinesisErrorResponse::client_error(
                 constants::INVALID_ARGUMENT,
-                Some("Must specify timestampInMillis parameter for iterator of type AT_TIMESTAMP. Current request has no timestamp parameter."),
+                Some(
+                    "Must specify timestampInMillis parameter for iterator of type AT_TIMESTAMP. Current request has no timestamp parameter.",
+                ),
             ));
         }
         let ts = timestamp.unwrap();

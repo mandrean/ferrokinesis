@@ -8,10 +8,7 @@ use num_bigint::BigUint;
 use num_traits::{Num, One, Zero};
 use serde_json::{Value, json};
 
-pub async fn execute(
-    store: &Store,
-    data: Value,
-) -> Result<Option<Value>, KinesisErrorResponse> {
+pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
     let target_shard_count = data[constants::TARGET_SHARD_COUNT].as_i64().unwrap_or(0) as u32;
 
@@ -72,7 +69,9 @@ pub async fn execute(
 
                 for &ix in &open_indices {
                     let create_time = sequence::parse_sequence(
-                        &stream.shards[ix].sequence_number_range.starting_sequence_number,
+                        &stream.shards[ix]
+                            .sequence_number_range
+                            .starting_sequence_number,
                     )
                     .map(|s| s.shard_create_time)
                     .unwrap_or(0);

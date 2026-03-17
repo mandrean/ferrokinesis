@@ -42,9 +42,7 @@ async fn list_streams_with_limit() {
     server.create_stream("list-b", 1).await;
     server.create_stream("list-c", 1).await;
 
-    let res = server
-        .request("ListStreams", &json!({"Limit": 2}))
-        .await;
+    let res = server.request("ListStreams", &json!({"Limit": 2})).await;
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["HasMoreStreams"], true);
@@ -85,9 +83,7 @@ async fn list_streams_pagination() {
     server.create_stream("page-c", 1).await;
 
     // First page
-    let res = server
-        .request("ListStreams", &json!({"Limit": 1}))
-        .await;
+    let res = server.request("ListStreams", &json!({"Limit": 1})).await;
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["HasMoreStreams"], true);
     let first = body["StreamNames"][0].as_str().unwrap().to_string();

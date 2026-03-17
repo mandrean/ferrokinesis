@@ -54,10 +54,7 @@ fn serialize_stream(stream: &Stream) -> Vec<u8> {
         serde_json::to_value(&stream.tags).unwrap(),
     );
     if let Some(ref key_id) = stream.key_id {
-        obj.insert(
-            "_key_id".to_string(),
-            serde_json::to_value(key_id).unwrap(),
-        );
+        obj.insert("_key_id".to_string(), serde_json::to_value(key_id).unwrap());
     }
     obj.insert(
         "_warm_throughput_mibps".to_string(),
@@ -212,11 +209,7 @@ impl Store {
 
     /// Update a stream in a read-modify-write transaction.
     /// Returns the result of the closure.
-    pub async fn update_stream<F, R>(
-        &self,
-        name: &str,
-        f: F,
-    ) -> Result<R, KinesisErrorResponse>
+    pub async fn update_stream<F, R>(&self, name: &str, f: F) -> Result<R, KinesisErrorResponse>
     where
         F: FnOnce(&mut Stream) -> Result<R, KinesisErrorResponse>,
     {
@@ -292,10 +285,7 @@ impl Store {
         result
     }
 
-    pub async fn get_record_store(
-        &self,
-        stream_name: &str,
-    ) -> BTreeMap<String, StoredRecord> {
+    pub async fn get_record_store(&self, stream_name: &str) -> BTreeMap<String, StoredRecord> {
         let read_txn = self.db.begin_read().unwrap();
         let table = read_txn.open_table(RECORDS).unwrap();
         let prefix = format!("{stream_name}\0");
@@ -323,23 +313,23 @@ impl Store {
         let write_txn = self.db.begin_write().unwrap();
         {
             let mut table = write_txn.open_table(RECORDS).unwrap();
-            table.insert(composite_key.as_str(), bytes.as_slice()).unwrap();
+            table
+                .insert(composite_key.as_str(), bytes.as_slice())
+                .unwrap();
         }
         write_txn.commit().unwrap();
     }
 
-    pub async fn put_records_batch(
-        &self,
-        stream_name: &str,
-        batch: Vec<(String, StoredRecord)>,
-    ) {
+    pub async fn put_records_batch(&self, stream_name: &str, batch: Vec<(String, StoredRecord)>) {
         let write_txn = self.db.begin_write().unwrap();
         {
             let mut table = write_txn.open_table(RECORDS).unwrap();
             for (key, record) in &batch {
                 let composite_key = record_key(stream_name, key);
                 let bytes = serde_json::to_vec(record).unwrap();
-                table.insert(composite_key.as_str(), bytes.as_slice()).unwrap();
+                table
+                    .insert(composite_key.as_str(), bytes.as_slice())
+                    .unwrap();
             }
         }
         write_txn.commit().unwrap();
@@ -417,9 +407,10 @@ impl Store {
     pub async fn get_consumer(&self, consumer_arn: &str) -> Option<Consumer> {
         let read_txn = self.db.begin_read().unwrap();
         let table = read_txn.open_table(CONSUMERS).unwrap();
-        table.get(consumer_arn).unwrap().map(|guard| {
-            serde_json::from_slice(guard.value()).unwrap()
-        })
+        table
+            .get(consumer_arn)
+            .unwrap()
+            .map(|guard| serde_json::from_slice(guard.value()).unwrap())
     }
 
     pub async fn delete_consumer(&self, consumer_arn: &str) {
@@ -449,7 +440,9 @@ impl Store {
     /// Find a consumer by stream ARN + consumer name
     pub async fn find_consumer(&self, stream_arn: &str, consumer_name: &str) -> Option<Consumer> {
         let consumers = self.list_consumers_for_stream(stream_arn).await;
-        consumers.into_iter().find(|c| c.consumer_name == consumer_name)
+        consumers
+            .into_iter()
+            .find(|c| c.consumer_name == consumer_name)
     }
 
     // --- Resource policy operations ---
@@ -466,7 +459,10 @@ impl Store {
     pub async fn get_policy(&self, resource_arn: &str) -> Option<String> {
         let read_txn = self.db.begin_read().unwrap();
         let table = read_txn.open_table(POLICIES).unwrap();
-        table.get(resource_arn).unwrap().map(|guard| guard.value().to_string())
+        table
+            .get(resource_arn)
+            .unwrap()
+            .map(|guard| guard.value().to_string())
     }
 
     pub async fn delete_policy(&self, resource_arn: &str) {
@@ -523,9 +519,7 @@ impl Store {
         let write_txn = self.db.begin_write().unwrap();
         {
             let mut table = write_txn.open_table(ACCOUNT_SETTINGS).unwrap();
-            table
-                .insert("account_settings", bytes.as_slice())
-                .unwrap();
+            table.insert("account_settings", bytes.as_slice()).unwrap();
         }
         write_txn.commit().unwrap();
     }

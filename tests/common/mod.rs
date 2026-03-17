@@ -1,6 +1,6 @@
 use ferrokinesis::store::StoreOptions;
-use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::Client;
+use reqwest::header::{HeaderMap, HeaderValue};
 use serde_json::{Value, json};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;

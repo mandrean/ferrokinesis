@@ -24,11 +24,7 @@ async fn get_shard_iterator_trim_horizon() {
     let iter = body["ShardIterator"].as_str().unwrap();
     assert!(!iter.is_empty());
     // Should be valid base64
-    assert!(base64::Engine::decode(
-        &base64::engine::general_purpose::STANDARD,
-        iter
-    )
-    .is_ok());
+    assert!(base64::Engine::decode(&base64::engine::general_purpose::STANDARD, iter).is_ok());
 }
 
 #[tokio::test]
@@ -89,10 +85,7 @@ async fn get_shard_iterator_shard_not_found() {
     assert_eq!(res.status(), 400);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["__type"], "ResourceNotFoundException");
-    assert!(body["message"]
-        .as_str()
-        .unwrap()
-        .contains("does not exist"));
+    assert!(body["message"].as_str().unwrap().contains("does not exist"));
 }
 
 #[tokio::test]
@@ -181,10 +174,12 @@ async fn get_shard_iterator_sequence_from_wrong_shard() {
     assert_eq!(res.status(), 400);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["__type"], "InvalidArgumentException");
-    assert!(body["message"]
-        .as_str()
-        .unwrap()
-        .contains("Invalid StartingSequenceNumber"));
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("Invalid StartingSequenceNumber")
+    );
 }
 
 #[tokio::test]
@@ -210,10 +205,7 @@ async fn get_shard_iterator_trim_horizon_with_seq_number_is_error() {
     assert_eq!(res.status(), 400);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["__type"], "InvalidArgumentException");
-    assert!(body["message"]
-        .as_str()
-        .unwrap()
-        .contains("TRIM_HORIZON"));
+    assert!(body["message"].as_str().unwrap().contains("TRIM_HORIZON"));
 }
 
 #[tokio::test]
@@ -239,10 +231,7 @@ async fn get_shard_iterator_latest_with_seq_number_is_error() {
     assert_eq!(res.status(), 400);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["__type"], "InvalidArgumentException");
-    assert!(body["message"]
-        .as_str()
-        .unwrap()
-        .contains("LATEST"));
+    assert!(body["message"].as_str().unwrap().contains("LATEST"));
 }
 
 #[tokio::test]
@@ -309,8 +298,10 @@ async fn get_shard_iterator_at_timestamp_future_error() {
     assert_eq!(res.status(), 400);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["__type"], "InvalidArgumentException");
-    assert!(body["message"]
-        .as_str()
-        .unwrap()
-        .contains("timestampInMillis"));
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("timestampInMillis")
+    );
 }

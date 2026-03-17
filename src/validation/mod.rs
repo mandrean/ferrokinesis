@@ -22,9 +22,15 @@ pub enum FieldType {
     String,
     Blob,
     Timestamp,
-    List { children: Box<FieldDef> },
-    Map { children: Box<FieldDef> },
-    Structure { children: Vec<(std::string::String, FieldDef)> },
+    List {
+        children: Box<FieldDef>,
+    },
+    Map {
+        children: Box<FieldDef>,
+    },
+    Structure {
+        children: Vec<(std::string::String, FieldDef)>,
+    },
 }
 
 /// Field definition with type and validation constraints
@@ -595,13 +601,7 @@ pub fn check_validations(
                         } else {
                             format!("{parent}.{}.{key}", to_lower_first(attr))
                         };
-                        check_non_required(
-                            "member",
-                            &obj[&key],
-                            children,
-                            &child_parent,
-                            errors,
-                        );
+                        check_non_required("member", &obj[&key], children, &child_parent, errors);
                     }
                 }
             }
@@ -613,10 +613,7 @@ pub fn check_validations(
                         format!("{parent}.{}", to_lower_first(attr))
                     };
                     for (child_name, child_def) in children {
-                        let child_val = data
-                            .get(child_name)
-                            .cloned()
-                            .unwrap_or(Value::Null);
+                        let child_val = data.get(child_name).cloned().unwrap_or(Value::Null);
                         check_non_required(
                             child_name,
                             &child_val,
@@ -632,10 +629,7 @@ pub fn check_validations(
     }
 
     for &(field_name, field_def) in fields {
-        let val = obj
-            .get(field_name)
-            .cloned()
-            .unwrap_or(Value::Null);
+        let val = obj.get(field_name).cloned().unwrap_or(Value::Null);
         check_non_required(field_name, &val, field_def, "", &mut errors);
     }
 
@@ -757,14 +751,15 @@ fn value_str(data: &Value, field_type: &FieldType, member_str: &Option<String>) 
                 let items: Vec<String> = obj
                     .iter()
                     .map(|(k, v)| {
-                        let val = member_str
-                            .as_deref()
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| {
-                                v.as_str()
-                                    .map(|s| s.to_string())
-                                    .unwrap_or_else(|| format!("{v}"))
-                            });
+                        let val =
+                            member_str
+                                .as_deref()
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| {
+                                    v.as_str()
+                                        .map(|s| s.to_string())
+                                        .unwrap_or_else(|| format!("{v}"))
+                                });
                         format!("{k}={val}")
                     })
                     .collect();

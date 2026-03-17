@@ -3,12 +3,11 @@ use crate::error::KinesisErrorResponse;
 use crate::store::Store;
 use serde_json::Value;
 
-pub async fn execute(
-    store: &Store,
-    data: Value,
-) -> Result<Option<Value>, KinesisErrorResponse> {
+pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
-    let retention_hours = data[constants::RETENTION_PERIOD_HOURS].as_i64().unwrap_or(0) as u32;
+    let retention_hours = data[constants::RETENTION_PERIOD_HOURS]
+        .as_i64()
+        .unwrap_or(0) as u32;
 
     if retention_hours < 24 {
         return Err(KinesisErrorResponse::client_error(

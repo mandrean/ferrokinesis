@@ -16,10 +16,7 @@ const MAX_SUBSCRIPTION_MS: u64 = 300_000;
 const POLL_INTERVAL_MS: u64 = 200;
 
 /// Execute SubscribeToShard. Returns a streaming Body instead of JSON.
-pub async fn execute_streaming(
-    store: &Store,
-    data: Value,
-) -> Result<Body, KinesisErrorResponse> {
+pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, KinesisErrorResponse> {
     let consumer_arn = data[constants::CONSUMER_ARN].as_str().unwrap_or("");
     let shard_id_input = data[constants::SHARD_ID].as_str().unwrap_or("");
     let starting_position = &data["StartingPosition"];
@@ -106,9 +103,8 @@ pub async fn execute_streaming(
     let shard_seq = &stream.shards[shard_ix as usize]
         .sequence_number_range
         .starting_sequence_number;
-    let shard_seq_obj = sequence::parse_sequence(shard_seq).map_err(|_| {
-        KinesisErrorResponse::server_error(None, None)
-    })?;
+    let shard_seq_obj = sequence::parse_sequence(shard_seq)
+        .map_err(|_| KinesisErrorResponse::server_error(None, None))?;
 
     let now = current_time_ms();
 
@@ -130,13 +126,11 @@ pub async fn execute_streaming(
                 version: 2,
             })
         }
-        "AT_SEQUENCE_NUMBER" => {
-            starting_position
-                .get("SequenceNumber")
-                .and_then(|v| v.as_str())
-                .unwrap_or(shard_seq)
-                .to_string()
-        }
+        "AT_SEQUENCE_NUMBER" => starting_position
+            .get("SequenceNumber")
+            .and_then(|v| v.as_str())
+            .unwrap_or(shard_seq)
+            .to_string(),
         "AFTER_SEQUENCE_NUMBER" => {
             let seq_str = starting_position
                 .get("SequenceNumber")
@@ -172,7 +166,9 @@ pub async fn execute_streaming(
         _ => {
             return Err(KinesisErrorResponse::client_error(
                 constants::INVALID_ARGUMENT,
-                Some("StartingPosition.Type is required and must be one of: TRIM_HORIZON, LATEST, AT_SEQUENCE_NUMBER, AFTER_SEQUENCE_NUMBER, AT_TIMESTAMP."),
+                Some(
+                    "StartingPosition.Type is required and must be one of: TRIM_HORIZON, LATEST, AT_SEQUENCE_NUMBER, AFTER_SEQUENCE_NUMBER, AT_TIMESTAMP.",
+                ),
             ));
         }
     };

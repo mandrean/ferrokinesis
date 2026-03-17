@@ -7,18 +7,12 @@ use serde_json::{Value, json};
 async fn delete_stream_not_found() {
     let server = TestServer::new().await;
     let res = server
-        .request(
-            "DeleteStream",
-            &json!({"StreamName": "nonexistent-stream"}),
-        )
+        .request("DeleteStream", &json!({"StreamName": "nonexistent-stream"}))
         .await;
     assert_eq!(res.status(), 400);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["__type"], "ResourceNotFoundException");
-    assert!(body["message"]
-        .as_str()
-        .unwrap()
-        .contains("not found"));
+    assert!(body["message"].as_str().unwrap().contains("not found"));
 }
 
 #[tokio::test]

@@ -128,8 +128,14 @@ pub fn parse_sequence(seq: &str) -> Result<SeqObj, String> {
 pub fn stringify_sequence(obj: &SeqObj) -> String {
     match obj.version {
         0 | 2 if obj.version == 0 => {
-            let shard_create_hex =
-                format!("{:09x}", obj.shard_create_time / 1000).chars().rev().take(9).collect::<String>().chars().rev().collect::<String>();
+            let shard_create_hex = format!("{:09x}", obj.shard_create_time / 1000)
+                .chars()
+                .rev()
+                .take(9)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect::<String>();
             let byte1 = obj.byte1.as_deref().unwrap_or("00");
             let seq_rand = obj.seq_rand.as_deref().unwrap_or("0000000000000000");
             let shard_ix_hex = format!("{:08x}", obj.shard_ix as u32);
@@ -141,10 +147,7 @@ pub fn stringify_sequence(obj: &SeqObj) -> String {
                 .to_string()
         }
         1 => {
-            let shard_create_hex = format!(
-                "{:09x}",
-                obj.shard_create_time / 1000
-            );
+            let shard_create_hex = format!("{:09x}", obj.shard_create_time / 1000);
             let shard_create_hex = &shard_create_hex[shard_create_hex.len().saturating_sub(9)..];
             let shard_ix_last = format!("{:x}", obj.shard_ix as u32);
             let shard_ix_last = &shard_ix_last[shard_ix_last.len() - 1..];
@@ -155,11 +158,7 @@ pub fn stringify_sequence(obj: &SeqObj) -> String {
             );
             let seq_time_hex = &seq_time_hex[seq_time_hex.len().saturating_sub(9)..];
             let seq_rand = obj.seq_rand.as_deref().unwrap_or("00000000000000");
-            let seq_ix = obj
-                .seq_ix
-                .as_ref()
-                .and_then(|v| v.to_u64())
-                .unwrap_or(0);
+            let seq_ix = obj.seq_ix.as_ref().and_then(|v| v.to_u64()).unwrap_or(0);
             let seq_ix_hex = format!("{seq_ix:02x}");
             let seq_ix_hex = &seq_ix_hex[seq_ix_hex.len().saturating_sub(2)..];
 
@@ -173,10 +172,7 @@ pub fn stringify_sequence(obj: &SeqObj) -> String {
         }
         _ => {
             // Version 2 (default)
-            let shard_create_hex = format!(
-                "{:09x}",
-                obj.shard_create_time / 1000
-            );
+            let shard_create_hex = format!("{:09x}", obj.shard_create_time / 1000);
             let shard_create_hex = &shard_create_hex[shard_create_hex.len().saturating_sub(9)..];
             let shard_ix_last = format!("{:x}", obj.shard_ix as u32);
             let shard_ix_last = &shard_ix_last[shard_ix_last.len() - 1..];

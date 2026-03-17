@@ -88,10 +88,7 @@ async fn put_records_sequential_sequence_numbers() {
 async fn put_records_validation_missing_records() {
     let server = TestServer::new().await;
     let res = server
-        .request(
-            "PutRecords",
-            &json!({"StreamName": "test"}),
-        )
+        .request("PutRecords", &json!({"StreamName": "test"}))
         .await;
     assert_eq!(res.status(), 400);
     let body: Value = res.json().await.unwrap();

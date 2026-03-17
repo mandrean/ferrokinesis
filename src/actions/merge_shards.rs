@@ -8,10 +8,7 @@ use num_bigint::BigUint;
 use num_traits::{Num, One, Zero};
 use serde_json::Value;
 
-pub async fn execute(
-    store: &Store,
-    data: Value,
-) -> Result<Option<Value>, KinesisErrorResponse> {
+pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
     let shard_to_merge = data["ShardToMerge"].as_str().unwrap_or("");
     let adjacent_shard = data["AdjacentShardToMerge"].as_str().unwrap_or("");

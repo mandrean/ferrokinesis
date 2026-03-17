@@ -104,10 +104,12 @@ async fn put_record_explicit_hash_key_too_large() {
     assert_eq!(res.status(), 400);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["__type"], "InvalidArgumentException");
-    assert!(body["message"]
-        .as_str()
-        .unwrap()
-        .contains("ExplicitHashKey"));
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("ExplicitHashKey")
+    );
 }
 
 #[tokio::test]

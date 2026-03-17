@@ -45,9 +45,11 @@ async fn split_shard_success() {
     let shards = desc["StreamDescription"]["Shards"].as_array().unwrap();
 
     // Original shard should now be closed (has ending sequence number)
-    assert!(shards[0]["SequenceNumberRange"]["EndingSequenceNumber"]
-        .as_str()
-        .is_some());
+    assert!(
+        shards[0]["SequenceNumberRange"]["EndingSequenceNumber"]
+            .as_str()
+            .is_some()
+    );
 
     // Two new shards should exist
     assert_eq!(shards.len(), 3);
@@ -154,12 +156,16 @@ async fn merge_shards_success() {
     let shards = desc["StreamDescription"]["Shards"].as_array().unwrap();
 
     // Original two shards should be closed
-    assert!(shards[0]["SequenceNumberRange"]["EndingSequenceNumber"]
-        .as_str()
-        .is_some());
-    assert!(shards[1]["SequenceNumberRange"]["EndingSequenceNumber"]
-        .as_str()
-        .is_some());
+    assert!(
+        shards[0]["SequenceNumberRange"]["EndingSequenceNumber"]
+            .as_str()
+            .is_some()
+    );
+    assert!(
+        shards[1]["SequenceNumberRange"]["EndingSequenceNumber"]
+            .as_str()
+            .is_some()
+    );
 
     // One new merged shard
     assert_eq!(shards.len(), 3);
@@ -194,10 +200,12 @@ async fn merge_shards_not_adjacent() {
     assert_eq!(res.status(), 400);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["__type"], "InvalidArgumentException");
-    assert!(body["message"]
-        .as_str()
-        .unwrap()
-        .contains("not an adjacent pair"));
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("not an adjacent pair")
+    );
 }
 
 #[tokio::test]

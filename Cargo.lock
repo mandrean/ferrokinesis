@@ -773,6 +773,7 @@ dependencies = [
  "aws-smithy-types",
  "axum",
  "base64",
+ "bytes",
  "cbc",
  "ciborium",
  "clap",

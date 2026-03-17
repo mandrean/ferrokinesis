@@ -1,9 +1,9 @@
 mod common;
 
 use aws_credential_types::Credentials;
+use aws_sdk_kinesis::Client;
 use aws_sdk_kinesis::primitives::Blob;
 use aws_sdk_kinesis::types::{PutRecordsRequestEntry, ShardIteratorType, StreamStatus};
-use aws_sdk_kinesis::Client;
 use common::TestServer;
 
 async fn sdk_client(server: &TestServer) -> Client {

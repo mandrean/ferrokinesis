@@ -3,10 +3,7 @@ use crate::error::KinesisErrorResponse;
 use crate::store::Store;
 use serde_json::{Value, json};
 
-pub async fn execute(
-    store: &Store,
-    data: Value,
-) -> Result<Option<Value>, KinesisErrorResponse> {
+pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
     let stream = store.get_stream(stream_name).await?;
 
@@ -16,7 +13,10 @@ pub async fn execute(
         .filter(|s| s.sequence_number_range.ending_sequence_number.is_none())
         .count();
 
-    let consumer_count = store.list_consumers_for_stream(&stream.stream_arn).await.len();
+    let consumer_count = store
+        .list_consumers_for_stream(&stream.stream_arn)
+        .await
+        .len();
 
     Ok(Some(json!({
         "StreamDescriptionSummary": {

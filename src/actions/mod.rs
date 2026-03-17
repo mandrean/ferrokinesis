@@ -28,8 +28,8 @@ pub mod register_stream_consumer;
 pub mod remove_tags_from_stream;
 pub mod split_shard;
 pub mod start_stream_encryption;
-pub mod subscribe_to_shard;
 pub mod stop_stream_encryption;
+pub mod subscribe_to_shard;
 pub mod tag_resource;
 pub mod untag_resource;
 pub mod update_account_settings;
@@ -90,9 +90,7 @@ pub async fn dispatch(
         "UpdateMaxRecordSize" => update_max_record_size::execute(store, data).await,
         "UpdateShardCount" => update_shard_count::execute(store, data).await,
         "UpdateStreamMode" => update_stream_mode::execute(store, data).await,
-        "UpdateStreamWarmThroughput" => {
-            update_stream_warm_throughput::execute(store, data).await
-        }
+        "UpdateStreamWarmThroughput" => update_stream_warm_throughput::execute(store, data).await,
         _ => Err(KinesisErrorResponse::client_error(
             constants::UNKNOWN_OPERATION,
             None,

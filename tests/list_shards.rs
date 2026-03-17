@@ -37,10 +37,7 @@ async fn list_shards_with_max_results() {
     server.create_stream(name, 5).await;
 
     let res = server
-        .request(
-            "ListShards",
-            &json!({"StreamName": name, "MaxResults": 2}),
-        )
+        .request("ListShards", &json!({"StreamName": name, "MaxResults": 2}))
         .await;
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
@@ -80,7 +77,6 @@ async fn list_shards_validation_missing_stream_name() {
     let body: Value = res.json().await.unwrap();
     // Should fail with either ValidationException or require StreamName/NextToken
     assert!(
-        body["__type"] == "ValidationException"
-            || body["__type"] == "InvalidArgumentException"
+        body["__type"] == "ValidationException" || body["__type"] == "InvalidArgumentException"
     );
 }

@@ -12,7 +12,10 @@ pub fn create_stream() -> Vec<(&'static str, FieldDef)> {
     vec![
         (
             "ShardCount",
-            FieldDef::new(FieldType::Integer).not_null().gte(1.0).lte(100000.0),
+            FieldDef::new(FieldType::Integer)
+                .not_null()
+                .gte(1.0)
+                .lte(100000.0),
         ),
         ("StreamName", stream_name_field()),
     ]
@@ -72,11 +75,11 @@ pub fn list_shards() -> Vec<(&'static str, FieldDef)> {
             "MaxResults",
             FieldDef::new(FieldType::Integer).gte(1.0).lte(10000.0),
         ),
+        ("NextToken", FieldDef::new(FieldType::String).len_gte(1)),
         (
-            "NextToken",
-            FieldDef::new(FieldType::String).len_gte(1),
+            "StreamCreationTimestamp",
+            FieldDef::new(FieldType::Timestamp),
         ),
-        ("StreamCreationTimestamp", FieldDef::new(FieldType::Timestamp)),
         (
             "StreamName",
             FieldDef::new(FieldType::String)
@@ -117,27 +120,25 @@ pub fn put_records() -> Vec<(&'static str, FieldDef)> {
         (
             "Records",
             FieldDef::new(FieldType::List {
-                children: Box::new(
-                    FieldDef::new(FieldType::Structure {
-                        children: vec![
-                            (
-                                "PartitionKey".to_string(),
-                                FieldDef::new(FieldType::String)
-                                    .not_null()
-                                    .len_gte(1)
-                                    .len_lte(256),
-                            ),
-                            (
-                                "ExplicitHashKey".to_string(),
-                                FieldDef::new(FieldType::String).regex("0|([1-9]\\d{0,38})"),
-                            ),
-                            (
-                                "Data".to_string(),
-                                FieldDef::new(FieldType::Blob).not_null().len_lte(1048576),
-                            ),
-                        ],
-                    })
-                ),
+                children: Box::new(FieldDef::new(FieldType::Structure {
+                    children: vec![
+                        (
+                            "PartitionKey".to_string(),
+                            FieldDef::new(FieldType::String)
+                                .not_null()
+                                .len_gte(1)
+                                .len_lte(256),
+                        ),
+                        (
+                            "ExplicitHashKey".to_string(),
+                            FieldDef::new(FieldType::String).regex("0|([1-9]\\d{0,38})"),
+                        ),
+                        (
+                            "Data".to_string(),
+                            FieldDef::new(FieldType::Blob).not_null().len_lte(1048576),
+                        ),
+                    ],
+                })),
             })
             .not_null()
             .len_gte(1)
@@ -176,13 +177,15 @@ pub fn get_shard_iterator() -> Vec<(&'static str, FieldDef)> {
         ),
         (
             "ShardIteratorType",
-            FieldDef::new(FieldType::String).not_null().enum_values(vec![
-                "AFTER_SEQUENCE_NUMBER",
-                "LATEST",
-                "AT_TIMESTAMP",
-                "AT_SEQUENCE_NUMBER",
-                "TRIM_HORIZON",
-            ]),
+            FieldDef::new(FieldType::String)
+                .not_null()
+                .enum_values(vec![
+                    "AFTER_SEQUENCE_NUMBER",
+                    "LATEST",
+                    "AT_TIMESTAMP",
+                    "AT_SEQUENCE_NUMBER",
+                    "TRIM_HORIZON",
+                ]),
         ),
         (
             "StartingSequenceNumber",
@@ -286,7 +289,10 @@ pub fn increase_stream_retention_period() -> Vec<(&'static str, FieldDef)> {
     vec![
         (
             "RetentionPeriodHours",
-            FieldDef::new(FieldType::Integer).not_null().gte(1.0).lte(168.0),
+            FieldDef::new(FieldType::Integer)
+                .not_null()
+                .gte(1.0)
+                .lte(168.0),
         ),
         ("StreamName", stream_name_field()),
     ]
@@ -296,7 +302,10 @@ pub fn decrease_stream_retention_period() -> Vec<(&'static str, FieldDef)> {
     vec![
         (
             "RetentionPeriodHours",
-            FieldDef::new(FieldType::Integer).not_null().gte(1.0).lte(168.0),
+            FieldDef::new(FieldType::Integer)
+                .not_null()
+                .gte(1.0)
+                .lte(168.0),
         ),
         ("StreamName", stream_name_field()),
     ]
@@ -337,11 +346,16 @@ pub fn start_stream_encryption() -> Vec<(&'static str, FieldDef)> {
     vec![
         (
             "EncryptionType",
-            FieldDef::new(FieldType::String).not_null().enum_values(vec!["KMS"]),
+            FieldDef::new(FieldType::String)
+                .not_null()
+                .enum_values(vec!["KMS"]),
         ),
         (
             "KeyId",
-            FieldDef::new(FieldType::String).not_null().len_gte(1).len_lte(2048),
+            FieldDef::new(FieldType::String)
+                .not_null()
+                .len_gte(1)
+                .len_lte(2048),
         ),
         ("StreamName", stream_name_field()),
         ("StreamARN", stream_arn_field()),
@@ -352,11 +366,16 @@ pub fn stop_stream_encryption() -> Vec<(&'static str, FieldDef)> {
     vec![
         (
             "EncryptionType",
-            FieldDef::new(FieldType::String).not_null().enum_values(vec!["KMS"]),
+            FieldDef::new(FieldType::String)
+                .not_null()
+                .enum_values(vec!["KMS"]),
         ),
         (
             "KeyId",
-            FieldDef::new(FieldType::String).not_null().len_gte(1).len_lte(2048),
+            FieldDef::new(FieldType::String)
+                .not_null()
+                .len_gte(1)
+                .len_lte(2048),
         ),
         ("StreamName", stream_name_field()),
         ("StreamARN", stream_arn_field()),
@@ -372,7 +391,10 @@ pub fn register_stream_consumer() -> Vec<(&'static str, FieldDef)> {
 
 pub fn deregister_stream_consumer() -> Vec<(&'static str, FieldDef)> {
     vec![
-        ("ConsumerARN", FieldDef::new(FieldType::String).len_gte(1).len_lte(2048)),
+        (
+            "ConsumerARN",
+            FieldDef::new(FieldType::String).len_gte(1).len_lte(2048),
+        ),
         ("ConsumerName", consumer_name_field()),
         ("StreamARN", stream_arn_field()),
     ]
@@ -384,19 +406,39 @@ pub fn describe_stream_consumer() -> Vec<(&'static str, FieldDef)> {
 
 pub fn list_stream_consumers() -> Vec<(&'static str, FieldDef)> {
     vec![
-        ("MaxResults", FieldDef::new(FieldType::Integer).gte(1.0).lte(10000.0)),
-        ("NextToken", FieldDef::new(FieldType::String).len_gte(1).len_lte(1048576)),
+        (
+            "MaxResults",
+            FieldDef::new(FieldType::Integer).gte(1.0).lte(10000.0),
+        ),
+        (
+            "NextToken",
+            FieldDef::new(FieldType::String).len_gte(1).len_lte(1048576),
+        ),
         ("StreamARN", stream_arn_field().not_null()),
-        ("StreamCreationTimestamp", FieldDef::new(FieldType::Timestamp)),
+        (
+            "StreamCreationTimestamp",
+            FieldDef::new(FieldType::Timestamp),
+        ),
     ]
 }
 
 pub fn update_shard_count() -> Vec<(&'static str, FieldDef)> {
     vec![
-        ("ScalingType", FieldDef::new(FieldType::String).not_null().enum_values(vec!["UNIFORM_SCALING"])),
+        (
+            "ScalingType",
+            FieldDef::new(FieldType::String)
+                .not_null()
+                .enum_values(vec!["UNIFORM_SCALING"]),
+        ),
         ("StreamARN", stream_arn_field()),
         ("StreamName", stream_name_field()),
-        ("TargetShardCount", FieldDef::new(FieldType::Integer).not_null().gte(1.0).lte(100000.0)),
+        (
+            "TargetShardCount",
+            FieldDef::new(FieldType::Integer)
+                .not_null()
+                .gte(1.0)
+                .lte(100000.0),
+        ),
     ]
 }
 
@@ -426,15 +468,11 @@ pub fn put_resource_policy() -> Vec<(&'static str, FieldDef)> {
 }
 
 pub fn get_resource_policy() -> Vec<(&'static str, FieldDef)> {
-    vec![
-        ("ResourceARN", stream_arn_field().not_null()),
-    ]
+    vec![("ResourceARN", stream_arn_field().not_null())]
 }
 
 pub fn delete_resource_policy() -> Vec<(&'static str, FieldDef)> {
-    vec![
-        ("ResourceARN", stream_arn_field().not_null()),
-    ]
+    vec![("ResourceARN", stream_arn_field().not_null())]
 }
 
 pub fn tag_resource() -> Vec<(&'static str, FieldDef)> {
@@ -471,16 +509,17 @@ pub fn untag_resource() -> Vec<(&'static str, FieldDef)> {
 }
 
 pub fn list_tags_for_resource() -> Vec<(&'static str, FieldDef)> {
-    vec![
-        ("ResourceARN", stream_arn_field().not_null()),
-    ]
+    vec![("ResourceARN", stream_arn_field().not_null())]
 }
 
 pub fn subscribe_to_shard() -> Vec<(&'static str, FieldDef)> {
     vec![
         (
             "ConsumerARN",
-            FieldDef::new(FieldType::String).not_null().len_gte(1).len_lte(2048),
+            FieldDef::new(FieldType::String)
+                .not_null()
+                .len_gte(1)
+                .len_lte(2048),
         ),
         (
             "ShardId",
@@ -495,13 +534,15 @@ pub fn subscribe_to_shard() -> Vec<(&'static str, FieldDef)> {
             FieldDef::new(FieldType::Structure {
                 children: vec![(
                     "Type".to_string(),
-                    FieldDef::new(FieldType::String).not_null().enum_values(vec![
-                        "AFTER_SEQUENCE_NUMBER",
-                        "LATEST",
-                        "AT_TIMESTAMP",
-                        "AT_SEQUENCE_NUMBER",
-                        "TRIM_HORIZON",
-                    ]),
+                    FieldDef::new(FieldType::String)
+                        .not_null()
+                        .enum_values(vec![
+                            "AFTER_SEQUENCE_NUMBER",
+                            "LATEST",
+                            "AT_TIMESTAMP",
+                            "AT_SEQUENCE_NUMBER",
+                            "TRIM_HORIZON",
+                        ]),
                 )],
             })
             .not_null(),

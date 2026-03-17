@@ -4,10 +4,7 @@ use crate::store::Store;
 use crate::types::ConsumerStatus;
 use serde_json::Value;
 
-pub async fn execute(
-    store: &Store,
-    data: Value,
-) -> Result<Option<Value>, KinesisErrorResponse> {
+pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let consumer_arn = data[constants::CONSUMER_ARN].as_str();
     let stream_arn = data[constants::STREAM_ARN].as_str();
     let consumer_name = data[constants::CONSUMER_NAME].as_str();

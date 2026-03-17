@@ -7,18 +7,12 @@ use serde_json::{Value, json};
 async fn describe_stream_not_found() {
     let server = TestServer::new().await;
     let res = server
-        .request(
-            "DescribeStream",
-            &json!({"StreamName": "nonexistent"}),
-        )
+        .request("DescribeStream", &json!({"StreamName": "nonexistent"}))
         .await;
     assert_eq!(res.status(), 400);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["__type"], "ResourceNotFoundException");
-    assert!(body["message"]
-        .as_str()
-        .unwrap()
-        .contains("not found"));
+    assert!(body["message"].as_str().unwrap().contains("not found"));
 }
 
 #[tokio::test]
@@ -60,11 +54,13 @@ async fn describe_stream_full_response() {
 
     // Each shard has a sequence number range
     for shard in shards {
-        assert!(shard["SequenceNumberRange"]["StartingSequenceNumber"]
-            .as_str()
-            .unwrap()
-            .len()
-            > 0);
+        assert!(
+            shard["SequenceNumberRange"]["StartingSequenceNumber"]
+                .as_str()
+                .unwrap()
+                .len()
+                > 0
+        );
         assert!(shard["SequenceNumberRange"]["EndingSequenceNumber"].is_null());
     }
 }

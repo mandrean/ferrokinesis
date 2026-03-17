@@ -1,8 +1,8 @@
 mod common;
 
 use common::*;
-use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::Method;
+use reqwest::header::{HeaderMap, HeaderValue};
 use serde_json::{Value, json};
 
 // -- Basic connection tests --
@@ -59,9 +59,7 @@ async fn access_denied_if_body_and_no_content_type() {
     let mut headers = HeaderMap::new();
     headers.insert(
         "Authorization",
-        HeaderValue::from_static(
-            "AWS4-HMAC-SHA256 Credential=a, SignedHeaders=b, Signature=c",
-        ),
+        HeaderValue::from_static("AWS4-HMAC-SHA256 Credential=a, SignedHeaders=b, Signature=c"),
     );
     headers.insert("X-Amz-Date", HeaderValue::from_static("20150101T000000Z"));
     let res = server
@@ -77,9 +75,7 @@ async fn cbor_unknown_operation_if_random_target() {
     let server = TestServer::new().await;
     let mut headers = HeaderMap::new();
     headers.insert("X-Amz-Target", HeaderValue::from_static("Whatever"));
-    let res = server
-        .raw_request(Method::POST, "/", headers, vec![])
-        .await;
+    let res = server.raw_request(Method::POST, "/", headers, vec![]).await;
     let (status, body) = decode_body(res).await;
     assert_eq!(status, 400);
     assert_eq!(body["__type"], "UnknownOperationException");
@@ -93,9 +89,7 @@ async fn cbor_unknown_operation_if_incomplete_action() {
         "X-Amz-Target",
         HeaderValue::from_static("Kinesis_20131202.ListStream"),
     );
-    let res = server
-        .raw_request(Method::POST, "/", headers, vec![])
-        .await;
+    let res = server.raw_request(Method::POST, "/", headers, vec![]).await;
     let (status, body) = decode_body(res).await;
     assert_eq!(status, 400);
     assert_eq!(body["__type"], "UnknownOperationException");
@@ -109,9 +103,7 @@ async fn cbor_serialization_exception_if_no_content_type() {
         "X-Amz-Target",
         HeaderValue::from_static("Kinesis_20131202.ListStreams"),
     );
-    let res = server
-        .raw_request(Method::POST, "/", headers, vec![])
-        .await;
+    let res = server.raw_request(Method::POST, "/", headers, vec![]).await;
     let (status, body) = decode_body(res).await;
     assert_eq!(status, 400);
     assert_eq!(body["__type"], "SerializationException");
@@ -124,9 +116,7 @@ async fn json_unknown_operation_if_no_target() {
     let server = TestServer::new().await;
     let mut headers = HeaderMap::new();
     headers.insert("Content-Type", HeaderValue::from_static(AMZ_JSON));
-    let res = server
-        .raw_request(Method::POST, "/", headers, vec![])
-        .await;
+    let res = server.raw_request(Method::POST, "/", headers, vec![]).await;
     assert_eq!(res.status(), 400);
     let ct = res.headers().get("content-type").unwrap().to_str().unwrap();
     assert_eq!(ct, AMZ_JSON);
@@ -143,9 +133,7 @@ async fn json_serialization_exception_if_no_body() {
         "X-Amz-Target",
         HeaderValue::from_static("Kinesis_20131202.ListStreams"),
     );
-    let res = server
-        .raw_request(Method::POST, "/", headers, vec![])
-        .await;
+    let res = server.raw_request(Method::POST, "/", headers, vec![]).await;
     assert_eq!(res.status(), 400);
     let ct = res.headers().get("content-type").unwrap().to_str().unwrap();
     assert_eq!(ct, AMZ_JSON);
@@ -222,20 +210,17 @@ async fn json_invalid_signature_if_both_auth_header_and_query() {
     );
     headers.insert("Authorization", HeaderValue::from_static("X"));
     let res = server
-        .raw_request(
-            Method::POST,
-            "/?X-Amz-Algorithm",
-            headers,
-            b"{}".to_vec(),
-        )
+        .raw_request(Method::POST, "/?X-Amz-Algorithm", headers, b"{}".to_vec())
         .await;
     assert_eq!(res.status(), 400);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["__type"], "InvalidSignatureException");
-    assert!(body["message"]
-        .as_str()
-        .unwrap()
-        .contains("Found both 'X-Amz-Algorithm'"));
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("Found both 'X-Amz-Algorithm'")
+    );
 }
 
 #[tokio::test]
@@ -248,12 +233,7 @@ async fn json_incomplete_signature_if_empty_query_params() {
         HeaderValue::from_static("Kinesis_20131202.ListStreams"),
     );
     let res = server
-        .raw_request(
-            Method::POST,
-            "/?X-Amz-Algorithm",
-            headers,
-            b"{}".to_vec(),
-        )
+        .raw_request(Method::POST, "/?X-Amz-Algorithm", headers, b"{}".to_vec())
         .await;
     assert_eq!(res.status(), 400);
     let body: Value = res.json().await.unwrap();
@@ -381,9 +361,7 @@ async fn cors_expose_headers_on_post_with_origin() {
     let server = TestServer::new().await;
     let mut headers = HeaderMap::new();
     headers.insert("Origin", HeaderValue::from_static("whatever"));
-    let res = server
-        .raw_request(Method::POST, "/", headers, vec![])
-        .await;
+    let res = server.raw_request(Method::POST, "/", headers, vec![]).await;
     assert_eq!(
         res.headers()
             .get("access-control-allow-origin")
@@ -392,10 +370,7 @@ async fn cors_expose_headers_on_post_with_origin() {
             .unwrap(),
         "*"
     );
-    assert!(res
-        .headers()
-        .get("access-control-expose-headers")
-        .is_some());
+    assert!(res.headers().get("access-control-expose-headers").is_some());
 }
 
 // -- Response header tests --
@@ -403,9 +378,7 @@ async fn cors_expose_headers_on_post_with_origin() {
 #[tokio::test]
 async fn response_has_request_id_header() {
     let server = TestServer::new().await;
-    let res = server
-        .request("ListStreams", &json!({}))
-        .await;
+    let res = server.request("ListStreams", &json!({})).await;
     let request_id = res
         .headers()
         .get("x-amzn-requestid")
@@ -423,9 +396,7 @@ async fn response_has_request_id_header() {
 #[tokio::test]
 async fn response_has_amz_id_2_header() {
     let server = TestServer::new().await;
-    let res = server
-        .request("ListStreams", &json!({}))
-        .await;
+    let res = server.request("ListStreams", &json!({})).await;
     let id2 = res.headers().get("x-amz-id-2").unwrap().to_str().unwrap();
     let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, id2).unwrap();
     assert!(decoded.len() >= 64);
@@ -437,10 +408,7 @@ async fn response_has_amz_id_2_header() {
 async fn deprecated_json_serialization_exception_on_invalid_body() {
     let server = TestServer::new().await;
     let mut headers = HeaderMap::new();
-    headers.insert(
-        "Content-Type",
-        HeaderValue::from_static("application/json"),
-    );
+    headers.insert("Content-Type", HeaderValue::from_static("application/json"));
     headers.insert(
         "X-Amz-Target",
         HeaderValue::from_static("Kinesis_20131202.ListStreams"),
@@ -463,10 +431,7 @@ async fn deprecated_json_serialization_exception_on_invalid_body() {
 async fn deprecated_json_unknown_operation_on_valid_body() {
     let server = TestServer::new().await;
     let mut headers = HeaderMap::new();
-    headers.insert(
-        "Content-Type",
-        HeaderValue::from_static("application/json"),
-    );
+    headers.insert("Content-Type", HeaderValue::from_static("application/json"));
     headers.insert(
         "X-Amz-Target",
         HeaderValue::from_static("Kinesis_20131202.ListStreams"),

@@ -14,10 +14,7 @@ struct SeqPiece {
     shard_create_time: u64,
 }
 
-pub async fn execute(
-    store: &Store,
-    data: Value,
-) -> Result<Option<Value>, KinesisErrorResponse> {
+pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
     let records = data[constants::RECORDS].as_array().ok_or_else(|| {
         KinesisErrorResponse::client_error(constants::SERIALIZATION_EXCEPTION, None)
@@ -50,7 +47,10 @@ pub async fn execute(
 
     let (return_records, batch) = store
         .update_stream(stream_name, |stream| {
-            if !matches!(stream.stream_status, StreamStatus::Active | StreamStatus::Updating) {
+            if !matches!(
+                stream.stream_status,
+                StreamStatus::Active | StreamStatus::Updating
+            ) {
                 return Err(KinesisErrorResponse::client_error(
                     constants::RESOURCE_NOT_FOUND,
                     Some(&format!(
@@ -72,8 +72,16 @@ pub async fn execute(
 
                 for (j, shard) in stream.shards.iter().enumerate() {
                     if shard.sequence_number_range.ending_sequence_number.is_none() {
-                        let start: BigUint = shard.hash_key_range.starting_hash_key.parse().unwrap_or_else(|_| BigUint::zero());
-                        let end: BigUint = shard.hash_key_range.ending_hash_key.parse().unwrap_or_else(|_| BigUint::zero());
+                        let start: BigUint = shard
+                            .hash_key_range
+                            .starting_hash_key
+                            .parse()
+                            .unwrap_or_else(|_| BigUint::zero());
+                        let end: BigUint = shard
+                            .hash_key_range
+                            .ending_hash_key
+                            .parse()
+                            .unwrap_or_else(|_| BigUint::zero());
                         if *hash_key >= start && *hash_key <= end {
                             piece.shard_ix = j as i64;
                             piece.shard_id = shard.shard_id.clone();
@@ -108,7 +116,11 @@ pub async fn execute(
 
                     if stream.seq_ix[seq_ix_ix].is_none() {
                         stream.seq_ix[seq_ix_ix] =
-                            Some(if seq_pieces[i].shard_create_time == now { 1 } else { 0 });
+                            Some(if seq_pieces[i].shard_create_time == now {
+                                1
+                            } else {
+                                0
+                            });
                     }
 
                     let current_seq_ix = stream.seq_ix[seq_ix_ix].unwrap_or(0);

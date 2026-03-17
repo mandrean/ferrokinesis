@@ -149,9 +149,7 @@ async fn get_records_with_limit() {
     server.create_stream(name, 1).await;
 
     for i in 0..5 {
-        server
-            .put_record(name, "AAAA", &format!("key{i}"))
-            .await;
+        server.put_record(name, "AAAA", &format!("key{i}")).await;
     }
 
     let iter = server
@@ -159,10 +157,7 @@ async fn get_records_with_limit() {
         .await;
 
     let res = server
-        .request(
-            "GetRecords",
-            &json!({"ShardIterator": iter, "Limit": 2}),
-        )
+        .request("GetRecords", &json!({"ShardIterator": iter, "Limit": 2}))
         .await;
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
@@ -177,9 +172,7 @@ async fn get_records_pagination() {
     server.create_stream(name, 1).await;
 
     for i in 0..5 {
-        server
-            .put_record(name, "AAAA", &format!("key{i}"))
-            .await;
+        server.put_record(name, "AAAA", &format!("key{i}")).await;
     }
 
     let mut iter = server
@@ -189,10 +182,7 @@ async fn get_records_pagination() {
 
     for _ in 0..10 {
         let res = server
-            .request(
-                "GetRecords",
-                &json!({"ShardIterator": iter, "Limit": 2}),
-            )
+            .request("GetRecords", &json!({"ShardIterator": iter, "Limit": 2}))
             .await;
         let body: Value = res.json().await.unwrap();
         let batch = body["Records"].as_array().unwrap().len();
@@ -200,10 +190,7 @@ async fn get_records_pagination() {
         if batch == 0 {
             break;
         }
-        iter = body["NextShardIterator"]
-            .as_str()
-            .unwrap()
-            .to_string();
+        iter = body["NextShardIterator"].as_str().unwrap().to_string();
     }
     assert_eq!(total, 5);
 }
@@ -212,10 +199,7 @@ async fn get_records_pagination() {
 async fn get_records_invalid_iterator() {
     let server = TestServer::new().await;
     let res = server
-        .request(
-            "GetRecords",
-            &json!({"ShardIterator": "invalid-iterator"}),
-        )
+        .request("GetRecords", &json!({"ShardIterator": "invalid-iterator"}))
         .await;
     assert_eq!(res.status(), 400);
     let body: Value = res.json().await.unwrap();

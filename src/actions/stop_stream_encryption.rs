@@ -4,10 +4,7 @@ use crate::store::Store;
 use crate::types::StreamStatus;
 use serde_json::Value;
 
-pub async fn execute(
-    store: &Store,
-    data: Value,
-) -> Result<Option<Value>, KinesisErrorResponse> {
+pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
     let encryption_type = data[constants::ENCRYPTION_TYPE].as_str().unwrap_or("");
 

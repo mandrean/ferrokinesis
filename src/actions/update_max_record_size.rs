@@ -4,10 +4,7 @@ use crate::store::Store;
 use crate::types::StreamStatus;
 use serde_json::Value;
 
-pub async fn execute(
-    store: &Store,
-    data: Value,
-) -> Result<Option<Value>, KinesisErrorResponse> {
+pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_arn = data[constants::STREAM_ARN].as_str().unwrap_or("");
 
     if stream_arn.is_empty() {
@@ -17,14 +14,12 @@ pub async fn execute(
         ));
     }
 
-    let max_record_size_kib = data["MaxRecordSizeInKiB"]
-        .as_i64()
-        .ok_or_else(|| {
-            KinesisErrorResponse::client_error(
-                constants::INVALID_ARGUMENT,
-                Some("MaxRecordSizeInKiB is required."),
-            )
-        })?;
+    let max_record_size_kib = data["MaxRecordSizeInKiB"].as_i64().ok_or_else(|| {
+        KinesisErrorResponse::client_error(
+            constants::INVALID_ARGUMENT,
+            Some("MaxRecordSizeInKiB is required."),
+        )
+    })?;
 
     if !(1024..=10240).contains(&max_record_size_kib) {
         return Err(KinesisErrorResponse::client_error(
@@ -33,14 +28,12 @@ pub async fn execute(
         ));
     }
 
-    let name = store
-        .stream_name_from_arn(stream_arn)
-        .ok_or_else(|| {
-            KinesisErrorResponse::client_error(
-                constants::RESOURCE_NOT_FOUND,
-                Some("Could not resolve stream from ARN."),
-            )
-        })?;
+    let name = store.stream_name_from_arn(stream_arn).ok_or_else(|| {
+        KinesisErrorResponse::client_error(
+            constants::RESOURCE_NOT_FOUND,
+            Some("Could not resolve stream from ARN."),
+        )
+    })?;
 
     store
         .update_stream(&name, |stream| {

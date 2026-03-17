@@ -4,24 +4,19 @@ use crate::store::Store;
 use crate::types::StreamStatus;
 use serde_json::{Value, json};
 
-pub async fn execute(
-    store: &Store,
-    data: Value,
-) -> Result<Option<Value>, KinesisErrorResponse> {
+pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
     let stream_arn = data[constants::STREAM_ARN].as_str().unwrap_or("");
 
     let name = if !stream_name.is_empty() {
         stream_name.to_string()
     } else if !stream_arn.is_empty() {
-        store
-            .stream_name_from_arn(stream_arn)
-            .ok_or_else(|| {
-                KinesisErrorResponse::client_error(
-                    constants::RESOURCE_NOT_FOUND,
-                    Some("Could not resolve stream from ARN."),
-                )
-            })?
+        store.stream_name_from_arn(stream_arn).ok_or_else(|| {
+            KinesisErrorResponse::client_error(
+                constants::RESOURCE_NOT_FOUND,
+                Some("Could not resolve stream from ARN."),
+            )
+        })?
     } else {
         return Err(KinesisErrorResponse::client_error(
             constants::INVALID_ARGUMENT,
@@ -29,14 +24,12 @@ pub async fn execute(
         ));
     };
 
-    let target_mibps = data["WarmThroughputMiBps"]
-        .as_i64()
-        .ok_or_else(|| {
-            KinesisErrorResponse::client_error(
-                constants::INVALID_ARGUMENT,
-                Some("WarmThroughputMiBps is required."),
-            )
-        })? as u32;
+    let target_mibps = data["WarmThroughputMiBps"].as_i64().ok_or_else(|| {
+        KinesisErrorResponse::client_error(
+            constants::INVALID_ARGUMENT,
+            Some("WarmThroughputMiBps is required."),
+        )
+    })? as u32;
 
     let result = store
         .update_stream(&name, |stream| {

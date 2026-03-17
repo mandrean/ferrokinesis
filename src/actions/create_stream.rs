@@ -11,10 +11,7 @@ use std::collections::BTreeMap;
 
 const SEQ_ADJUST_MS: u64 = 2000;
 
-pub async fn execute(
-    store: &Store,
-    data: Value,
-) -> Result<Option<Value>, KinesisErrorResponse> {
+pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
     let shard_count = data["ShardCount"].as_i64().unwrap_or(0) as u32;
 
@@ -70,17 +67,15 @@ pub async fn execute(
                 ending_hash_key: end.to_string(),
             },
             sequence_number_range: SequenceNumberRange {
-                starting_sequence_number: sequence::stringify_sequence(
-                    &sequence::SeqObj {
-                        shard_create_time: create_time,
-                        seq_ix: None,
-                        byte1: None,
-                        seq_time: None,
-                        seq_rand: None,
-                        shard_ix: i as i64,
-                        version: 2,
-                    },
-                ),
+                starting_sequence_number: sequence::stringify_sequence(&sequence::SeqObj {
+                    shard_create_time: create_time,
+                    seq_ix: None,
+                    byte1: None,
+                    seq_time: None,
+                    seq_rand: None,
+                    shard_ix: i as i64,
+                    version: 2,
+                }),
                 ending_sequence_number: None,
             },
             parent_shard_id: None,

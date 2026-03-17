@@ -6,10 +6,7 @@ use crate::store::Store;
 use crate::util::current_time_ms;
 use serde_json::{Value, json};
 
-pub async fn execute(
-    store: &Store,
-    data: Value,
-) -> Result<Option<Value>, KinesisErrorResponse> {
+pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let iterator_str = data[constants::SHARD_ITERATOR].as_str().unwrap_or("");
     let limit = data[constants::LIMIT].as_u64().unwrap_or(10000) as usize;
     let now = current_time_ms();
@@ -128,8 +125,11 @@ pub async fn execute(
         sequence::increment_sequence(&seq_obj, Some(default_time))
     };
 
-    let mut next_shard_iterator =
-        Some(shard_iterator::create_shard_iterator(&stream_name, &shard_id, &next_seq));
+    let mut next_shard_iterator = Some(shard_iterator::create_shard_iterator(
+        &stream_name,
+        &shard_id,
+        &next_seq,
+    ));
     let mut millis_behind = 0u64;
 
     // If shard is closed and no items found, check if iterator should be null

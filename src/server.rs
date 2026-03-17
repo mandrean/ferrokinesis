@@ -84,16 +84,10 @@ pub async fn handler(
 
         if method == Method::OPTIONS {
             if let Some(req_headers) = headers.get("access-control-request-headers") {
-                response_headers.insert(
-                    "Access-Control-Allow-Headers",
-                    req_headers.clone(),
-                );
+                response_headers.insert("Access-Control-Allow-Headers", req_headers.clone());
             }
             if let Some(req_method) = headers.get("access-control-request-method") {
-                response_headers.insert(
-                    "Access-Control-Allow-Methods",
-                    req_method.clone(),
-                );
+                response_headers.insert("Access-Control-Allow-Methods", req_method.clone());
             }
             response_headers.insert("Access-Control-Max-Age", "172800".parse().unwrap());
             response_headers.insert("Content-Length", "0".parse().unwrap());
@@ -126,7 +120,10 @@ pub async fn handler(
         .unwrap_or("")
         .trim();
 
-    let content_valid = matches!(content_type, "application/x-amz-json-1.1" | "application/x-amz-cbor-1.1" | "application/json");
+    let content_valid = matches!(
+        content_type,
+        "application/x-amz-json-1.1" | "application/x-amz-cbor-1.1" | "application/json"
+    );
 
     // Parse target
     let target = headers
@@ -481,14 +478,9 @@ fn send_xml_error(
     message: &str,
     status_code: u16,
 ) -> Response {
-    let body = format!(
-        "<{error_type}>\n  <Message>{message}</Message>\n</{error_type}>\n"
-    );
+    let body = format!("<{error_type}>\n  <Message>{message}</Message>\n</{error_type}>\n");
     let mut headers = extra_headers.clone();
-    headers.insert(
-        "Content-Length",
-        body.len().to_string().parse().unwrap(),
-    );
+    headers.insert("Content-Length", body.len().to_string().parse().unwrap());
 
     (
         StatusCode::from_u16(status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
@@ -498,17 +490,10 @@ fn send_xml_error(
         .into_response()
 }
 
-fn send_xml_error_code(
-    extra_headers: &HeaderMap,
-    error_type: &str,
-    status_code: u16,
-) -> Response {
+fn send_xml_error_code(extra_headers: &HeaderMap, error_type: &str, status_code: u16) -> Response {
     let body = format!("<{error_type}/>\n");
     let mut headers = extra_headers.clone();
-    headers.insert(
-        "Content-Length",
-        body.len().to_string().parse().unwrap(),
-    );
+    headers.insert("Content-Length", body.len().to_string().parse().unwrap());
 
     (
         StatusCode::from_u16(status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),

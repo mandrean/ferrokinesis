@@ -5,17 +5,12 @@ use crate::types::{Consumer, ConsumerStatus};
 use crate::util::current_time_ms;
 use serde_json::{Value, json};
 
-pub async fn execute(
-    store: &Store,
-    data: Value,
-) -> Result<Option<Value>, KinesisErrorResponse> {
+pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_arn = data[constants::STREAM_ARN].as_str().unwrap_or("");
     let consumer_name = data[constants::CONSUMER_NAME].as_str().unwrap_or("");
 
     // Verify stream exists
-    let stream_name = store
-        .stream_name_from_arn(stream_arn)
-        .unwrap_or_default();
+    let stream_name = store.stream_name_from_arn(stream_arn).unwrap_or_default();
     store.get_stream(&stream_name).await?;
 
     // Check if consumer already exists
@@ -46,10 +41,7 @@ pub async fn execute(
 
     let now = current_time_ms();
     let creation_ts = now as f64 / 1000.0;
-    let consumer_arn = format!(
-        "{}/consumer/{}:{}",
-        stream_arn, consumer_name, now / 1000
-    );
+    let consumer_arn = format!("{}/consumer/{}:{}", stream_arn, consumer_name, now / 1000);
 
     let consumer = Consumer {
         consumer_name: consumer_name.to_string(),

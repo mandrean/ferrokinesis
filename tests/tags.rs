@@ -24,10 +24,7 @@ async fn add_tags_success() {
 
     // Verify tags
     let res = server
-        .request(
-            "ListTagsForStream",
-            &json!({"StreamName": name}),
-        )
+        .request("ListTagsForStream", &json!({"StreamName": name}))
         .await;
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
@@ -63,7 +60,10 @@ async fn add_tags_over_50_limit() {
     for batch in 0..5 {
         let mut tags = serde_json::Map::new();
         for i in 0..10 {
-            tags.insert(format!("key{:02}", batch * 10 + i), json!(format!("val{}", batch * 10 + i)));
+            tags.insert(
+                format!("key{:02}", batch * 10 + i),
+                json!(format!("val{}", batch * 10 + i)),
+            );
         }
         let res = server
             .request(
@@ -114,10 +114,7 @@ async fn add_tags_update_existing() {
         .await;
 
     let res = server
-        .request(
-            "ListTagsForStream",
-            &json!({"StreamName": name}),
-        )
+        .request("ListTagsForStream", &json!({"StreamName": name}))
         .await;
     let body: Value = res.json().await.unwrap();
     let tags = body["Tags"].as_array().unwrap();
@@ -156,10 +153,7 @@ async fn remove_tags_success() {
     assert_eq!(res.status(), 200);
 
     let res = server
-        .request(
-            "ListTagsForStream",
-            &json!({"StreamName": name}),
-        )
+        .request("ListTagsForStream", &json!({"StreamName": name}))
         .await;
     let body: Value = res.json().await.unwrap();
     let tags = body["Tags"].as_array().unwrap();
@@ -195,10 +189,7 @@ async fn list_tags_empty() {
     server.create_stream(name, 1).await;
 
     let res = server
-        .request(
-            "ListTagsForStream",
-            &json!({"StreamName": name}),
-        )
+        .request("ListTagsForStream", &json!({"StreamName": name}))
         .await;
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
@@ -223,10 +214,7 @@ async fn list_tags_sorted() {
         .await;
 
     let res = server
-        .request(
-            "ListTagsForStream",
-            &json!({"StreamName": name}),
-        )
+        .request("ListTagsForStream", &json!({"StreamName": name}))
         .await;
     let body: Value = res.json().await.unwrap();
     let tags = body["Tags"].as_array().unwrap();
@@ -306,10 +294,7 @@ async fn list_tags_with_limit() {
 async fn list_tags_stream_not_found() {
     let server = TestServer::new().await;
     let res = server
-        .request(
-            "ListTagsForStream",
-            &json!({"StreamName": "nonexistent"}),
-        )
+        .request("ListTagsForStream", &json!({"StreamName": "nonexistent"}))
         .await;
     assert_eq!(res.status(), 400);
     let body: Value = res.json().await.unwrap();

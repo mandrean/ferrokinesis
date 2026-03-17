@@ -3,10 +3,7 @@ use crate::error::KinesisErrorResponse;
 use crate::store::Store;
 use serde_json::{Value, json};
 
-pub async fn execute(
-    store: &Store,
-    data: Value,
-) -> Result<Option<Value>, KinesisErrorResponse> {
+pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_name = data[constants::STREAM_NAME].as_str();
     let next_token = data[constants::NEXT_TOKEN].as_str();
     let max_results = data[constants::MAX_RESULTS].as_u64().unwrap_or(10000) as usize;

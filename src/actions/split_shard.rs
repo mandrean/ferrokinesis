@@ -8,10 +8,7 @@ use num_bigint::BigUint;
 use num_traits::{Num, One, Zero};
 use serde_json::Value;
 
-pub async fn execute(
-    store: &Store,
-    data: Value,
-) -> Result<Option<Value>, KinesisErrorResponse> {
+pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
     let shard_to_split = data["ShardToSplit"].as_str().unwrap_or("");
     let new_starting_hash_key = data["NewStartingHashKey"].as_str().unwrap_or("");
@@ -116,11 +113,10 @@ pub async fn execute(
                     .unwrap_or_else(|_| BigUint::zero());
 
                 let shard = &mut stream.shards[shard_ix as usize];
-                let create_time = sequence::parse_sequence(
-                    &shard.sequence_number_range.starting_sequence_number,
-                )
-                .map(|s| s.shard_create_time)
-                .unwrap_or(0);
+                let create_time =
+                    sequence::parse_sequence(&shard.sequence_number_range.starting_sequence_number)
+                        .map(|s| s.shard_create_time)
+                        .unwrap_or(0);
 
                 shard.sequence_number_range.ending_sequence_number =
                     Some(sequence::stringify_sequence(&sequence::SeqObj {

@@ -13,10 +13,7 @@ const ALL_METRICS: &[&str] = &[
     "IteratorAgeMilliseconds",
 ];
 
-pub async fn execute(
-    store: &Store,
-    data: Value,
-) -> Result<Option<Value>, KinesisErrorResponse> {
+pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
     let metrics = data[constants::SHARD_LEVEL_METRICS]
         .as_array()

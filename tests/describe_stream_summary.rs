@@ -10,10 +10,7 @@ async fn describe_stream_summary_success() {
     server.create_stream(name, 3).await;
 
     let res = server
-        .request(
-            "DescribeStreamSummary",
-            &json!({"StreamName": name}),
-        )
+        .request("DescribeStreamSummary", &json!({"StreamName": name}))
         .await;
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
@@ -46,9 +43,7 @@ async fn describe_stream_summary_not_found() {
 #[tokio::test]
 async fn describe_stream_summary_validation() {
     let server = TestServer::new().await;
-    let res = server
-        .request("DescribeStreamSummary", &json!({}))
-        .await;
+    let res = server.request("DescribeStreamSummary", &json!({})).await;
     assert_eq!(res.status(), 400);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["__type"], "ValidationException");

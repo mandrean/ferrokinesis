@@ -3,14 +3,11 @@ use crate::error::KinesisErrorResponse;
 use crate::store::Store;
 use serde_json::Value;
 
-pub async fn execute(
-    store: &Store,
-    data: Value,
-) -> Result<Option<Value>, KinesisErrorResponse> {
+pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
-    let tag_keys = data[constants::TAG_KEYS]
-        .as_array()
-        .ok_or_else(|| KinesisErrorResponse::client_error(constants::SERIALIZATION_EXCEPTION, None))?;
+    let tag_keys = data[constants::TAG_KEYS].as_array().ok_or_else(|| {
+        KinesisErrorResponse::client_error(constants::SERIALIZATION_EXCEPTION, None)
+    })?;
 
     let keys: Vec<String> = tag_keys
         .iter()

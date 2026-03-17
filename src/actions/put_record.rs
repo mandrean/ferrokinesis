@@ -8,10 +8,7 @@ use num_bigint::BigUint;
 use num_traits::{One, Zero};
 use serde_json::{Value, json};
 
-pub async fn execute(
-    store: &Store,
-    data: Value,
-) -> Result<Option<Value>, KinesisErrorResponse> {
+pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
     let partition_key = data[constants::PARTITION_KEY].as_str().unwrap_or("");
     let record_data = data[constants::DATA].as_str().unwrap_or("");
@@ -61,7 +58,10 @@ pub async fn execute(
 
     let (shard_id, seq_num, stream_key, now) = store
         .update_stream(stream_name, |stream| {
-            if !matches!(stream.stream_status, StreamStatus::Active | StreamStatus::Updating) {
+            if !matches!(
+                stream.stream_status,
+                StreamStatus::Active | StreamStatus::Updating
+            ) {
                 return Err(KinesisErrorResponse::client_error(
                     constants::RESOURCE_NOT_FOUND,
                     Some(&format!(
@@ -78,8 +78,16 @@ pub async fn execute(
 
             for (i, shard) in stream.shards.iter().enumerate() {
                 if shard.sequence_number_range.ending_sequence_number.is_none() {
-                    let start: BigUint = shard.hash_key_range.starting_hash_key.parse().unwrap_or_else(|_| BigUint::zero());
-                    let end: BigUint = shard.hash_key_range.ending_hash_key.parse().unwrap_or_else(|_| BigUint::zero());
+                    let start: BigUint = shard
+                        .hash_key_range
+                        .starting_hash_key
+                        .parse()
+                        .unwrap_or_else(|_| BigUint::zero());
+                    let end: BigUint = shard
+                        .hash_key_range
+                        .ending_hash_key
+                        .parse()
+                        .unwrap_or_else(|_| BigUint::zero());
                     if hash_key >= start && hash_key <= end {
                         shard_ix = i as i64;
                         shard_id = shard.shard_id.clone();

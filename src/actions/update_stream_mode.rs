@@ -3,10 +3,7 @@ use crate::error::KinesisErrorResponse;
 use crate::store::Store;
 use serde_json::Value;
 
-pub async fn execute(
-    store: &Store,
-    data: Value,
-) -> Result<Option<Value>, KinesisErrorResponse> {
+pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_arn = data[constants::STREAM_ARN].as_str().unwrap_or("");
     let stream_mode = data[constants::STREAM_MODE_DETAILS]["StreamMode"]
         .as_str()
@@ -19,9 +16,7 @@ pub async fn execute(
         ));
     }
 
-    let stream_name = store
-        .stream_name_from_arn(stream_arn)
-        .unwrap_or_default();
+    let stream_name = store.stream_name_from_arn(stream_arn).unwrap_or_default();
 
     store
         .update_stream(&stream_name, |stream| {

@@ -62,10 +62,7 @@ async fn create_stream_already_exists() {
     assert_eq!(res.status(), 400);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["__type"], "ResourceInUseException");
-    assert!(body["message"]
-        .as_str()
-        .unwrap()
-        .contains("already exists"));
+    assert!(body["message"].as_str().unwrap().contains("already exists"));
 }
 
 #[tokio::test]
@@ -87,10 +84,7 @@ async fn create_stream_shard_limit_exceeded() {
     assert_eq!(res.status(), 400);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["__type"], "LimitExceededException");
-    assert!(body["message"]
-        .as_str()
-        .unwrap()
-        .contains("shard limit"));
+    assert!(body["message"].as_str().unwrap().contains("shard limit"));
 }
 
 // -- Validation tests --
