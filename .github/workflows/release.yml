@@ -81,12 +81,15 @@ jobs:
 
   docker:
     name: Docker
-    needs: build
+    needs: [build, publish]
     runs-on: ubuntu-latest
     permissions:
       packages: write
     steps:
       - uses: actions/checkout@v4
+      - name: Get version from Cargo.toml
+        id: version
+        run: echo "version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')" >> $GITHUB_OUTPUT
       - name: Download linux-amd64 binary
         uses: actions/download-artifact@v4
         with:
@@ -118,6 +121,8 @@ jobs:
           tags: |
             type=raw,value=latest
             type=sha,prefix=sha-
+            type=raw,value=v${{ steps.version.outputs.version }}
+            type=raw,value=${{ steps.version.outputs.version }}
       - name: Build and push multi-arch image
         uses: docker/build-push-action@v6
         with:
