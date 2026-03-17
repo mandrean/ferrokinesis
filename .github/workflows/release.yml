@@ -6,7 +6,6 @@ on:
 
 permissions:
   contents: write
-  packages: write
 
 jobs:
   check:
@@ -25,163 +24,39 @@ jobs:
       - name: Test
         run: cargo test
 
-  build:
-    name: Build (${{ matrix.name }})
+  release:
+    name: Release
     needs: check
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
-            name: linux-amd64
-          - target: aarch64-unknown-linux-musl
-            os: ubuntu-latest
-            name: linux-arm64
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            name: macos-amd64
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            name: macos-arm64
-          - target: x86_64-pc-windows-gnu
-            os: ubuntu-latest
-            name: windows-amd64
-            ext: .exe
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-      - name: Cache pip packages
-        if: runner.os == 'Linux'
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: pip-zigbuild-${{ runner.os }}
-      - name: Install cargo-zigbuild and zig
-        if: runner.os == 'Linux'
-        run: pip3 install cargo-zigbuild ziglang
-      - name: Build (zigbuild)
-        if: runner.os == 'Linux'
-        run: cargo zigbuild --release --target ${{ matrix.target }}
-      - name: Build (native)
-        if: runner.os != 'Linux'
-        run: cargo build --release --target ${{ matrix.target }}
-      - name: Rename binary
-        run: cp target/${{ matrix.target }}/release/ferrokinesis${{ matrix.ext }} ferrokinesis-${{ matrix.name }}${{ matrix.ext }}
-      - name: Upload binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: ferrokinesis-${{ matrix.name }}
-          path: ferrokinesis-${{ matrix.name }}${{ matrix.ext }}
-
-  docker:
-    name: Docker
-    needs: build
     runs-on: ubuntu-latest
-    permissions:
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-      - name: Download linux-amd64 binary
-        uses: actions/download-artifact@v4
-        with:
-          name: ferrokinesis-linux-amd64
-          path: docker-context/amd64
-      - name: Download linux-arm64 binary
-        uses: actions/download-artifact@v4
-        with:
-          name: ferrokinesis-linux-arm64
-          path: docker-context/arm64
-      - name: Prepare binaries
-        run: |
-          mv docker-context/amd64/ferrokinesis-linux-amd64 docker-context/amd64/ferrokinesis
-          mv docker-context/arm64/ferrokinesis-linux-arm64 docker-context/arm64/ferrokinesis
-          chmod +x docker-context/*/ferrokinesis
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=raw,value=latest
-            type=sha,prefix=sha-
-      - name: Build and push multi-arch image
-        uses: docker/build-push-action@v6
-        with:
-          context: docker-context
-          file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-
-  publish:
-    name: Publish
-    needs: [check, build]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GH_TOKEN }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Release
-        uses: release-plz/action@v0.5
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_TOKEN }}
-      - name: Get version from Cargo.toml
-        id: version
-        run: echo "tag=v$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')" >> $GITHUB_OUTPUT
-      - name: Check if release exists and needs binaries
-        id: needs-upload
+      - name: Skip if last commit was a release
+        id: guard
         run: |
-          TAG="${{ steps.version.outputs.tag }}"
-          if gh release view "$TAG" --repo mandrean/ferrokinesis &>/dev/null; then
-            ASSET_COUNT=$(gh release view "$TAG" --repo mandrean/ferrokinesis --json assets --jq '.assets | length')
-            if [ "$ASSET_COUNT" -lt 5 ]; then
-              echo "upload=true" >> $GITHUB_OUTPUT
-            else
-              echo "upload=false" >> $GITHUB_OUTPUT
-            fi
+          msg=$(git log -1 --format='%s')
+          if [[ "$msg" == "chore: release"* ]]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
           else
-            echo "upload=false" >> $GITHUB_OUTPUT
+            echo "skip=false" >> $GITHUB_OUTPUT
           fi
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-      - name: Download all artifacts
-        if: steps.needs-upload.outputs.upload == 'true'
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          pattern: ferrokinesis-*
-      - name: Upload binaries to GitHub Release
-        if: steps.needs-upload.outputs.upload == 'true'
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.guard.outputs.skip == 'false'
+      - uses: Swatinem/rust-cache@v2
+        if: steps.guard.outputs.skip == 'false'
+      - name: Install semantic-rs
+        if: steps.guard.outputs.skip == 'false'
+        run: cargo install --git https://github.com/mandrean/semantic-rs --locked
+      - name: Configure git
+        if: steps.guard.outputs.skip == 'false'
         run: |
-          TAG="${{ steps.version.outputs.tag }}"
-          gh release upload "$TAG" \
-            artifacts/ferrokinesis-linux-amd64/ferrokinesis-linux-amd64 \
-            artifacts/ferrokinesis-linux-arm64/ferrokinesis-linux-arm64 \
-            artifacts/ferrokinesis-macos-amd64/ferrokinesis-macos-amd64 \
-            artifacts/ferrokinesis-macos-arm64/ferrokinesis-macos-arm64 \
-            artifacts/ferrokinesis-windows-amd64/ferrokinesis-windows-amd64.exe \
-            --clobber
+          git config user.name "semantic-rs"
+          git config user.email "semantic-rs@users.noreply.github.com"
+      - name: Release
+        if: steps.guard.outputs.skip == 'false'
+        run: semantic-rs -w yes -r yes -b main
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          CARGO_TOKEN: ${{ secrets.CARGO_TOKEN }}
