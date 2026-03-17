@@ -149,7 +149,7 @@ for shard in shards.shards() {
 
 ## Usage
 
-```sh
+```
 ferrokinesis --help
 
 A local AWS Kinesis mock server for testing
@@ -164,60 +164,60 @@ Options:
   -V, --version                          Print version
 ```
 
-## API Coverage
+## API & Test Coverage
 
-| Operation | Status | Notes |
-|-----------|--------|-------|
-| **Stream Management** | | |
-| CreateStream | ✅ | |
-| DeleteStream | ✅ | |
-| DescribeStream | ✅ | |
-| DescribeStreamSummary | ✅ | |
-| ListStreams | ✅ | |
-| UpdateStreamMode | ✅ | PROVISIONED / ON_DEMAND |
-| UpdateShardCount | ✅ | Uniform scaling |
-| **Data Operations** | | |
-| PutRecord | ✅ | |
-| PutRecords | ✅ | |
-| GetRecords | ✅ | |
-| GetShardIterator | ✅ | All 5 iterator types |
-| SubscribeToShard | ✅ | Event stream over HTTP/1.1 |
-| **Shard Management** | | |
-| ListShards | ✅ | |
-| MergeShards | ✅ | |
-| SplitShard | ✅ | |
-| **Retention** | | |
-| IncreaseStreamRetentionPeriod | ✅ | |
-| DecreaseStreamRetentionPeriod | ✅ | |
-| **Enhanced Fan-Out (Consumers)** | | |
-| RegisterStreamConsumer | ✅ | |
-| DeregisterStreamConsumer | ✅ | |
-| DescribeStreamConsumer | ✅ | |
-| ListStreamConsumers | ✅ | |
-| **Monitoring** | | |
-| EnableEnhancedMonitoring | ✅ | |
-| DisableEnhancedMonitoring | ✅ | |
-| DescribeLimits | ✅ | |
-| DescribeAccountSettings | ✅ | |
-| UpdateAccountSettings | ✅ | |
-| **Encryption** | | |
-| StartStreamEncryption | ✅ | |
-| StopStreamEncryption | ✅ | |
-| **Tagging (Stream-name)** | | |
-| AddTagsToStream | ✅ | |
-| RemoveTagsFromStream | ✅ | |
-| ListTagsForStream | ✅ | |
-| **Tagging (ARN-based)** | | |
-| TagResource | ✅ | |
-| UntagResource | ✅ | |
-| ListTagsForResource | ✅ | |
-| **Resource Policies** | | |
-| PutResourcePolicy | ✅ | |
-| GetResourcePolicy | ✅ | |
-| DeleteResourcePolicy | ✅ | |
-| **Other** | | |
-| UpdateStreamWarmThroughput | ✅ | |
-| UpdateMaxRecordSize | ✅ | |
+| Operation                        | Status | Notes                      |
+|----------------------------------|--------|----------------------------|
+| **Stream Management**            | ✅      |                            |
+| CreateStream                     | ✅      |                            |
+| DeleteStream                     | ✅      |                            |
+| DescribeStream                   | ✅      |                            |
+| DescribeStreamSummary            | ✅      |                            |
+| ListStreams                      | ✅      |                            |
+| UpdateStreamMode                 | ✅      | PROVISIONED / ON_DEMAND    |
+| UpdateShardCount                 | ✅      | Uniform scaling            |
+| **Data Operations**              | ✅      |                            |
+| PutRecord                        | ✅      |                            |
+| PutRecords                       | ✅      |                            |
+| GetRecords                       | ✅      |                            |
+| GetShardIterator                 | ✅      | All 5 iterator types       |
+| SubscribeToShard                 | ✅      | Event stream over HTTP/1.1 |
+| **Shard Management**             | ✅      |                            |
+| ListShards                       | ✅      |                            |
+| MergeShards                      | ✅      |                            |
+| SplitShard                       | ✅      |                            |
+| **Retention**                    | ✅      |                            |
+| IncreaseStreamRetentionPeriod    | ✅      |                            |
+| DecreaseStreamRetentionPeriod    | ✅      |                            |
+| **Enhanced Fan-Out (Consumers)** | ✅      |                            |
+| RegisterStreamConsumer           | ✅      |                            |
+| DeregisterStreamConsumer         | ✅      |                            |
+| DescribeStreamConsumer           | ✅      |                            |
+| ListStreamConsumers              | ✅      |                            |
+| **Monitoring**                   | ✅      |                            |
+| EnableEnhancedMonitoring         | ✅      |                            |
+| DisableEnhancedMonitoring        | ✅      |                            |
+| DescribeLimits                   | ✅      |                            |
+| DescribeAccountSettings          | ✅      |                            |
+| UpdateAccountSettings            | ✅      |                            |
+| **Encryption**                   | ✅      |                            |
+| StartStreamEncryption            | ✅      |                            |
+| StopStreamEncryption             | ✅      |                            |
+| **Tagging (Stream-name)**        | ✅      |                            |
+| AddTagsToStream                  | ✅      |                            |
+| RemoveTagsFromStream             | ✅      |                            |
+| ListTagsForStream                | ✅      |                            |
+| **Tagging (ARN-based)**          | ✅      |                            |
+| TagResource                      | ✅      |                            |
+| UntagResource                    | ✅      |                            |
+| ListTagsForResource              | ✅      |                            |
+| **Resource Policies**            | ✅      |                            |
+| PutResourcePolicy                | ✅      |                            |
+| GetResourcePolicy                | ✅      |                            |
+| DeleteResourcePolicy             | ✅      |                            |
+| **Other**                        | ✅      |                            |
+| UpdateStreamWarmThroughput       | ✅      |                            |
+| UpdateMaxRecordSize              | ✅      |                            |
 
 **39/39 operations implemented** (100%)
 

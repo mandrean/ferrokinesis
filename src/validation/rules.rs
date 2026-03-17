@@ -579,3 +579,25 @@ pub fn update_max_record_size() -> Vec<(&'static str, FieldDef)> {
         ),
     ]
 }
+
+pub fn update_account_settings() -> Vec<(&'static str, FieldDef)> {
+    vec![(
+        "MinimumThroughputBillingCommitment",
+        FieldDef::new(FieldType::Structure {
+            children: vec![
+                (
+                    "Status".to_string(),
+                    FieldDef::new(FieldType::String),
+                ),
+                (
+                    "MinimumWriteCapacityUnits".to_string(),
+                    FieldDef::new(FieldType::Integer),
+                ),
+                (
+                    "MinimumReadCapacityUnits".to_string(),
+                    FieldDef::new(FieldType::Integer),
+                ),
+            ],
+        }),
+    )]
+}
