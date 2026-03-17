@@ -24,12 +24,14 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         ));
     };
 
-    let target_mibps = data["WarmThroughputMiBps"].as_i64().ok_or_else(|| {
-        KinesisErrorResponse::client_error(
-            constants::INVALID_ARGUMENT,
-            Some("WarmThroughputMiBps is required."),
-        )
-    })? as u32;
+    let target_mibps = data[constants::WARM_THROUGHPUT_MIBPS]
+        .as_i64()
+        .ok_or_else(|| {
+            KinesisErrorResponse::client_error(
+                constants::INVALID_ARGUMENT,
+                Some("WarmThroughputMiBps is required."),
+            )
+        })? as u32;
 
     let result = store
         .update_stream(&name, |stream| {

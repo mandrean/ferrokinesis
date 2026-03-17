@@ -14,12 +14,14 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         ));
     }
 
-    let max_record_size_kib = data["MaxRecordSizeInKiB"].as_i64().ok_or_else(|| {
-        KinesisErrorResponse::client_error(
-            constants::INVALID_ARGUMENT,
-            Some("MaxRecordSizeInKiB is required."),
-        )
-    })?;
+    let max_record_size_kib = data[constants::MAX_RECORD_SIZE_IN_KIB]
+        .as_i64()
+        .ok_or_else(|| {
+            KinesisErrorResponse::client_error(
+                constants::INVALID_ARGUMENT,
+                Some("MaxRecordSizeInKiB is required."),
+            )
+        })?;
 
     if !(1024..=10240).contains(&max_record_size_kib) {
         return Err(KinesisErrorResponse::client_error(

@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let commitment = data
-        .get("MinimumThroughputBillingCommitment")
+        .get(constants::MINIMUM_THROUGHPUT_BILLING_COMMITMENT)
         .ok_or_else(|| {
             KinesisErrorResponse::client_error(
                 constants::INVALID_ARGUMENT,
@@ -38,6 +38,6 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     store.put_account_settings(&settings).await;
 
     Ok(Some(json!({
-        "MinimumThroughputBillingCommitment": settings
+        constants::MINIMUM_THROUGHPUT_BILLING_COMMITMENT: settings
     })))
 }

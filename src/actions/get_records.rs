@@ -48,7 +48,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     // Check expiry (5 minutes)
     if now - iterator_time > 300000 {
         return Err(KinesisErrorResponse::client_error(
-            "ExpiredIteratorException",
+            constants::EXPIRED_ITERATOR,
             Some(&format!(
                 "Iterator expired. The iterator was created at time {} while right now it is {} \
                  which is further in the future than the tolerated delay of 300000 milliseconds.",

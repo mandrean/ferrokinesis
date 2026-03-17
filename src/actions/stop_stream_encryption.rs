@@ -1,14 +1,14 @@
 use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::store::Store;
-use crate::types::StreamStatus;
+use crate::types::{EncryptionType, StreamStatus};
 use serde_json::Value;
 
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
     let encryption_type = data[constants::ENCRYPTION_TYPE].as_str().unwrap_or("");
 
-    if encryption_type != "KMS" {
+    if encryption_type != constants::ENCRYPTION_KMS {
         return Err(KinesisErrorResponse::client_error(
             constants::INVALID_ARGUMENT,
             Some("EncryptionType must be KMS."),
@@ -27,7 +27,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                 ));
             }
 
-            if stream.encryption_type != "KMS" {
+            if stream.encryption_type != EncryptionType::Kms {
                 return Err(KinesisErrorResponse::client_error(
                     constants::INVALID_ARGUMENT,
                     Some(&format!(
@@ -50,7 +50,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         let _ = store_clone
             .update_stream(&name, |stream| {
                 stream.stream_status = StreamStatus::Active;
-                stream.encryption_type = "NONE".to_string();
+                stream.encryption_type = EncryptionType::None;
                 stream.key_id = None;
                 Ok(())
             })

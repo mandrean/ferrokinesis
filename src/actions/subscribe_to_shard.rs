@@ -3,7 +3,7 @@ use crate::error::KinesisErrorResponse;
 use crate::event_stream;
 use crate::sequence;
 use crate::store::Store;
-use crate::types::StreamStatus;
+use crate::types::{ShardIteratorType, StreamStatus};
 use crate::util::current_time_ms;
 use axum::body::Body;
 use bytes::Bytes;
@@ -19,7 +19,7 @@ const POLL_INTERVAL_MS: u64 = 200;
 pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, KinesisErrorResponse> {
     let consumer_arn = data[constants::CONSUMER_ARN].as_str().unwrap_or("");
     let shard_id_input = data[constants::SHARD_ID].as_str().unwrap_or("");
-    let starting_position = &data["StartingPosition"];
+    let starting_position = &data[constants::STARTING_POSITION];
 
     if consumer_arn.is_empty() {
         return Err(KinesisErrorResponse::client_error(
@@ -95,10 +95,20 @@ pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, Kines
     }
 
     // Resolve starting position to a sequence number
-    let position_type = starting_position
-        .get("Type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let iterator_type: ShardIteratorType = serde_json::from_value(
+        starting_position
+            .get("Type")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+    )
+    .map_err(|_| {
+        KinesisErrorResponse::client_error(
+            constants::INVALID_ARGUMENT,
+            Some(
+                "StartingPosition.Type is required and must be one of: TRIM_HORIZON, LATEST, AT_SEQUENCE_NUMBER, AFTER_SEQUENCE_NUMBER, AT_TIMESTAMP.",
+            ),
+        )
+    })?;
 
     let shard_seq = &stream.shards[shard_ix as usize]
         .sequence_number_range
@@ -108,9 +118,9 @@ pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, Kines
 
     let now = current_time_ms();
 
-    let start_seq = match position_type {
-        "TRIM_HORIZON" => shard_seq.clone(),
-        "LATEST" => {
+    let start_seq = match iterator_type {
+        ShardIteratorType::TrimHorizon => shard_seq.clone(),
+        ShardIteratorType::Latest => {
             let seq_ix = stream
                 .seq_ix
                 .get(shard_ix as usize / 5)
@@ -126,12 +136,12 @@ pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, Kines
                 version: 2,
             })
         }
-        "AT_SEQUENCE_NUMBER" => starting_position
+        ShardIteratorType::AtSequenceNumber => starting_position
             .get("SequenceNumber")
             .and_then(|v| v.as_str())
             .unwrap_or(shard_seq)
             .to_string(),
-        "AFTER_SEQUENCE_NUMBER" => {
+        ShardIteratorType::AfterSequenceNumber => {
             let seq_str = starting_position
                 .get("SequenceNumber")
                 .and_then(|v| v.as_str())
@@ -144,7 +154,7 @@ pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, Kines
             })?;
             sequence::increment_sequence(&seq_obj, None)
         }
-        "AT_TIMESTAMP" => {
+        ShardIteratorType::AtTimestamp => {
             let ts = starting_position
                 .get("Timestamp")
                 .and_then(|v| v.as_f64())
@@ -162,14 +172,6 @@ pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, Kines
                 }
             }
             found_seq.unwrap_or_else(|| shard_seq.clone())
-        }
-        _ => {
-            return Err(KinesisErrorResponse::client_error(
-                constants::INVALID_ARGUMENT,
-                Some(
-                    "StartingPosition.Type is required and must be one of: TRIM_HORIZON, LATEST, AT_SEQUENCE_NUMBER, AFTER_SEQUENCE_NUMBER, AT_TIMESTAMP.",
-                ),
-            ));
         }
     };
 

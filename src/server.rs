@@ -1,4 +1,4 @@
-use crate::actions;
+use crate::actions::{self, Operation};
 use crate::constants;
 use crate::store::Store;
 use crate::validation;
@@ -10,51 +10,6 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
 const MAX_REQUEST_BYTES: usize = 7 * 1024 * 1024;
-const AMZ_JSON: &str = "application/x-amz-json-1.1";
-const AMZ_CBOR: &str = "application/x-amz-cbor-1.1";
-
-const VALID_APIS: &[&str] = &["Kinesis_20131202"];
-const VALID_OPERATIONS: &[&str] = &[
-    "AddTagsToStream",
-    "CreateStream",
-    "DecreaseStreamRetentionPeriod",
-    "DeleteResourcePolicy",
-    "DeleteStream",
-    "DeregisterStreamConsumer",
-    "DescribeAccountSettings",
-    "DescribeLimits",
-    "DescribeStream",
-    "DescribeStreamConsumer",
-    "DescribeStreamSummary",
-    "DisableEnhancedMonitoring",
-    "EnableEnhancedMonitoring",
-    "GetRecords",
-    "GetResourcePolicy",
-    "GetShardIterator",
-    "IncreaseStreamRetentionPeriod",
-    "ListShards",
-    "ListStreamConsumers",
-    "ListStreams",
-    "ListTagsForResource",
-    "ListTagsForStream",
-    "MergeShards",
-    "PutRecord",
-    "PutRecords",
-    "PutResourcePolicy",
-    "RegisterStreamConsumer",
-    "RemoveTagsFromStream",
-    "SplitShard",
-    "StartStreamEncryption",
-    "StopStreamEncryption",
-    "SubscribeToShard",
-    "TagResource",
-    "UntagResource",
-    "UpdateAccountSettings",
-    "UpdateMaxRecordSize",
-    "UpdateShardCount",
-    "UpdateStreamMode",
-    "UpdateStreamWarmThroughput",
-];
 
 pub async fn handler(
     method: Method,
@@ -133,15 +88,16 @@ pub async fn handler(
 
     let parts: Vec<&str> = target.splitn(2, '.').collect();
     let service = parts.first().copied().unwrap_or("");
-    let operation = if parts.len() > 1 { parts[1] } else { "" };
+    let operation_str = if parts.len() > 1 { parts[1] } else { "" };
 
-    let service_valid = !service.is_empty() && VALID_APIS.contains(&service);
-    let operation_valid = !operation.is_empty() && VALID_OPERATIONS.contains(&operation);
+    let service_valid = service == constants::KINESIS_API;
+    let operation = operation_str.parse::<Operation>().ok();
+    let operation_valid = operation.is_some();
 
-    let response_content_type = if content_type == AMZ_JSON {
-        AMZ_JSON
+    let response_content_type = if content_type == constants::CONTENT_TYPE_JSON {
+        constants::CONTENT_TYPE_JSON
     } else {
-        AMZ_CBOR
+        constants::CONTENT_TYPE_CBOR
     };
 
     // Check body
@@ -165,7 +121,7 @@ pub async fn handler(
     }
 
     if !content_valid {
-        if service.is_empty() || operation.is_empty() {
+        if service.is_empty() || operation_str.is_empty() {
             return send_xml_error(
                 &response_headers,
                 "AccessDeniedException",
@@ -177,7 +133,7 @@ pub async fn handler(
     }
 
     // Parse body
-    let data: Option<Value> = if content_type == AMZ_CBOR {
+    let data: Option<Value> = if content_type == constants::CONTENT_TYPE_CBOR {
         // Try CBOR decode
         ciborium::from_reader::<Value, _>(&body[..]).ok()
     } else {
@@ -220,7 +176,16 @@ pub async fn handler(
         );
     }
 
-    if !service_valid || !operation_valid {
+    let Some(operation) = operation else {
+        return send_json_response(
+            &response_headers,
+            response_content_type,
+            &json!({"__type": constants::UNKNOWN_OPERATION}),
+            400,
+        );
+    };
+
+    if !service_valid {
         return send_json_response(
             &response_headers,
             response_content_type,
@@ -361,7 +326,7 @@ pub async fn handler(
     }
 
     // Handle SubscribeToShard separately (streaming response)
-    if operation == "SubscribeToShard" {
+    if operation == Operation::SubscribeToShard {
         return match actions::subscribe_to_shard::execute_streaming(&store, data).await {
             Ok(body) => {
                 response_headers.insert(
@@ -398,48 +363,47 @@ pub async fn handler(
     }
 }
 
-fn get_validation_rules(operation: &str) -> Vec<(&'static str, validation::FieldDef)> {
+fn get_validation_rules(operation: Operation) -> Vec<(&'static str, validation::FieldDef)> {
     match operation {
-        "AddTagsToStream" => rules::add_tags_to_stream(),
-        "CreateStream" => rules::create_stream(),
-        "DecreaseStreamRetentionPeriod" => rules::decrease_stream_retention_period(),
-        "DeleteResourcePolicy" => rules::delete_resource_policy(),
-        "DeleteStream" => rules::delete_stream(),
-        "DeregisterStreamConsumer" => rules::deregister_stream_consumer(),
-        "DescribeAccountSettings" => vec![],
-        "DescribeLimits" => vec![],
-        "DescribeStream" => rules::describe_stream(),
-        "DescribeStreamConsumer" => rules::describe_stream_consumer(),
-        "DescribeStreamSummary" => rules::describe_stream_summary(),
-        "DisableEnhancedMonitoring" => rules::disable_enhanced_monitoring(),
-        "EnableEnhancedMonitoring" => rules::enable_enhanced_monitoring(),
-        "GetRecords" => rules::get_records(),
-        "GetResourcePolicy" => rules::get_resource_policy(),
-        "GetShardIterator" => rules::get_shard_iterator(),
-        "IncreaseStreamRetentionPeriod" => rules::increase_stream_retention_period(),
-        "ListShards" => rules::list_shards(),
-        "ListStreamConsumers" => rules::list_stream_consumers(),
-        "ListStreams" => rules::list_streams(),
-        "ListTagsForResource" => rules::list_tags_for_resource(),
-        "ListTagsForStream" => rules::list_tags_for_stream(),
-        "MergeShards" => rules::merge_shards(),
-        "PutRecord" => rules::put_record(),
-        "PutRecords" => rules::put_records(),
-        "PutResourcePolicy" => rules::put_resource_policy(),
-        "RegisterStreamConsumer" => rules::register_stream_consumer(),
-        "RemoveTagsFromStream" => rules::remove_tags_from_stream(),
-        "SplitShard" => rules::split_shard(),
-        "StartStreamEncryption" => rules::start_stream_encryption(),
-        "StopStreamEncryption" => rules::stop_stream_encryption(),
-        "SubscribeToShard" => rules::subscribe_to_shard(),
-        "TagResource" => rules::tag_resource(),
-        "UntagResource" => rules::untag_resource(),
-        "UpdateAccountSettings" => rules::update_account_settings(),
-        "UpdateMaxRecordSize" => rules::update_max_record_size(),
-        "UpdateShardCount" => rules::update_shard_count(),
-        "UpdateStreamMode" => rules::update_stream_mode(),
-        "UpdateStreamWarmThroughput" => rules::update_stream_warm_throughput(),
-        _ => vec![],
+        Operation::AddTagsToStream => rules::add_tags_to_stream(),
+        Operation::CreateStream => rules::create_stream(),
+        Operation::DecreaseStreamRetentionPeriod => rules::decrease_stream_retention_period(),
+        Operation::DeleteResourcePolicy => rules::delete_resource_policy(),
+        Operation::DeleteStream => rules::delete_stream(),
+        Operation::DeregisterStreamConsumer => rules::deregister_stream_consumer(),
+        Operation::DescribeAccountSettings => vec![],
+        Operation::DescribeLimits => vec![],
+        Operation::DescribeStream => rules::describe_stream(),
+        Operation::DescribeStreamConsumer => rules::describe_stream_consumer(),
+        Operation::DescribeStreamSummary => rules::describe_stream_summary(),
+        Operation::DisableEnhancedMonitoring => rules::disable_enhanced_monitoring(),
+        Operation::EnableEnhancedMonitoring => rules::enable_enhanced_monitoring(),
+        Operation::GetRecords => rules::get_records(),
+        Operation::GetResourcePolicy => rules::get_resource_policy(),
+        Operation::GetShardIterator => rules::get_shard_iterator(),
+        Operation::IncreaseStreamRetentionPeriod => rules::increase_stream_retention_period(),
+        Operation::ListShards => rules::list_shards(),
+        Operation::ListStreamConsumers => rules::list_stream_consumers(),
+        Operation::ListStreams => rules::list_streams(),
+        Operation::ListTagsForResource => rules::list_tags_for_resource(),
+        Operation::ListTagsForStream => rules::list_tags_for_stream(),
+        Operation::MergeShards => rules::merge_shards(),
+        Operation::PutRecord => rules::put_record(),
+        Operation::PutRecords => rules::put_records(),
+        Operation::PutResourcePolicy => rules::put_resource_policy(),
+        Operation::RegisterStreamConsumer => rules::register_stream_consumer(),
+        Operation::RemoveTagsFromStream => rules::remove_tags_from_stream(),
+        Operation::SplitShard => rules::split_shard(),
+        Operation::StartStreamEncryption => rules::start_stream_encryption(),
+        Operation::StopStreamEncryption => rules::stop_stream_encryption(),
+        Operation::SubscribeToShard => rules::subscribe_to_shard(),
+        Operation::TagResource => rules::tag_resource(),
+        Operation::UntagResource => rules::untag_resource(),
+        Operation::UpdateAccountSettings => rules::update_account_settings(),
+        Operation::UpdateMaxRecordSize => rules::update_max_record_size(),
+        Operation::UpdateShardCount => rules::update_shard_count(),
+        Operation::UpdateStreamMode => rules::update_stream_mode(),
+        Operation::UpdateStreamWarmThroughput => rules::update_stream_warm_throughput(),
     }
 }
 
@@ -449,7 +413,7 @@ fn send_json_response(
     data: &Value,
     status_code: u16,
 ) -> Response {
-    let body_bytes = if content_type == AMZ_CBOR {
+    let body_bytes = if content_type == constants::CONTENT_TYPE_CBOR {
         let mut buf = Vec::new();
         let _ = ciborium::into_writer(data, &mut buf);
         buf

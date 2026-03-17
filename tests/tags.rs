@@ -427,3 +427,30 @@ async fn add_tags_tags_not_object_direct() {
     let err = result.unwrap_err();
     assert_eq!(err.body.__type, "SerializationException");
 }
+
+#[tokio::test]
+async fn remove_tags_invalid_char_in_key() {
+    let server = TestServer::new().await;
+    let name = "cx-tags-inv-char";
+    server.create_stream(name, 1).await;
+
+    server
+        .request(
+            "AddTagsToStream",
+            &json!({"StreamName": name, "Tags": {"valid-key": "value"}}),
+        )
+        .await;
+
+    let res = server
+        .request(
+            "RemoveTagsFromStream",
+            &json!({
+                "StreamName": name,
+                "TagKeys": ["invalid!key"],
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "InvalidArgumentException");
+}
