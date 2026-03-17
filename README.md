@@ -6,7 +6,7 @@ A local AWS Kinesis mock server for testing, written in Rust.
 
 - Pure Rust implementation
 - Uses [redb](https://github.com/cberner/redb) for in-memory storage (ACID, zero-copy reads)
-- Implements 36 of 39 Kinesis Data Streams API operations
+- Implements 38 of 39 Kinesis Data Streams API operations
 - Supports both JSON and CBOR content types
 - 125+ integration tests
 
@@ -122,10 +122,10 @@ client.list_streams().send().await?;
 | GetResourcePolicy | ✅ | |
 | DeleteResourcePolicy | ✅ | |
 | **Other** | | |
-| UpdateStreamWarmThroughput | ❌ | |
-| UpdateMaxRecordSize | ❌ | |
+| UpdateStreamWarmThroughput | ✅ | |
+| UpdateMaxRecordSize | ✅ | |
 
-**36/39 operations implemented** (92%)
+**38/39 operations implemented** (97%)
 
 ## Building
 

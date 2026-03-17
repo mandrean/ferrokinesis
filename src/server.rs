@@ -49,8 +49,10 @@ const VALID_OPERATIONS: &[&str] = &[
     "TagResource",
     "UntagResource",
     "UpdateAccountSettings",
+    "UpdateMaxRecordSize",
     "UpdateShardCount",
     "UpdateStreamMode",
+    "UpdateStreamWarmThroughput",
 ];
 
 pub async fn handler(
@@ -415,8 +417,10 @@ fn get_validation_rules(operation: &str) -> Vec<(&'static str, validation::Field
         "TagResource" => rules::tag_resource(),
         "UntagResource" => rules::untag_resource(),
         "UpdateAccountSettings" => vec![],
+        "UpdateMaxRecordSize" => rules::update_max_record_size(),
         "UpdateShardCount" => rules::update_shard_count(),
         "UpdateStreamMode" => rules::update_stream_mode(),
+        "UpdateStreamWarmThroughput" => rules::update_stream_warm_throughput(),
         _ => vec![],
     }
 }

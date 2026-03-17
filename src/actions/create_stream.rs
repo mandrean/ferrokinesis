@@ -109,6 +109,8 @@ pub async fn execute(
         seq_ix: vec![None; (shard_count as usize).div_ceil(5)],
         tags: BTreeMap::new(),
         key_id: None,
+        warm_throughput_mibps: 0,
+        max_record_size_kib: 1024,
     };
 
     store.put_stream(stream_name, stream).await;

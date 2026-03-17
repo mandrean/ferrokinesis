@@ -32,8 +32,10 @@ pub mod stop_stream_encryption;
 pub mod tag_resource;
 pub mod untag_resource;
 pub mod update_account_settings;
+pub mod update_max_record_size;
 pub mod update_shard_count;
 pub mod update_stream_mode;
+pub mod update_stream_warm_throughput;
 
 use crate::constants;
 use crate::error::KinesisErrorResponse;
@@ -84,8 +86,12 @@ pub async fn dispatch(
         "TagResource" => tag_resource::execute(store, data).await,
         "UntagResource" => untag_resource::execute(store, data).await,
         "UpdateAccountSettings" => update_account_settings::execute(store, data).await,
+        "UpdateMaxRecordSize" => update_max_record_size::execute(store, data).await,
         "UpdateShardCount" => update_shard_count::execute(store, data).await,
         "UpdateStreamMode" => update_stream_mode::execute(store, data).await,
+        "UpdateStreamWarmThroughput" => {
+            update_stream_warm_throughput::execute(store, data).await
+        }
         _ => Err(KinesisErrorResponse::client_error(
             constants::UNKNOWN_OPERATION,
             None,

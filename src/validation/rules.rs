@@ -475,3 +475,33 @@ pub fn list_tags_for_resource() -> Vec<(&'static str, FieldDef)> {
         ("ResourceARN", stream_arn_field().not_null()),
     ]
 }
+
+pub fn update_stream_warm_throughput() -> Vec<(&'static str, FieldDef)> {
+    vec![
+        ("StreamARN", stream_arn_field()),
+        (
+            "StreamName",
+            FieldDef::new(FieldType::String)
+                .regex("[a-zA-Z0-9_.-]+")
+                .len_gte(1)
+                .len_lte(128),
+        ),
+        (
+            "WarmThroughputMiBps",
+            FieldDef::new(FieldType::Integer).not_null().gte(0.0),
+        ),
+    ]
+}
+
+pub fn update_max_record_size() -> Vec<(&'static str, FieldDef)> {
+    vec![
+        ("StreamARN", stream_arn_field().not_null()),
+        (
+            "MaxRecordSizeInKiB",
+            FieldDef::new(FieldType::Integer)
+                .not_null()
+                .gte(1024.0)
+                .lte(10240.0),
+        ),
+    ]
+}

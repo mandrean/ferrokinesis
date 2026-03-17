@@ -58,6 +58,14 @@ fn serialize_stream(stream: &Stream) -> Vec<u8> {
             serde_json::to_value(key_id).unwrap(),
         );
     }
+    obj.insert(
+        "_warm_throughput_mibps".to_string(),
+        serde_json::to_value(stream.warm_throughput_mibps).unwrap(),
+    );
+    obj.insert(
+        "_max_record_size_kib".to_string(),
+        serde_json::to_value(stream.max_record_size_kib).unwrap(),
+    );
     serde_json::to_vec(&val).unwrap()
 }
 
@@ -73,6 +81,12 @@ fn deserialize_stream(bytes: &[u8]) -> Stream {
     }
     if let Some(key_id) = val.get("_key_id") {
         stream.key_id = serde_json::from_value(key_id.clone()).ok();
+    }
+    if let Some(v) = val.get("_warm_throughput_mibps") {
+        stream.warm_throughput_mibps = serde_json::from_value(v.clone()).unwrap_or(0);
+    }
+    if let Some(v) = val.get("_max_record_size_kib") {
+        stream.max_record_size_kib = serde_json::from_value(v.clone()).unwrap_or(1024);
     }
     stream
 }

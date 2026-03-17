@@ -77,6 +77,10 @@ pub struct Stream {
     pub tags: BTreeMap<String, String>,
     #[serde(skip)]
     pub key_id: Option<String>,
+    #[serde(skip)]
+    pub warm_throughput_mibps: u32,
+    #[serde(skip)]
+    pub max_record_size_kib: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
