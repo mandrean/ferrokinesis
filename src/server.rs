@@ -73,7 +73,7 @@ pub async fn handler(
     if method != Method::OPTIONS || !has_origin {
         let id2 = base64::Engine::encode(
             &base64::engine::general_purpose::STANDARD,
-            &rand::random::<[u8; 72]>(),
+            rand::random::<[u8; 72]>(),
         );
         response_headers.insert("x-amz-id-2", id2.parse().unwrap());
     }
