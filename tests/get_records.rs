@@ -1,5 +1,7 @@
 mod common;
 
+use aes::cipher::{BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use common::*;
 use serde_json::{Value, json};
 
@@ -107,7 +109,7 @@ async fn get_records_at_sequence_number() {
 
     let result = server.get_records(iter).await;
     let records = result["Records"].as_array().unwrap();
-    assert!(records.len() >= 1);
+    assert!(!records.is_empty());
     assert_eq!(records[0]["PartitionKey"], "key1");
 }
 
@@ -257,4 +259,161 @@ async fn get_records_multi_shard() {
         .await;
     let result1 = server.get_records(&iter1).await;
     assert_eq!(result1["Records"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn get_records_purges_old_records() {
+    let server = TestServer::new().await;
+    let name = "test-gr-purge";
+    server.create_stream(name, 1).await;
+
+    server.put_record(name, "AAAA", "pk").await;
+
+    let iter = server
+        .get_shard_iterator(name, "shardId-000000000000", "TRIM_HORIZON")
+        .await;
+
+    let result = server.get_records(&iter).await;
+    assert_eq!(result["Records"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn get_records_iterator_wrong_length() {
+    let server = TestServer::new().await;
+
+    let short_buf = vec![0u8; 20];
+    let short_iter = BASE64.encode(&short_buf);
+
+    let res = server
+        .request("GetRecords", &json!({ "ShardIterator": short_iter }))
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "InvalidArgumentException");
+}
+
+#[tokio::test]
+async fn get_records_iterator_wrong_version_header() {
+    let server = TestServer::new().await;
+
+    let mut buf = vec![0u8; 160];
+    buf[7] = 2; // wrong version
+    let iter = BASE64.encode(&buf);
+
+    let res = server
+        .request("GetRecords", &json!({ "ShardIterator": iter }))
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "InvalidArgumentException");
+}
+
+#[tokio::test]
+async fn get_records_iterator_shard_id_bad_format() {
+    type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
+
+    const KEY: [u8; 32] = [
+        0x11, 0x33, 0xa5, 0xa8, 0x33, 0x66, 0x6b, 0x49, 0xab, 0xf2, 0x8c, 0x8b, 0xa3, 0x02, 0x93,
+        0x0f, 0x0b, 0x2f, 0xb2, 0x40, 0xdc, 0xcd, 0x43, 0xcf, 0x4d, 0xfb, 0xc0, 0xca, 0x91, 0xf1,
+        0x77, 0x51,
+    ];
+    const IV: [u8; 16] = [
+        0x7b, 0xf1, 0x39, 0xdb, 0xab, 0xbe, 0xa2, 0xd9, 0x99, 0x5d, 0x6f, 0xca, 0xe1, 0xdf, 0xf7,
+        0xda,
+    ];
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+
+    let shard_id = "shardId-abc";
+    let stream_name = "valid-stream";
+    let seq = "49590338271490256608559692538361571095921575989136588898";
+
+    let encrypt_str = format!(
+        "{:014}/{stream_name}/{shard_id}/{seq}/{}",
+        now_ms,
+        "0".repeat(36)
+    );
+
+    let plaintext = encrypt_str.as_bytes();
+    let cipher = Aes256CbcEnc::new(&KEY.into(), &IV.into());
+    let block_size = 16;
+    let pad_len = block_size - (plaintext.len() % block_size);
+    let mut buf = plaintext.to_vec();
+    buf.resize(plaintext.len() + pad_len, pad_len as u8);
+    let encrypted_len = buf.len();
+    cipher
+        .encrypt_padded_mut::<Pkcs7>(&mut buf, plaintext.len())
+        .unwrap();
+    buf.truncate(encrypted_len);
+
+    let mut buffer = vec![0u8; 8];
+    buffer[7] = 1;
+    buffer.extend_from_slice(&buf);
+    let iterator = BASE64.encode(&buffer);
+
+    let server = TestServer::new().await;
+    let res = server
+        .request("GetRecords", &json!({ "ShardIterator": iterator }))
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "InvalidArgumentException");
+}
+
+#[tokio::test]
+async fn get_records_invalid_stream_name_in_iterator() {
+    type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
+
+    const KEY: [u8; 32] = [
+        0x11, 0x33, 0xa5, 0xa8, 0x33, 0x66, 0x6b, 0x49, 0xab, 0xf2, 0x8c, 0x8b, 0xa3, 0x02, 0x93,
+        0x0f, 0x0b, 0x2f, 0xb2, 0x40, 0xdc, 0xcd, 0x43, 0xcf, 0x4d, 0xfb, 0xc0, 0xca, 0x91, 0xf1,
+        0x77, 0x51,
+    ];
+    const IV: [u8; 16] = [
+        0x7b, 0xf1, 0x39, 0xdb, 0xab, 0xbe, 0xa2, 0xd9, 0x99, 0x5d, 0x6f, 0xca, 0xe1, 0xdf, 0xf7,
+        0xda,
+    ];
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+
+    let stream_name = "invalid!stream";
+    let seq = "49590338271490256608559692538361571095921575989136588898";
+    let shard_id = "shardId-000000000000";
+
+    let encrypt_str = format!(
+        "{:014}/{stream_name}/{shard_id}/{seq}/{}",
+        now_ms,
+        "0".repeat(36)
+    );
+
+    let plaintext = encrypt_str.as_bytes();
+    let cipher = Aes256CbcEnc::new(&KEY.into(), &IV.into());
+    let block_size = 16;
+    let pad_len = block_size - (plaintext.len() % block_size);
+    let mut buf = plaintext.to_vec();
+    buf.resize(plaintext.len() + pad_len, pad_len as u8);
+    let encrypted_len = buf.len();
+    cipher
+        .encrypt_padded_mut::<Pkcs7>(&mut buf, plaintext.len())
+        .unwrap();
+    buf.truncate(encrypted_len);
+
+    let mut buffer = vec![0u8; 8];
+    buffer[7] = 1;
+    buffer.extend_from_slice(&buf);
+    let iterator = BASE64.encode(&buffer);
+
+    let server = TestServer::new().await;
+    let res = server
+        .request("GetRecords", &json!({ "ShardIterator": iterator }))
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "InvalidArgumentException");
 }

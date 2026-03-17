@@ -1,6 +1,8 @@
 mod common;
 
 use common::*;
+use ferrokinesis::sequence::{SeqObj, stringify_sequence};
+use num_bigint::BigUint;
 use serde_json::{Value, json};
 
 #[tokio::test]
@@ -304,4 +306,133 @@ async fn get_shard_iterator_at_timestamp_future_error() {
             .unwrap()
             .contains("timestampInMillis")
     );
+}
+
+#[tokio::test]
+async fn get_shard_iterator_at_seq_version_0_server_error() {
+    let server = TestServer::new().await;
+    let name = "test-gsi-ver0";
+    server.create_stream(name, 1).await;
+
+    let res = server
+        .request(
+            "GetShardIterator",
+            &json!({
+                "StreamName": name,
+                "ShardId": "shardId-000000000000",
+                "ShardIteratorType": "AT_SEQUENCE_NUMBER",
+                "StartingSequenceNumber": "0",
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 500);
+}
+
+#[tokio::test]
+async fn get_shard_iterator_at_seq_version_mismatch() {
+    let server = TestServer::new().await;
+    let name = "test-gsi-vermm";
+    server.create_stream(name, 1).await;
+
+    let fake_seq = stringify_sequence(&SeqObj {
+        shard_create_time: 1000,
+        seq_ix: Some(BigUint::from(0u32)),
+        byte1: None,
+        seq_time: Some(1000),
+        seq_rand: None,
+        shard_ix: 0,
+        version: 2,
+    });
+
+    let res = server
+        .request(
+            "GetShardIterator",
+            &json!({
+                "StreamName": name,
+                "ShardId": "shardId-000000000000",
+                "ShardIteratorType": "AT_SEQUENCE_NUMBER",
+                "StartingSequenceNumber": fake_seq,
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "InvalidArgumentException");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("did not come from this stream")
+    );
+}
+
+#[tokio::test]
+async fn get_shard_iterator_after_seq_unparseable() {
+    let server = TestServer::new().await;
+    let name = "test-gsi-bad-seq";
+    server.create_stream(name, 1).await;
+
+    let bad_seq = "12345678901234567890123456789012345678901234567890";
+    let res = server
+        .request(
+            "GetShardIterator",
+            &json!({
+                "StreamName": name,
+                "ShardId": "shardId-000000000000",
+                "ShardIteratorType": "AFTER_SEQUENCE_NUMBER",
+                "StartingSequenceNumber": bad_seq,
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "InvalidArgumentException");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("StartingSequenceNumber")
+    );
+}
+
+#[tokio::test]
+async fn get_shard_iterator_at_timestamp_missing_field() {
+    let server = TestServer::new().await;
+    let name = "test-gsi-no-ts";
+    server.create_stream(name, 1).await;
+
+    let res = server
+        .request(
+            "GetShardIterator",
+            &json!({
+                "StreamName": name,
+                "ShardId": "shardId-000000000000",
+                "ShardIteratorType": "AT_TIMESTAMP",
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "InvalidArgumentException");
+}
+
+#[tokio::test]
+async fn get_shard_iterator_invalid_shard_id_format() {
+    let server = TestServer::new().await;
+    let name = "test-gsi-bad-shard";
+    server.create_stream(name, 1).await;
+
+    let res = server
+        .request(
+            "GetShardIterator",
+            &json!({
+                "StreamName": name,
+                "ShardId": "shardId-abc",
+                "ShardIteratorType": "TRIM_HORIZON",
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "ResourceNotFoundException");
 }

@@ -434,7 +434,7 @@ fn get_validation_rules(operation: &str) -> Vec<(&'static str, validation::Field
         "SubscribeToShard" => rules::subscribe_to_shard(),
         "TagResource" => rules::tag_resource(),
         "UntagResource" => rules::untag_resource(),
-        "UpdateAccountSettings" => vec![],
+        "UpdateAccountSettings" => rules::update_account_settings(),
         "UpdateMaxRecordSize" => rules::update_max_record_size(),
         "UpdateShardCount" => rules::update_shard_count(),
         "UpdateStreamMode" => rules::update_stream_mode(),

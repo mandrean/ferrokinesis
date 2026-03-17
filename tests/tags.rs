@@ -1,6 +1,8 @@
 mod common;
 
 use common::*;
+use ferrokinesis::store::Store;
+use ferrokinesis::store::StoreOptions;
 use serde_json::{Value, json};
 
 // -- AddTagsToStream --
@@ -299,4 +301,129 @@ async fn list_tags_stream_not_found() {
     assert_eq!(res.status(), 400);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["__type"], "ResourceNotFoundException");
+}
+
+#[tokio::test]
+async fn add_tags_invalid_char_in_key() {
+    let server = TestServer::new().await;
+    let name = "test-atts-inv-key";
+    server.create_stream(name, 1).await;
+
+    let res = server
+        .request(
+            "AddTagsToStream",
+            &json!({
+                "StreamName": name,
+                "Tags": {"foo!bar": "valid-value"},
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "InvalidArgumentException");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("invalid characters")
+    );
+}
+
+#[tokio::test]
+async fn add_tags_invalid_char_in_value() {
+    let server = TestServer::new().await;
+    let name = "test-atts-inv-val";
+    server.create_stream(name, 1).await;
+
+    let res = server
+        .request(
+            "AddTagsToStream",
+            &json!({
+                "StreamName": name,
+                "Tags": {"valid-key": "bad!value"},
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "InvalidArgumentException");
+}
+
+#[tokio::test]
+async fn add_tags_percent_in_value_hits_regex() {
+    let server = TestServer::new().await;
+    let name = "test-atts-pct";
+    server.create_stream(name, 1).await;
+
+    let res = server
+        .request(
+            "AddTagsToStream",
+            &json!({ "StreamName": name, "Tags": {"key": "val%ue"} }),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "InvalidArgumentException");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("invalid characters")
+    );
+}
+
+#[tokio::test]
+async fn remove_tags_percent_in_key_hits_regex() {
+    let server = TestServer::new().await;
+    let name = "test-rtfs-pct";
+    server.create_stream(name, 1).await;
+
+    server
+        .request(
+            "AddTagsToStream",
+            &json!({ "StreamName": name, "Tags": {"valid-key": "value"} }),
+        )
+        .await;
+
+    let res = server
+        .request(
+            "RemoveTagsFromStream",
+            &json!({ "StreamName": name, "TagKeys": ["key%invalid"] }),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "InvalidArgumentException");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("invalid characters")
+    );
+}
+
+#[tokio::test]
+async fn remove_tags_tag_keys_not_array_direct() {
+    let store = Store::new(StoreOptions::default());
+    let result = ferrokinesis::actions::remove_tags_from_stream::execute(
+        &store,
+        json!({ "StreamName": "test", "TagKeys": "not-an-array" }),
+    )
+    .await;
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert_eq!(err.body.__type, "SerializationException");
+}
+
+#[tokio::test]
+async fn add_tags_tags_not_object_direct() {
+    let store = Store::new(StoreOptions::default());
+    let result = ferrokinesis::actions::add_tags_to_stream::execute(
+        &store,
+        json!({ "StreamName": "test", "Tags": "not-an-object" }),
+    )
+    .await;
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert_eq!(err.body.__type, "SerializationException");
 }

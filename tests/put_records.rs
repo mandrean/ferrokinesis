@@ -1,6 +1,7 @@
 mod common;
 
 use common::*;
+use ferrokinesis::store::StoreOptions;
 use serde_json::{Value, json};
 
 #[tokio::test]
@@ -115,4 +116,61 @@ async fn put_records_with_explicit_hash_key() {
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["Records"][0]["ShardId"], "shardId-000000000000");
+}
+
+#[tokio::test]
+async fn put_records_explicit_hash_key_too_large() {
+    let server = TestServer::new().await;
+    let name = "test-prs-ehk";
+    server.create_stream(name, 1).await;
+
+    let res = server
+        .request(
+            "PutRecords",
+            &json!({
+                "StreamName": name,
+                "Records": [{
+                    "Data": "AAAA",
+                    "PartitionKey": "pk",
+                    "ExplicitHashKey": "340282366920938463463374607431768211456",
+                }],
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "InvalidArgumentException");
+}
+
+#[tokio::test]
+async fn put_records_on_creating_stream() {
+    let server = TestServer::with_options(StoreOptions {
+        create_stream_ms: 500,
+        delete_stream_ms: 0,
+        update_stream_ms: 0,
+        shard_limit: 50,
+    })
+    .await;
+    let name = "test-prs-creating";
+
+    let res = server
+        .request(
+            "CreateStream",
+            &json!({"StreamName": name, "ShardCount": 1}),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+
+    let res = server
+        .request(
+            "PutRecords",
+            &json!({
+                "StreamName": name,
+                "Records": [{"Data": "AAAA", "PartitionKey": "pk"}],
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "ResourceNotFoundException");
 }

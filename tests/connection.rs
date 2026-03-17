@@ -476,3 +476,49 @@ async fn incomplete_signature_missing_signed_headers() {
     assert!(!msg.contains("'Credential' parameter"));
     assert!(!msg.contains("'Signature' parameter"));
 }
+
+#[tokio::test]
+async fn server_body_too_large_returns_413() {
+    let server = TestServer::new().await;
+
+    let huge_body = vec![b'x'; 7 * 1024 * 1024 + 1];
+
+    let mut headers = HeaderMap::new();
+    headers.insert("Content-Type", HeaderValue::from_static(AMZ_JSON));
+    headers.insert(
+        "X-Amz-Target",
+        HeaderValue::from_static("Kinesis_20131202.ListStreams"),
+    );
+    headers.insert(
+        "Authorization",
+        HeaderValue::from_static(
+            "AWS4-HMAC-SHA256 Credential=AKID/20150101/us-east-1/kinesis/aws4_request, \
+             SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=abcd1234",
+        ),
+    );
+    headers.insert("X-Amz-Date", HeaderValue::from_static("20150101T000000Z"));
+
+    let res = server
+        .raw_request(Method::POST, "/", headers, huge_body)
+        .await;
+    assert_eq!(res.status(), 413);
+}
+
+#[tokio::test]
+async fn server_invalid_content_type_with_valid_target() {
+    let server = TestServer::new().await;
+
+    let mut headers = HeaderMap::new();
+    headers.insert("Content-Type", HeaderValue::from_static("text/plain"));
+    headers.insert(
+        "X-Amz-Target",
+        HeaderValue::from_static("Kinesis_20131202.ListStreams"),
+    );
+
+    let res = server
+        .raw_request(Method::POST, "/", headers, b"{}".to_vec())
+        .await;
+    assert_eq!(res.status(), 404);
+    let body_text = res.text().await.unwrap();
+    assert!(body_text.contains("UnknownOperationException"));
+}

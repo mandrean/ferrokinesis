@@ -38,7 +38,11 @@ strip = true
 panic = "abort"
 
 [dev-dependencies]
+aes = "0.8"
 aws-credential-types = { version = "1", features = ["test-util"] }
 aws-sdk-kinesis = "1"
+base64 = "0.22"
+cbc = "0.1"
 ciborium = "0.2"
+num-bigint = "0.4"
 reqwest = { version = "0.12", features = ["json"] }

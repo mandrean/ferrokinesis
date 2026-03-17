@@ -1,6 +1,7 @@
 mod common;
 
 use common::*;
+use ferrokinesis::store::StoreOptions;
 use serde_json::{Value, json};
 
 // -- SplitShard --
@@ -241,6 +242,126 @@ async fn merge_shards_stream_not_active() {
         .request(
             "CreateStream",
             &json!({"StreamName": name, "ShardCount": 2}),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+
+    let res = server
+        .request(
+            "MergeShards",
+            &json!({
+                "StreamName": name,
+                "ShardToMerge": "shardId-000000000000",
+                "AdjacentShardToMerge": "shardId-000000000001",
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "ResourceInUseException");
+}
+
+#[tokio::test]
+async fn split_shard_out_of_range() {
+    let server = TestServer::new().await;
+    let name = "test-ss-oor";
+    server.create_stream(name, 1).await;
+
+    let res = server
+        .request(
+            "SplitShard",
+            &json!({
+                "StreamName": name,
+                "ShardToSplit": "shardId-000000000005",
+                "NewStartingHashKey": "170141183460469231731687303715884105728",
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "ResourceNotFoundException");
+}
+
+#[tokio::test]
+async fn merge_shards_out_of_range() {
+    let server = TestServer::new().await;
+    let name = "test-ms-oor";
+    server.create_stream(name, 2).await;
+
+    let res = server
+        .request(
+            "MergeShards",
+            &json!({
+                "StreamName": name,
+                "ShardToMerge": "shardId-000000000000",
+                "AdjacentShardToMerge": "shardId-000000000005",
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "ResourceNotFoundException");
+}
+
+#[tokio::test]
+async fn split_shard_stream_updating() {
+    let server = TestServer::with_options(StoreOptions {
+        create_stream_ms: 0,
+        delete_stream_ms: 0,
+        update_stream_ms: 2000,
+        shard_limit: 50,
+    })
+    .await;
+    let name = "test-ss-updating";
+    server.create_stream(name, 1).await;
+
+    let res = server
+        .request(
+            "StartStreamEncryption",
+            &json!({
+                "StreamName": name,
+                "EncryptionType": "KMS",
+                "KeyId": "my-key",
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+
+    let res = server
+        .request(
+            "SplitShard",
+            &json!({
+                "StreamName": name,
+                "ShardToSplit": "shardId-000000000000",
+                "NewStartingHashKey": "170141183460469231731687303715884105728",
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "ResourceInUseException");
+}
+
+#[tokio::test]
+async fn merge_shards_stream_updating() {
+    let server = TestServer::with_options(StoreOptions {
+        create_stream_ms: 0,
+        delete_stream_ms: 0,
+        update_stream_ms: 2000,
+        shard_limit: 50,
+    })
+    .await;
+    let name = "test-ms-updating";
+    server.create_stream(name, 2).await;
+
+    let res = server
+        .request(
+            "StartStreamEncryption",
+            &json!({
+                "StreamName": name,
+                "EncryptionType": "KMS",
+                "KeyId": "my-key",
+            }),
         )
         .await;
     assert_eq!(res.status(), 200);

@@ -80,3 +80,25 @@ async fn list_shards_validation_missing_stream_name() {
         body["__type"] == "ValidationException" || body["__type"] == "InvalidArgumentException"
     );
 }
+
+#[tokio::test]
+async fn list_shards_with_next_token() {
+    let server = TestServer::new().await;
+    let name = "test-ls-next";
+    server.create_stream(name, 4).await;
+
+    let res = server
+        .request(
+            "ListShards",
+            &json!({
+                "StreamName": name,
+                "MaxResults": 2,
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    let shards = body["Shards"].as_array().unwrap();
+    assert_eq!(shards.len(), 2);
+    assert!(body["NextToken"].as_str().is_some());
+}

@@ -1,0 +1,3 @@
+[alias]
+cov = "llvm-cov --summary-only --ignore-filename-regex main\\.rs"
+cov-html = "llvm-cov --open --ignore-filename-regex main\\.rs"

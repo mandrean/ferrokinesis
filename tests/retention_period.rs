@@ -173,3 +173,33 @@ async fn decrease_retention_validation_missing_fields() {
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["__type"], "ValidationException");
 }
+
+#[tokio::test]
+async fn increase_retention_below_current_not_minimum() {
+    let server = TestServer::new().await;
+    let name = "test-isrp-below-cur";
+    server.create_stream(name, 1).await;
+
+    server
+        .request(
+            "IncreaseStreamRetentionPeriod",
+            &json!({ "StreamName": name, "RetentionPeriodHours": 48 }),
+        )
+        .await;
+
+    let res = server
+        .request(
+            "IncreaseStreamRetentionPeriod",
+            &json!({ "StreamName": name, "RetentionPeriodHours": 36 }),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "InvalidArgumentException");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("can not be shorter than existing retention period")
+    );
+}
