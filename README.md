@@ -6,7 +6,7 @@ A local AWS Kinesis mock server for testing, written in Rust.
 
 - Pure Rust implementation
 - Uses [redb](https://github.com/cberner/redb) for in-memory storage (ACID, zero-copy reads)
-- Implements 31 of 39 Kinesis Data Streams API operations
+- Implements 36 of 39 Kinesis Data Streams API operations
 - Supports both JSON and CBOR content types
 - 125+ integration tests
 
@@ -104,8 +104,8 @@ client.list_streams().send().await?;
 | EnableEnhancedMonitoring | ✅ | |
 | DisableEnhancedMonitoring | ✅ | |
 | DescribeLimits | ✅ | |
-| DescribeAccountSettings | ❌ | |
-| UpdateAccountSettings | ❌ | |
+| DescribeAccountSettings | ✅ | |
+| UpdateAccountSettings | ✅ | |
 | **Encryption** | | |
 | StartStreamEncryption | ✅ | |
 | StopStreamEncryption | ✅ | |
@@ -114,9 +114,9 @@ client.list_streams().send().await?;
 | RemoveTagsFromStream | ✅ | |
 | ListTagsForStream | ✅ | |
 | **Tagging (ARN-based)** | | |
-| TagResource | ❌ | |
-| UntagResource | ❌ | |
-| ListTagsForResource | ❌ | |
+| TagResource | ✅ | |
+| UntagResource | ✅ | |
+| ListTagsForResource | ✅ | |
 | **Resource Policies** | | |
 | PutResourcePolicy | ✅ | |
 | GetResourcePolicy | ✅ | |
@@ -125,7 +125,7 @@ client.list_streams().send().await?;
 | UpdateStreamWarmThroughput | ❌ | |
 | UpdateMaxRecordSize | ❌ | |
 
-**31/39 operations implemented** (79%)
+**36/39 operations implemented** (92%)
 
 ## Building
 

@@ -436,3 +436,42 @@ pub fn delete_resource_policy() -> Vec<(&'static str, FieldDef)> {
         ("ResourceARN", stream_arn_field().not_null()),
     ]
 }
+
+pub fn tag_resource() -> Vec<(&'static str, FieldDef)> {
+    vec![
+        ("ResourceARN", stream_arn_field().not_null()),
+        (
+            "Tags",
+            FieldDef::new(FieldType::Map {
+                children: Box::new(FieldDef::new(FieldType::String)),
+            })
+            .not_null()
+            .len_gte(1)
+            .len_lte(200)
+            .child_key_lengths(1, 128)
+            .child_value_lengths(0, 256),
+        ),
+    ]
+}
+
+pub fn untag_resource() -> Vec<(&'static str, FieldDef)> {
+    vec![
+        ("ResourceARN", stream_arn_field().not_null()),
+        (
+            "TagKeys",
+            FieldDef::new(FieldType::List {
+                children: Box::new(FieldDef::new(FieldType::String)),
+            })
+            .not_null()
+            .len_gte(1)
+            .len_lte(50)
+            .child_lengths(1, 128),
+        ),
+    ]
+}
+
+pub fn list_tags_for_resource() -> Vec<(&'static str, FieldDef)> {
+    vec![
+        ("ResourceARN", stream_arn_field().not_null()),
+    ]
+}

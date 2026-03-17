@@ -10,6 +10,7 @@ const STREAMS: TableDefinition<&str, &[u8]> = TableDefinition::new("streams");
 const RECORDS: TableDefinition<&str, &[u8]> = TableDefinition::new("records");
 const CONSUMERS: TableDefinition<&str, &[u8]> = TableDefinition::new("consumers");
 const POLICIES: TableDefinition<&str, &str> = TableDefinition::new("policies");
+const RESOURCE_TAGS: TableDefinition<&str, &[u8]> = TableDefinition::new("resource_tags");
 
 #[derive(Debug, Clone)]
 pub struct StoreOptions {
@@ -110,6 +111,7 @@ impl Store {
         write_txn.open_table(RECORDS).unwrap();
         write_txn.open_table(CONSUMERS).unwrap();
         write_txn.open_table(POLICIES).unwrap();
+        write_txn.open_table(RESOURCE_TAGS).unwrap();
         write_txn.commit().unwrap();
 
         Self {
@@ -463,5 +465,27 @@ impl Store {
     pub fn stream_name_from_arn(&self, arn: &str) -> Option<String> {
         // Format: arn:aws:kinesis:{region}:{account}:stream/{name}
         arn.split("/").nth(1).map(|s| s.to_string())
+    }
+
+    // --- Resource tag operations (for non-stream resources like consumers) ---
+
+    pub async fn get_resource_tags(&self, resource_arn: &str) -> BTreeMap<String, String> {
+        let read_txn = self.db.begin_read().unwrap();
+        let table = read_txn.open_table(RESOURCE_TAGS).unwrap();
+        table
+            .get(resource_arn)
+            .unwrap()
+            .map(|guard| serde_json::from_slice(guard.value()).unwrap_or_default())
+            .unwrap_or_default()
+    }
+
+    pub async fn put_resource_tags(&self, resource_arn: &str, tags: &BTreeMap<String, String>) {
+        let bytes = serde_json::to_vec(tags).unwrap();
+        let write_txn = self.db.begin_write().unwrap();
+        {
+            let mut table = write_txn.open_table(RESOURCE_TAGS).unwrap();
+            table.insert(resource_arn, bytes.as_slice()).unwrap();
+        }
+        write_txn.commit().unwrap();
     }
 }

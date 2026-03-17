@@ -4,6 +4,7 @@ pub mod decrease_stream_retention_period;
 pub mod delete_resource_policy;
 pub mod delete_stream;
 pub mod deregister_stream_consumer;
+pub mod describe_account_settings;
 pub mod describe_limits;
 pub mod describe_stream;
 pub mod describe_stream_consumer;
@@ -17,6 +18,7 @@ pub mod increase_stream_retention_period;
 pub mod list_shards;
 pub mod list_stream_consumers;
 pub mod list_streams;
+pub mod list_tags_for_resource;
 pub mod list_tags_for_stream;
 pub mod merge_shards;
 pub mod put_record;
@@ -27,6 +29,9 @@ pub mod remove_tags_from_stream;
 pub mod split_shard;
 pub mod start_stream_encryption;
 pub mod stop_stream_encryption;
+pub mod tag_resource;
+pub mod untag_resource;
+pub mod update_account_settings;
 pub mod update_shard_count;
 pub mod update_stream_mode;
 
@@ -48,6 +53,7 @@ pub async fn dispatch(
         "DeleteResourcePolicy" => delete_resource_policy::execute(store, data).await,
         "DeleteStream" => delete_stream::execute(store, data).await,
         "DeregisterStreamConsumer" => deregister_stream_consumer::execute(store, data).await,
+        "DescribeAccountSettings" => describe_account_settings::execute(store, data).await,
         "DescribeLimits" => describe_limits::execute(store, data).await,
         "DescribeStream" => describe_stream::execute(store, data).await,
         "DescribeStreamConsumer" => describe_stream_consumer::execute(store, data).await,
@@ -63,6 +69,7 @@ pub async fn dispatch(
         "ListShards" => list_shards::execute(store, data).await,
         "ListStreamConsumers" => list_stream_consumers::execute(store, data).await,
         "ListStreams" => list_streams::execute(store, data).await,
+        "ListTagsForResource" => list_tags_for_resource::execute(store, data).await,
         "ListTagsForStream" => list_tags_for_stream::execute(store, data).await,
         "MergeShards" => merge_shards::execute(store, data).await,
         "PutRecord" => put_record::execute(store, data).await,
@@ -73,6 +80,9 @@ pub async fn dispatch(
         "SplitShard" => split_shard::execute(store, data).await,
         "StartStreamEncryption" => start_stream_encryption::execute(store, data).await,
         "StopStreamEncryption" => stop_stream_encryption::execute(store, data).await,
+        "TagResource" => tag_resource::execute(store, data).await,
+        "UntagResource" => untag_resource::execute(store, data).await,
+        "UpdateAccountSettings" => update_account_settings::execute(store, data).await,
         "UpdateShardCount" => update_shard_count::execute(store, data).await,
         "UpdateStreamMode" => update_stream_mode::execute(store, data).await,
         _ => Err(KinesisErrorResponse::client_error(
