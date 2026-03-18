@@ -125,7 +125,10 @@ fn run_health_check(args: &HealthCheckArgs) -> ExitCode {
     );
 
     let mut writer = stream.try_clone().expect("failed to clone TcpStream");
-    if let Err(e) = writer.write_all(request.as_bytes()).and_then(|()| writer.flush()) {
+    if let Err(e) = writer
+        .write_all(request.as_bytes())
+        .and_then(|()| writer.flush())
+    {
         eprintln!("health check failed: write error: {e}");
         return ExitCode::FAILURE;
     }

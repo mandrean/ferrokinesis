@@ -5,26 +5,16 @@ use redb::backends::InMemoryBackend;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::fmt;
 use std::sync::Arc;
 
 /// Errors that can occur when probing store health.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum StoreHealthError {
+    #[error("db read failed: {0}")]
     ReadFailed(String),
+    #[error("table open failed: {0}")]
     TableOpenFailed(String),
 }
-
-impl fmt::Display for StoreHealthError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ReadFailed(e) => write!(f, "db read failed: {e}"),
-            Self::TableOpenFailed(e) => write!(f, "table open failed: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for StoreHealthError {}
 
 const STREAMS: TableDefinition<&str, &[u8]> = TableDefinition::new("streams");
 const RECORDS: TableDefinition<&str, &[u8]> = TableDefinition::new("records");
