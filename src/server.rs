@@ -332,12 +332,9 @@ pub async fn handler(
 
     // Execute action
     match actions::dispatch(&store, operation, data).await {
-        Ok(Some(result)) => send_json_response(
-            response_headers.clone(),
-            response_content_type,
-            &result,
-            200,
-        ),
+        Ok(Some(result)) => {
+            send_json_response(response_headers, response_content_type, &result, 200)
+        }
         Ok(None) => {
             response_headers.insert("Content-Type", response_content_type.parse().unwrap());
             response_headers.insert("Content-Length", "0".parse().unwrap());
@@ -472,15 +469,15 @@ fn send_error_response(
     message: &str,
     status_code: u16,
 ) -> Response {
-    let mut headers = extra_headers.clone();
-    headers.insert(
-        "x-amzn-ErrorType",
-        error_type.parse().expect("error_type must be valid ASCII"),
-    );
     if content_valid {
         let err = KinesisErrorResponse::new(status_code, error_type, Some(message));
-        send_json_response(headers, content_type, &err.body, status_code)
+        send_kinesis_error(extra_headers, content_type, &err)
     } else {
+        let mut headers = extra_headers.clone();
+        headers.insert(
+            "x-amzn-ErrorType",
+            error_type.parse().expect("error_type must be valid ASCII"),
+        );
         send_xml_error(headers, error_type, message, status_code)
     }
 }

@@ -168,7 +168,7 @@ async fn error_serialization_exception_status_and_type() {
 #[tokio::test]
 async fn error_validation_exception_status_and_type() {
     let server = TestServer::new().await;
-    // StreamName with invalid characters triggers validation
+    // 129-char StreamName exceeds the 128-char len_lte validation → ValidationException
     let res = server
         .request(
             "CreateStream",
@@ -177,12 +177,7 @@ async fn error_validation_exception_status_and_type() {
         .await;
     assert_eq!(res.status(), 400);
     let body: Value = res.json().await.unwrap();
-    // Validation errors can be ValidationException or SerializationException
-    let error_type = body["__type"].as_str().unwrap();
-    assert!(
-        error_type == "ValidationException" || error_type == "SerializationException",
-        "expected ValidationException or SerializationException, got {error_type}"
-    );
+    assert_error_shape(&body, "ValidationException");
 }
 
 #[tokio::test]
@@ -684,6 +679,10 @@ async fn error_message_stream_already_exists_format() {
 // Server error (500) conformance tests
 // ===========================================================================
 
+/// NOTE: This test relies on an internal implementation detail — passing
+/// `StartingSequenceNumber: "0"` triggers a version-0 sequence parse failure
+/// that surfaces as a 500.  If that code path is ever changed to return a 4xx,
+/// this test will fail and a new way to provoke a 500 will be needed.
 #[tokio::test]
 async fn error_server_error_500_shape() {
     let server = TestServer::new().await;
