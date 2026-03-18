@@ -30,6 +30,7 @@ pub struct StoreOptions {
     pub update_stream_ms: u64,
     pub shard_limit: u32,
     pub iterator_ttl_seconds: u64,
+    pub retention_check_interval_secs: u64,
     pub aws_account_id: String,
     pub aws_region: String,
 }
@@ -42,6 +43,7 @@ impl Default for StoreOptions {
             update_stream_ms: 500,
             shard_limit: 10,
             iterator_ttl_seconds: 300,
+            retention_check_interval_secs: 0,
             aws_account_id: "000000000000".to_string(),
             aws_region: "us-east-1".to_string(),
         }
@@ -353,6 +355,50 @@ impl Store {
             }
         }
         write_txn.commit().unwrap();
+    }
+
+    /// Delete records whose sequence-number–embedded timestamp is older than
+    /// the retention cutoff.  Returns the number of records removed.
+    pub async fn delete_expired_records(&self, stream_name: &str, retention_hours: u32) -> usize {
+        let now = crate::util::current_time_ms();
+        let cutoff_time = now - (retention_hours as u64 * 60 * 60 * 1000);
+
+        let prefix = format!("{stream_name}\0");
+        let prefix_end = format!("{stream_name}\x01");
+
+        let keys_to_delete: Vec<String> = {
+            let read_txn = self.db.begin_read().unwrap();
+            let table = read_txn.open_table(RECORDS).unwrap();
+            table
+                .range(prefix.as_str()..prefix_end.as_str())
+                .unwrap()
+                .filter_map(|r| {
+                    let (k, _) = r.unwrap();
+                    let full_key = k.value().to_string();
+                    let shard_key = full_key.strip_prefix(&prefix)?;
+                    let seq_num = shard_key.split('/').nth(1)?;
+                    let seq_obj = crate::sequence::parse_sequence(seq_num).ok()?;
+                    if seq_obj.seq_time.unwrap_or(0) < cutoff_time {
+                        Some(full_key)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+
+        let count = keys_to_delete.len();
+        if count > 0 {
+            let write_txn = self.db.begin_write().unwrap();
+            {
+                let mut table = write_txn.open_table(RECORDS).unwrap();
+                for key in &keys_to_delete {
+                    table.remove(key.as_str()).unwrap();
+                }
+            }
+            write_txn.commit().unwrap();
+        }
+        count
     }
 
     pub async fn delete_record_keys(&self, stream_name: &str, keys: &[String]) {

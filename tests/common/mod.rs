@@ -37,6 +37,7 @@ pub async fn decode_body(res: reqwest::Response) -> (u16, Value) {
 pub struct TestServer {
     pub addr: SocketAddr,
     pub client: Client,
+    pub store: ferrokinesis::store::Store,
 }
 
 impl TestServer {
@@ -52,7 +53,7 @@ impl TestServer {
     }
 
     pub async fn with_options(options: StoreOptions) -> Self {
-        let (app, _store) = ferrokinesis::create_app(options);
+        let (app, store) = ferrokinesis::create_app(options);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
@@ -63,11 +64,12 @@ impl TestServer {
         TestServer {
             addr,
             client: Client::new(),
+            store,
         }
     }
 
     pub async fn with_body_limit(options: StoreOptions, max_body_bytes: usize) -> Self {
-        let (app, _store) = ferrokinesis::create_app(options);
+        let (app, store) = ferrokinesis::create_app(options);
         let app = app.layer(DefaultBodyLimit::max(max_body_bytes));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -79,6 +81,7 @@ impl TestServer {
         TestServer {
             addr,
             client: Client::new(),
+            store,
         }
     }
 

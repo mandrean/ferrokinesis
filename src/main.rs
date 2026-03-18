@@ -75,6 +75,10 @@ struct ServeArgs {
     /// Maximum request body size in megabytes (minimum: 1, maximum: 4096)
     #[arg(long, env = "FERROKINESIS_MAX_REQUEST_BODY_MB", value_parser = clap::value_parser!(u64).range(1..=4096))]
     max_request_body_mb: Option<u64>,
+
+    /// Retention reaper interval in seconds (0 = disabled, maximum: 86400)
+    #[arg(long, env = "FERROKINESIS_RETENTION_CHECK_INTERVAL_SECS", value_parser = clap::value_parser!(u64).range(0..=86400))]
+    retention_check_interval_secs: Option<u64>,
 }
 
 /// Resolve a value using precedence: CLI/env > config file > default.
@@ -191,6 +195,11 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
         300,
     );
     let max_request_body_mb = resolve(args.max_request_body_mb, file_cfg.max_request_body_mb, 7);
+    let retention_check_interval_secs = resolve(
+        args.retention_check_interval_secs,
+        file_cfg.retention_check_interval_secs,
+        0,
+    );
     let aws_account_id = resolve(args.account_id, file_cfg.account_id, "000000000000".into());
     let aws_region = resolve(
         args.region.or(args.default_region),
@@ -204,6 +213,7 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
         update_stream_ms,
         shard_limit,
         iterator_ttl_seconds,
+        retention_check_interval_secs,
         aws_account_id,
         aws_region,
     };
