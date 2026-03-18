@@ -11,8 +11,8 @@ async fn custom_account_id_appears_in_stream_arn() {
         delete_stream_ms: 0,
         update_stream_ms: 0,
         shard_limit: 50,
-        aws_account_id: Some("123456789012".to_string()),
-        aws_region: Some("eu-west-1".to_string()),
+        aws_account_id: "123456789012".to_string(),
+        aws_region: "eu-west-1".to_string(),
     })
     .await;
 
@@ -51,7 +51,7 @@ async fn custom_region_in_error_messages() {
         delete_stream_ms: 0,
         update_stream_ms: 0,
         shard_limit: 50,
-        aws_account_id: Some("999888777666".to_string()),
+        aws_account_id: "999888777666".to_string(),
         ..Default::default()
     })
     .await;
@@ -76,8 +76,8 @@ async fn custom_region_in_consumer_arn() {
         delete_stream_ms: 0,
         update_stream_ms: 0,
         shard_limit: 50,
-        aws_account_id: Some("111222333444".to_string()),
-        aws_region: Some("ap-southeast-1".to_string()),
+        aws_account_id: "111222333444".to_string(),
+        aws_region: "ap-southeast-1".to_string(),
     })
     .await;
 
@@ -109,8 +109,8 @@ async fn account_id_strips_non_digits() {
         delete_stream_ms: 0,
         update_stream_ms: 0,
         shard_limit: 50,
-        aws_account_id: Some("1234-5678-9012".to_string()),
-        aws_region: Some("us-west-2".to_string()),
+        aws_account_id: "1234-5678-9012".to_string(),
+        aws_region: "us-west-2".to_string(),
     })
     .await;
 

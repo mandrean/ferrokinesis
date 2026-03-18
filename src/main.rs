@@ -3,6 +3,7 @@ use clap::Parser;
 use ferrokinesis::config::load_config;
 use ferrokinesis::store::StoreOptions;
 use std::path::PathBuf;
+use std::process;
 
 #[derive(Parser, Debug)]
 #[command(name = "ferrokinesis")]
@@ -54,7 +55,16 @@ fn resolve<T>(cli: Option<T>, file: Option<T>, default: T) -> T {
 async fn main() {
     let args = Args::parse();
 
-    let file_cfg = args.config.as_deref().map(load_config).unwrap_or_default();
+    let file_cfg = args
+        .config
+        .as_deref()
+        .map(load_config)
+        .transpose()
+        .unwrap_or_else(|e| {
+            eprintln!("{e}");
+            process::exit(1);
+        })
+        .unwrap_or_default();
 
     let port = resolve(args.port, file_cfg.port, 4567);
     let create_stream_ms = resolve(args.create_stream_ms, file_cfg.create_stream_ms, 500);
@@ -62,8 +72,8 @@ async fn main() {
     let update_stream_ms = resolve(args.update_stream_ms, file_cfg.update_stream_ms, 500);
     let shard_limit = resolve(args.shard_limit, file_cfg.shard_limit, 10);
     let max_request_body_mb = resolve(args.max_request_body_mb, file_cfg.max_request_body_mb, 7);
-    let aws_account_id = args.account_id.or(file_cfg.account_id);
-    let aws_region = args.region.or(file_cfg.region);
+    let aws_account_id = resolve(args.account_id, file_cfg.account_id, "000000000000".into());
+    let aws_region = resolve(args.region, file_cfg.region, "us-east-1".into());
 
     let options = StoreOptions {
         create_stream_ms,

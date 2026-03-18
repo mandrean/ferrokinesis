@@ -20,8 +20,8 @@ pub struct StoreOptions {
     pub delete_stream_ms: u64,
     pub update_stream_ms: u64,
     pub shard_limit: u32,
-    pub aws_account_id: Option<String>,
-    pub aws_region: Option<String>,
+    pub aws_account_id: String,
+    pub aws_region: String,
 }
 
 impl Default for StoreOptions {
@@ -31,8 +31,8 @@ impl Default for StoreOptions {
             delete_stream_ms: 500,
             update_stream_ms: 500,
             shard_limit: 10,
-            aws_account_id: None,
-            aws_region: None,
+            aws_account_id: "000000000000".to_string(),
+            aws_region: "us-east-1".to_string(),
         }
     }
 }
@@ -110,19 +110,11 @@ impl Store {
     pub fn new(options: StoreOptions) -> Self {
         let aws_account_id = options
             .aws_account_id
-            .clone()
-            .or_else(|| std::env::var("AWS_ACCOUNT_ID").ok())
-            .unwrap_or_else(|| "0000-0000-0000".to_string())
             .chars()
             .filter(|c| c.is_ascii_digit())
             .collect();
 
-        let aws_region = options
-            .aws_region
-            .clone()
-            .or_else(|| std::env::var("AWS_REGION").ok())
-            .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok())
-            .unwrap_or_else(|| "us-east-1".to_string());
+        let aws_region = options.aws_region.clone();
 
         let db = Database::builder()
             .create_with_backend(InMemoryBackend::new())
