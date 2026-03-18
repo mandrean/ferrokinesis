@@ -50,12 +50,6 @@ func TestConformance(t *testing.T) {
 	ctx := context.Background()
 	streamName := "go-conformance"
 
-	t.Cleanup(func() {
-		client.DeleteStream(ctx, &kinesis.DeleteStreamInput{
-			StreamName: aws.String(streamName),
-		})
-	})
-
 	// 1. CreateStream
 	t.Run("CreateStream", func(t *testing.T) {
 		_, err := client.CreateStream(ctx, &kinesis.CreateStreamInput{
@@ -188,6 +182,16 @@ func TestConformance(t *testing.T) {
 		first := string(out.Records[0].Data)
 		if first != "hello from go" {
 			t.Errorf("first record data = %q, want %q", first, "hello from go")
+		}
+	})
+
+	// 8. DeleteStream
+	t.Run("DeleteStream", func(t *testing.T) {
+		_, err := client.DeleteStream(ctx, &kinesis.DeleteStreamInput{
+			StreamName: aws.String(streamName),
+		})
+		if err != nil {
+			t.Fatalf("DeleteStream: %v", err)
 		}
 	})
 

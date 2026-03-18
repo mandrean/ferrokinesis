@@ -6,7 +6,6 @@ import com.amazonaws.client.builder.AwsClientBuilder.EndpointConfiguration;
 import com.amazonaws.services.kinesis.AmazonKinesis;
 import com.amazonaws.services.kinesis.AmazonKinesisClientBuilder;
 import com.amazonaws.services.kinesis.model.*;
-import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
@@ -37,6 +36,7 @@ public class KinesisV1ConformanceTest {
                     new BasicAWSCredentials("test", "test")))
             .build();
 
+    // Shared across ordered tests — requires @TestMethodOrder(OrderAnnotation) (do not run in parallel)
     private static String putShardId;
     private static String shardIterator;
 
@@ -126,11 +126,8 @@ public class KinesisV1ConformanceTest {
         assertEquals("hello from java-v1", first);
     }
 
-    @AfterAll
-    static void cleanup() {
-        try {
-            client.deleteStream(STREAM_NAME);
-        } catch (Exception ignored) {
-        }
+    @Test @Order(8)
+    void deleteStream() {
+        client.deleteStream(STREAM_NAME);
     }
 }

@@ -43,15 +43,7 @@ async function waitForActive(
 }
 
 describe("Kinesis conformance", () => {
-  afterAll(async () => {
-    try {
-      await client.send(new DeleteStreamCommand({ StreamName: STREAM_NAME }));
-    } catch {
-      // stream may not exist if creation failed
-    }
-  });
-
-  it("completes the 7-operation lifecycle", async () => {
+  it("completes the 8-operation lifecycle", async () => {
     // 1. CreateStream
     await client.send(
       new CreateStreamCommand({ StreamName: STREAM_NAME, ShardCount: 2 })
@@ -112,5 +104,10 @@ describe("Kinesis conformance", () => {
     expect(records.Records!.length).toBeGreaterThanOrEqual(1);
     const firstData = new TextDecoder().decode(records.Records![0].Data);
     expect(firstData).toBe("hello from node");
+
+    // 8. DeleteStream
+    await client.send(
+      new DeleteStreamCommand({ StreamName: STREAM_NAME })
+    );
   });
 });

@@ -40,8 +40,6 @@ jobs:
           - name: Go v2
             lang: go
             dir: tests/conformance/go-sdk-v2
-            setup: |
-              echo "Go toolchain already installed via setup-go"
             run: go test -v -count=1 -timeout 60s ./...
           - name: Python (boto3)
             lang: python
@@ -56,12 +54,10 @@ jobs:
           - name: Java SDK v2
             lang: java-v2
             dir: tests/conformance/java-sdk-v2
-            setup: echo "Maven handles deps"
             run: mvn -B test
           - name: Java SDK v1
             lang: java-v1
             dir: tests/conformance/java-sdk-v1
-            setup: echo "Maven handles deps"
             run: mvn -B test
     env:
       AWS_ACCESS_KEY_ID: test
@@ -124,6 +120,7 @@ jobs:
           key: pip-conformance-${{ hashFiles('tests/conformance/python-boto3/requirements.txt') }}
 
       - name: Install dependencies
+        if: matrix.setup != ''
         working-directory: ${{ matrix.dir }}
         run: ${{ matrix.setup }}
 

@@ -1,4 +1,4 @@
-module ferrokinesis/conformance/go
+module conformance
 
 go 1.22
 

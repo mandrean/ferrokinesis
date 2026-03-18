@@ -1,6 +1,5 @@
 import os
 import time
-from contextlib import suppress
 
 import boto3
 import pytest
@@ -35,52 +34,51 @@ def test_conformance(client):
     # 1. CreateStream
     client.create_stream(StreamName=STREAM_NAME, ShardCount=2)
 
-    try:
-        # 2. DescribeStream — wait for ACTIVE
-        desc = wait_for_active(client, STREAM_NAME)
-        stream = desc["StreamDescription"]
-        assert stream["StreamName"] == STREAM_NAME
-        assert stream["StreamStatus"] == "ACTIVE"
-        assert len(stream["Shards"]) == 2
+    # 2. DescribeStream — wait for ACTIVE
+    desc = wait_for_active(client, STREAM_NAME)
+    stream = desc["StreamDescription"]
+    assert stream["StreamName"] == STREAM_NAME
+    assert stream["StreamStatus"] == "ACTIVE"
+    assert len(stream["Shards"]) == 2
 
-        # 3. ListStreams
-        listed = client.list_streams()
-        assert STREAM_NAME in listed["StreamNames"]
+    # 3. ListStreams
+    listed = client.list_streams()
+    assert STREAM_NAME in listed["StreamNames"]
 
-        # 4. PutRecord
-        put = client.put_record(
-            StreamName=STREAM_NAME,
-            Data=b"hello from python",
-            PartitionKey="pk-1",
-        )
-        assert put["ShardId"]
-        assert put["SequenceNumber"]
-        shard_id = put["ShardId"]
+    # 4. PutRecord
+    put = client.put_record(
+        StreamName=STREAM_NAME,
+        Data=b"hello from python",
+        PartitionKey="pk-1",
+    )
+    assert put["ShardId"]
+    assert put["SequenceNumber"]
+    shard_id = put["ShardId"]
 
-        # 5. PutRecords
-        records = client.put_records(
-            StreamName=STREAM_NAME,
-            Records=[
-                {"Data": f"batch-{i}".encode(), "PartitionKey": f"pk-{i}"}
-                for i in range(3)
-            ],
-        )
-        assert records["FailedRecordCount"] == 0
-        assert len(records["Records"]) == 3
+    # 5. PutRecords
+    records = client.put_records(
+        StreamName=STREAM_NAME,
+        Records=[
+            {"Data": f"batch-{i}".encode(), "PartitionKey": f"pk-{i}"}
+            for i in range(3)
+        ],
+    )
+    assert records["FailedRecordCount"] == 0
+    assert len(records["Records"]) == 3
 
-        # 6. GetShardIterator
-        shard_iter = client.get_shard_iterator(
-            StreamName=STREAM_NAME,
-            ShardId=shard_id,
-            ShardIteratorType="TRIM_HORIZON",
-        )
-        iterator = shard_iter["ShardIterator"]
-        assert iterator
+    # 6. GetShardIterator
+    shard_iter = client.get_shard_iterator(
+        StreamName=STREAM_NAME,
+        ShardId=shard_id,
+        ShardIteratorType="TRIM_HORIZON",
+    )
+    iterator = shard_iter["ShardIterator"]
+    assert iterator
 
-        # 7. GetRecords
-        got = client.get_records(ShardIterator=iterator)
-        assert len(got["Records"]) >= 1
-        assert got["Records"][0]["Data"] == b"hello from python"
-    finally:
-        with suppress(Exception):
-            client.delete_stream(StreamName=STREAM_NAME)
+    # 7. GetRecords
+    got = client.get_records(ShardIterator=iterator)
+    assert len(got["Records"]) >= 1
+    assert got["Records"][0]["Data"] == b"hello from python"
+
+    # 8. DeleteStream
+    client.delete_stream(StreamName=STREAM_NAME)
