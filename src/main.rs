@@ -26,8 +26,8 @@ struct Args {
     #[arg(long, default_value_t = 10)]
     shard_limit: u32,
 
-    /// Maximum request body size in megabytes (default: 7)
-    #[arg(long, default_value_t = 7)]
+    /// Maximum request body size in megabytes (minimum: 1, default: 7)
+    #[arg(long, default_value_t = 7, value_parser = clap::value_parser!(u64).range(1..))]
     max_request_body_mb: u64,
 }
 
@@ -42,7 +42,9 @@ async fn main() {
         shard_limit: args.shard_limit,
     };
 
-    let max_bytes = (args.max_request_body_mb * 1024 * 1024) as usize;
+    let max_bytes: usize = (args.max_request_body_mb * 1024 * 1024)
+        .try_into()
+        .expect("--max-request-body-mb value overflows usize");
     let (app, _store) = ferrokinesis::create_app(options);
     let app = app.layer(DefaultBodyLimit::max(max_bytes));
 
