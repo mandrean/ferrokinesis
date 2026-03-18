@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 
 use axum::extract::DefaultBodyLimit;
-use base64::Engine;
 use ferrokinesis::store::StoreOptions;
 use reqwest::Client;
 use reqwest::header::{HeaderMap, HeaderValue};
@@ -107,7 +106,10 @@ impl TestServer {
             .unwrap()
     }
 
-    /// Make a signed Kinesis API request (CBOR content type)
+    /// Make a signed Kinesis API request (CBOR content type).
+    /// Note: serializes serde_json::Value via ciborium, so strings are emitted as
+    /// CBOR text strings (major type 3), not byte strings. Use `cbor_request_raw_data`
+    /// to send true CBOR byte strings (major type 2) for Blob fields.
     pub async fn cbor_request(&self, target: &str, data: &Value) -> reqwest::Response {
         let mut buf = Vec::new();
         ciborium::into_writer(data, &mut buf).unwrap();
@@ -126,10 +128,11 @@ impl TestServer {
             .unwrap()
     }
 
-    /// Send the same request as both JSON and CBOR, decode both responses
+    /// Send the same request as both JSON and CBOR, decode both responses.
+    /// Uses `decode_cbor_body` for the CBOR leg so CBOR byte strings are handled correctly.
     pub async fn request_both(&self, target: &str, data: &Value) -> ((u16, Value), (u16, Value)) {
         let json_resp = decode_body(self.request(target, data).await).await;
-        let cbor_resp = decode_body(self.cbor_request(target, data).await).await;
+        let cbor_resp = decode_cbor_body(self.cbor_request(target, data).await).await;
         (json_resp, cbor_resp)
     }
 
@@ -287,42 +290,8 @@ pub async fn decode_cbor_body(res: reqwest::Response) -> (u16, Value) {
     }
     let cbor_val: ciborium::Value =
         ciborium::from_reader(&bytes[..]).unwrap_or(ciborium::Value::Null);
-    let json_val = cbor_to_json(&cbor_val);
+    let json_val = ferrokinesis::server::cbor_to_json(&cbor_val);
     (status, json_val)
-}
-
-/// Convert ciborium::Value to serde_json::Value, mapping CBOR byte strings
-/// to base64-encoded JSON strings.
-pub fn cbor_to_json(val: &ciborium::Value) -> Value {
-    match val {
-        ciborium::Value::Null => Value::Null,
-        ciborium::Value::Bool(b) => Value::Bool(*b),
-        ciborium::Value::Integer(n) => {
-            let n: i128 = (*n).into();
-            Value::Number(serde_json::Number::from(n as i64))
-        }
-        ciborium::Value::Float(f) => serde_json::Number::from_f64(*f)
-            .map(Value::Number)
-            .unwrap_or(Value::Null),
-        ciborium::Value::Text(s) => Value::String(s.clone()),
-        ciborium::Value::Bytes(b) => {
-            Value::String(base64::engine::general_purpose::STANDARD.encode(b))
-        }
-        ciborium::Value::Array(arr) => Value::Array(arr.iter().map(cbor_to_json).collect()),
-        ciborium::Value::Map(map) => {
-            let mut obj = serde_json::Map::new();
-            for (k, v) in map {
-                let key = match k {
-                    ciborium::Value::Text(s) => s.clone(),
-                    _ => format!("{k:?}"),
-                };
-                obj.insert(key, cbor_to_json(v));
-            }
-            Value::Object(obj)
-        }
-        ciborium::Value::Tag(_, inner) => cbor_to_json(inner),
-        _ => Value::Null,
-    }
 }
 
 /// Convert a serde_json::Value to ciborium::Value, replacing the field at

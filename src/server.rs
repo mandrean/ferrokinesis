@@ -536,13 +536,19 @@ fn send_error_response(
 /// Convert ciborium::Value to serde_json::Value.
 /// CBOR byte strings (major type 2) are converted to base64-encoded strings,
 /// so the rest of the pipeline can treat all data uniformly.
-fn cbor_to_json(val: &ciborium::Value) -> Value {
+pub fn cbor_to_json(val: &ciborium::Value) -> Value {
     match val {
         ciborium::Value::Null => Value::Null,
         ciborium::Value::Bool(b) => Value::Bool(*b),
         ciborium::Value::Integer(n) => {
             let n: i128 = (*n).into();
-            Value::Number(serde_json::Number::from(n as i64))
+            if let Ok(i) = i64::try_from(n) {
+                Value::Number(serde_json::Number::from(i))
+            } else if let Some(num) = serde_json::Number::from_f64(n as f64) {
+                Value::Number(num)
+            } else {
+                Value::Null
+            }
         }
         ciborium::Value::Float(f) => serde_json::Number::from_f64(*f)
             .map(Value::Number)
@@ -601,6 +607,8 @@ fn json_to_cbor_impl(val: &Value, as_bytes: bool) -> ciborium::Value {
             ciborium::Value::Text(s.clone())
         }
         Value::Array(arr) => {
+            // as_bytes is not propagated: Kinesis Blob fields are always scalar strings,
+            // never arrays, so array elements are always emitted as text.
             ciborium::Value::Array(arr.iter().map(|v| json_to_cbor_impl(v, false)).collect())
         }
         Value::Object(map) => ciborium::Value::Map(

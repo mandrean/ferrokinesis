@@ -270,6 +270,13 @@ async fn equiv_get_records_with_data() {
         json_records[0]["PartitionKey"],
         cbor_records[0]["PartitionKey"]
     );
+    assert_values_equivalent(&json_resp.1, &cbor_resp.1, VOLATILE_KEYS);
+
+    // Verify decoded bytes match the original payload
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(json_records[0]["Data"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(decoded, b"test-payload");
 }
 
 // ─── Group C: Cross-format Data round-trips ──────────────────────────────────
