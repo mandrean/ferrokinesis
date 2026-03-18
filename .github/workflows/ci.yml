@@ -10,12 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Read Rust toolchain version
-        id: rust-toolchain
-        run: echo "channel=$(grep '^channel' rust-toolchain.toml | sed 's/.*"\(.*\)"/\1/')" >> $GITHUB_OUTPUT
-      - uses: dtolnay/rust-toolchain@master
+      - uses: ./.github/actions/setup-rust-toolchain
         with:
-          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
@@ -32,12 +28,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Read Rust toolchain version
-        id: rust-toolchain
-        run: echo "channel=$(grep '^channel' rust-toolchain.toml | sed 's/.*"\(.*\)"/\1/')" >> $GITHUB_OUTPUT
-      - uses: dtolnay/rust-toolchain@master
+      - uses: ./.github/actions/setup-rust-toolchain
         with:
-          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
         with:
