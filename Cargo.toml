@@ -19,7 +19,7 @@ base64 = "0.22"
 bytes = "1"
 cbc = "0.1"
 ciborium = "0.2"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 md-5 = "0.10"
 num-bigint = "0.4"
 num-traits = "0.2"
