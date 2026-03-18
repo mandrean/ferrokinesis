@@ -94,6 +94,7 @@ fn main() -> ExitCode {
 
     match cli.command {
         Some(Command::HealthCheck(args)) => run_health_check(&args),
+        // run_serve never returns (axum::serve runs forever or panics on error)
         Some(Command::Serve(args)) => run_serve(args),
         None => run_serve(cli.serve_args),
     }
@@ -124,7 +125,7 @@ fn run_health_check(args: &HealthCheckArgs) -> ExitCode {
     );
 
     let mut writer = stream.try_clone().expect("failed to clone TcpStream");
-    if let Err(e) = writer.write_all(request.as_bytes()) {
+    if let Err(e) = writer.write_all(request.as_bytes()).and_then(|()| writer.flush()) {
         eprintln!("health check failed: write error: {e}");
         return ExitCode::FAILURE;
     }
@@ -202,5 +203,9 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     println!("Listening at http://{addr}");
 
-    axum::serve(listener, app).await.unwrap();
+    if let Err(e) = axum::serve(listener, app).await {
+        eprintln!("server error: {e}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
 }

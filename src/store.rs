@@ -24,6 +24,8 @@ impl fmt::Display for StoreHealthError {
     }
 }
 
+impl std::error::Error for StoreHealthError {}
+
 const STREAMS: TableDefinition<&str, &[u8]> = TableDefinition::new("streams");
 const RECORDS: TableDefinition<&str, &[u8]> = TableDefinition::new("records");
 const CONSUMERS: TableDefinition<&str, &[u8]> = TableDefinition::new("consumers");
@@ -550,14 +552,16 @@ impl Store {
         write_txn.commit().unwrap();
     }
 
-    /// Probe the database with a read transaction to verify it is healthy.
+    /// Probe the database with a read transaction to verify all core tables are accessible.
     pub fn check_ready(&self) -> Result<(), StoreHealthError> {
         let txn = self
             .db
             .begin_read()
             .map_err(|e| StoreHealthError::ReadFailed(e.to_string()))?;
-        txn.open_table(STREAMS)
-            .map_err(|e| StoreHealthError::TableOpenFailed(e.to_string()))?;
+        for table in [STREAMS, RECORDS, CONSUMERS] {
+            txn.open_table(table)
+                .map_err(|e| StoreHealthError::TableOpenFailed(e.to_string()))?;
+        }
         Ok(())
     }
 }
