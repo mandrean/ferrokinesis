@@ -24,19 +24,24 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         consumer_count,
         "stream summary described"
     );
+
+    let mut summary = json!({
+        "ConsumerCount": consumer_count,
+        "EncryptionType": stream.encryption_type,
+        "EnhancedMonitoring": stream.enhanced_monitoring,
+        "OpenShardCount": open_shard_count,
+        "RetentionPeriodHours": stream.retention_period_hours,
+        "StreamARN": stream.stream_arn,
+        "StreamCreationTimestamp": stream.stream_creation_timestamp,
+        "StreamModeDetails": stream.stream_mode_details,
+        "StreamName": stream.stream_name,
+        "StreamStatus": stream.stream_status,
+    });
+
+    if let Some(ref key_id) = stream.key_id {
+        summary["KeyId"] = json!(key_id);
+    }
     Ok(Some(json!({
-        "StreamDescriptionSummary": {
-            "RetentionPeriodHours": stream.retention_period_hours,
-            "EnhancedMonitoring": stream.enhanced_monitoring,
-            "EncryptionType": stream.encryption_type,
-            "KeyId": stream.key_id,
-            "StreamARN": stream.stream_arn,
-            "StreamName": stream.stream_name,
-            "StreamStatus": stream.stream_status,
-            "StreamCreationTimestamp": stream.stream_creation_timestamp,
-            "StreamModeDetails": stream.stream_mode_details,
-            "OpenShardCount": open_shard_count,
-            "ConsumerCount": consumer_count,
-        }
+        "StreamDescriptionSummary": summary
     })))
 }

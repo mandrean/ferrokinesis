@@ -1,0 +1,9 @@
+{
+  "operation": "GetShardIterator",
+  "scenario": "trim_horizon",
+  "http_status": 200,
+  "required_headers": ["x-amzn-RequestId", "x-amz-id-2", "Content-Type"],
+  "body": {
+    "ShardIterator": "AAAAAAAAAAGQk4uPJqsB2vbGhwONKPMx..."
+  }
+}

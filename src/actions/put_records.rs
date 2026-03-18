@@ -97,6 +97,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         hash_keys.push(hash_key);
     }
 
+    let encryption_type = store.get_stream(&stream_name).await?.encryption_type;
     let allocations = store
         .allocate_sequences_batch(&stream_name, &hash_keys)
         .await?;
@@ -138,6 +139,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     // so FailedRecordCount is always 0. Real Kinesis can return non-zero here
     // when per-shard throughput limits are hit.
     Ok(Some(json!({
+        "EncryptionType": encryption_type,
         "FailedRecordCount": 0,
         "Records": return_records,
     })))
