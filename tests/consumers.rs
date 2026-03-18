@@ -3,7 +3,7 @@ mod common;
 use common::*;
 use serde_json::{Value, json};
 
-const ACCOUNT: &str = "0000-0000-0000";
+const ACCOUNT: &str = "000000000000";
 const REGION: &str = "us-east-1";
 
 fn stream_arn(name: &str) -> String {

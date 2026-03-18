@@ -141,7 +141,7 @@ async fn update_max_record_size_stream_not_active() {
     })
     .await;
     let name = "umrs-creating";
-    let arn = format!("arn:aws:kinesis:us-east-1:0000-0000-0000:stream/{name}");
+    let arn = format!("arn:aws:kinesis:us-east-1:000000000000:stream/{name}");
 
     // Create the stream but DON'T wait for it to become active
     let res = server
