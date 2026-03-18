@@ -8,7 +8,7 @@
 
 use goose::goose::GooseResponse;
 use goose::prelude::*;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Atomic counter for unique per-user stream names.
@@ -70,12 +70,7 @@ async fn setup_stream(user: &mut GooseUser) -> TransactionResult {
     // Poll until the stream reaches ACTIVE (server default: 500 ms transition).
     for _ in 0..20 {
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-        let goose = kinesis(
-            user,
-            "DescribeStream",
-            &json!({"StreamName": &stream_name}),
-        )
-        .await?;
+        let goose = kinesis(user, "DescribeStream", &json!({"StreamName": &stream_name})).await?;
         if let Ok(resp) = goose.response
             && let Ok(body) = resp.json::<Value>().await
             && body["StreamDescription"]["StreamStatus"].as_str() == Some("ACTIVE")
@@ -201,12 +196,7 @@ async fn delete_stream(user: &mut GooseUser) -> TransactionResult {
         .unwrap_or_default();
 
     if !stream_name.is_empty() {
-        let _ = kinesis(
-            user,
-            "DeleteStream",
-            &json!({"StreamName": stream_name}),
-        )
-        .await;
+        let _ = kinesis(user, "DeleteStream", &json!({"StreamName": stream_name})).await;
     }
 
     Ok(())
