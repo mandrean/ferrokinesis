@@ -1,6 +1,6 @@
 # ferrokinesis
 
-A local AWS Kinesis mock server written in Rust (edition 2024). Aims to exactly match real Kinesis behavior.
+A local AWS Kinesis emulator written in Rust (edition 2024). Aims to exactly match real Kinesis behavior.
 
 ## Architecture
 
