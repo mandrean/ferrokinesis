@@ -146,13 +146,18 @@ jobs:
 
           # Wait for the service to be ready
           curl --retry 10 --retry-delay 1 --retry-connrefused --silent --fail \
-            http://localhost:4567/ || true
+            http://localhost:4567/_health || true
+
+          # Fake AWS SigV4 auth headers (signature is not validated by the mock)
+          AUTH='AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20260101/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=fakesignature'
 
           # CreateStream
           curl --silent --fail --show-error \
             -X POST http://localhost:4567/ \
             -H 'Content-Type: application/x-amz-json-1.1' \
             -H 'X-Amz-Target: Kinesis_20131202.CreateStream' \
+            -H "Authorization: $AUTH" \
+            -H 'X-Amz-Date: 20260101T000000Z' \
             -d '{"StreamName":"smoke-test","ShardCount":1}'
 
           # Wait briefly for the stream to become available
@@ -163,6 +168,8 @@ jobs:
             -X POST http://localhost:4567/ \
             -H 'Content-Type: application/x-amz-json-1.1' \
             -H 'X-Amz-Target: Kinesis_20131202.ListStreams' \
+            -H "Authorization: $AUTH" \
+            -H 'X-Amz-Date: 20260101T000000Z' \
             -d '{}')
           echo "ListStreams response: $RESPONSE"
           echo "$RESPONSE" | grep -q "smoke-test"
