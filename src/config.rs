@@ -28,6 +28,7 @@ pub struct FileConfig {
     pub delete_stream_ms: Option<u64>,
     pub update_stream_ms: Option<u64>,
     pub iterator_ttl_seconds: Option<u64>,
+    pub retention_check_interval_secs: Option<u64>,
     pub max_request_body_mb: Option<u64>,
 }
 
@@ -46,6 +47,16 @@ pub fn load_config(path: &Path) -> Result<FileConfig, ConfigError> {
         return Err(ConfigError::Validation {
             path: path.display().to_string(),
             message: format!("iterator_ttl_seconds must be between 1 and 86400, got {ttl}"),
+        });
+    }
+    if let Some(v) = config.retention_check_interval_secs
+        && v > 86400
+    {
+        return Err(ConfigError::Validation {
+            path: path.display().to_string(),
+            message: format!(
+                "retention_check_interval_secs must be between 0 and 86400, got {v}"
+            ),
         });
     }
     Ok(config)

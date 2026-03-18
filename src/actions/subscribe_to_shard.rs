@@ -202,6 +202,7 @@ pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, Kines
             };
 
             let record_store = store.get_record_store(&stream_name).await;
+            let cutoff_time = now - (stream_data.retention_period_hours as u64 * 60 * 60 * 1000);
             let range_start = format!("{}/{}", sequence::shard_ix_to_hex(shard_ix), current_seq);
             let range_end = sequence::shard_ix_to_hex(shard_ix + 1);
 
@@ -213,6 +214,12 @@ pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, Kines
                     Some(s) => s.to_string(),
                     None => continue,
                 };
+
+                if let Ok(obj) = sequence::parse_sequence(&seq_num)
+                    && obj.seq_time.unwrap_or(0) < cutoff_time
+                {
+                    continue;
+                }
 
                 records.push(json!({
                     "Data": record.data,
