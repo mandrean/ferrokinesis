@@ -411,7 +411,8 @@ fn send_json_response(
     let body_bytes = if content_type == constants::CONTENT_TYPE_CBOR {
         // Convert to ciborium::Value so Blob fields (Data) become CBOR byte strings
         // (major type 2) instead of text strings, matching real AWS Kinesis behavior.
-        let cbor_val = json_to_cbor_with_blob_bytes(data);
+        let json_val = serde_json::to_value(data).unwrap_or(Value::Null);
+        let cbor_val = json_to_cbor_with_blob_bytes(&json_val);
         let mut buf = Vec::new();
         let _ = ciborium::into_writer(&cbor_val, &mut buf);
         buf
