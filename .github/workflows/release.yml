@@ -190,3 +190,22 @@ jobs:
             --clobber
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
+      - name: Generate checksums
+        if: steps.needs-upload.outputs.upload == 'true'
+        run: |
+          cd artifacts
+          sha256sum \
+            ferrokinesis-linux-amd64/ferrokinesis-linux-amd64 \
+            ferrokinesis-linux-arm64/ferrokinesis-linux-arm64 \
+            ferrokinesis-macos-amd64/ferrokinesis-macos-amd64 \
+            ferrokinesis-macos-arm64/ferrokinesis-macos-arm64 \
+            ferrokinesis-windows-amd64/ferrokinesis-windows-amd64.exe \
+            > SHA256SUMS
+          cat SHA256SUMS
+      - name: Upload checksums to GitHub Release
+        if: steps.needs-upload.outputs.upload == 'true'
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          gh release upload "$TAG" artifacts/SHA256SUMS --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
