@@ -178,7 +178,9 @@ public class KinesisV2ConformanceTest {
 
         // Subscribe to shard
         CountDownLatch latch = new CountDownLatch(1);
-        List<Record> receivedRecords = new ArrayList<>();
+        List<Record> receivedRecords = java.util.Collections.synchronizedList(new ArrayList<>());
+        AtomicReference<String> continuationSeqNum = new AtomicReference<>();
+        AtomicReference<Long> millisBehindLatest = new AtomicReference<>();
         AtomicReference<Throwable> error = new AtomicReference<>();
 
         SubscribeToShardRequest subscribeRequest = SubscribeToShardRequest.builder()
@@ -195,6 +197,8 @@ public class KinesisV2ConformanceTest {
                     if (event instanceof SubscribeToShardEvent) {
                         SubscribeToShardEvent shardEvent = (SubscribeToShardEvent) event;
                         receivedRecords.addAll(shardEvent.records());
+                        continuationSeqNum.set(shardEvent.continuationSequenceNumber());
+                        millisBehindLatest.set(shardEvent.millisBehindLatest());
                         if (!receivedRecords.isEmpty()) {
                             latch.countDown();
                         }
@@ -211,6 +215,12 @@ public class KinesisV2ConformanceTest {
         boolean found = receivedRecords.stream()
                 .anyMatch(r -> "subscribe-test".equals(r.data().asUtf8String()));
         assertTrue(found, "Expected to find 'subscribe-test' record");
+
+        // Verify metadata fields (parity with Rust SDK tests)
+        assertNotNull(continuationSeqNum.get(), "continuationSequenceNumber should be set");
+        assertFalse(continuationSeqNum.get().isEmpty(), "continuationSequenceNumber should not be empty");
+        assertNotNull(millisBehindLatest.get(), "millisBehindLatest should be set");
+        assertTrue(millisBehindLatest.get() >= 0, "millisBehindLatest should be non-negative");
 
         // Deregister consumer
         client.deregisterStreamConsumer(DeregisterStreamConsumerRequest.builder()

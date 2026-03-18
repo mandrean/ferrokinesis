@@ -423,7 +423,7 @@ async fn sdk_subscribe_to_shard_concurrent_puts() {
 
     // Spawn background task to put records after a delay
     let put_client = sdk_client(&server).await;
-    tokio::spawn(async move {
+    let put_handle = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(300)).await;
         for i in 0..2 {
             put_client
@@ -454,6 +454,7 @@ async fn sdk_subscribe_to_shard_concurrent_puts() {
     })
     .await;
 
+    put_handle.await.expect("put task panicked");
     assert!(result.is_ok(), "timed out waiting for concurrent records");
     assert_eq!(all_records.len(), 2);
     for i in 0..2 {
