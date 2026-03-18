@@ -267,9 +267,7 @@ async fn create_stream_200_shards_hash_continuity() {
     server.create_stream(name, 200).await;
 
     let desc = server.describe_stream(name).await;
-    let shards = desc["StreamDescription"]["Shards"]
-        .as_array()
-        .unwrap();
+    let shards = desc["StreamDescription"]["Shards"].as_array().unwrap();
     assert_eq!(shards.len(), 200);
 
     // First shard starts at "0"
@@ -325,9 +323,7 @@ async fn create_stream_200_shards_routing() {
     server.create_stream(name, 200).await;
 
     let desc = server.describe_stream(name).await;
-    let shards = desc["StreamDescription"]["Shards"]
-        .as_array()
-        .unwrap();
+    let shards = desc["StreamDescription"]["Shards"].as_array().unwrap();
 
     // Put records targeting specific shards via ExplicitHashKey
     for target_shard in [0usize, 99, 199] {
@@ -401,17 +397,20 @@ async fn get_records_10000_pagination() {
         for r in records {
             let seq = r["SequenceNumber"].as_str().unwrap().to_string();
             if !prev_seq.is_empty() {
-                assert!(seq > prev_seq, "sequence numbers must be strictly increasing");
+                assert!(
+                    seq > prev_seq,
+                    "sequence numbers must be strictly increasing"
+                );
             }
             prev_seq = seq;
             total += 1;
         }
-        iter = result["NextShardIterator"]
-            .as_str()
-            .unwrap()
-            .to_string();
+        iter = result["NextShardIterator"].as_str().unwrap().to_string();
         iterations += 1;
-        assert!(iterations < 1000, "too many iterations, likely infinite loop");
+        assert!(
+            iterations < 1000,
+            "too many iterations, likely infinite loop"
+        );
     }
     assert_eq!(total, 10_000);
 }
@@ -446,10 +445,7 @@ async fn get_records_10000_custom_limit() {
 
     loop {
         let res = server
-            .request(
-                "GetRecords",
-                &json!({"ShardIterator": iter, "Limit": 500}),
-            )
+            .request("GetRecords", &json!({"ShardIterator": iter, "Limit": 500}))
             .await;
         assert_eq!(res.status(), 200);
         let body: Value = res.json().await.unwrap();
@@ -458,17 +454,14 @@ async fn get_records_10000_custom_limit() {
             break;
         }
         total += records.len();
-        iter = body["NextShardIterator"]
-            .as_str()
-            .unwrap()
-            .to_string();
+        iter = body["NextShardIterator"].as_str().unwrap().to_string();
         iterations += 1;
         assert!(iterations < 1000, "too many iterations");
     }
     assert_eq!(total, 10_000);
     // With limit=500 and 10,000 records, expect ~20 iterations
     assert!(
-        iterations >= 15 && iterations <= 30,
+        (15..=30).contains(&iterations),
         "expected ~20 iterations, got {iterations}"
     );
 }
@@ -518,12 +511,7 @@ async fn put_record_multibyte_utf8_partition_key() {
     server.create_stream(name, 1).await;
 
     // Emoji, CJK, accented characters
-    let keys = [
-        "🔥🚀💯",
-        "日本語テスト",
-        "àéîõü",
-        "mixed-🎉-café",
-    ];
+    let keys = ["🔥🚀💯", "日本語テスト", "àéîõü", "mixed-🎉-café"];
 
     for key in &keys {
         let res = server

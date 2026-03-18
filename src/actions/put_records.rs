@@ -1,11 +1,11 @@
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
 use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::sequence;
 use crate::store::Store;
 use crate::types::{StoredRecord, StreamStatus};
 use crate::util::current_time_ms;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use num_bigint::BigUint;
 use num_traits::{One, Zero};
 use serde_json::{Value, json};
