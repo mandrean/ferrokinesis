@@ -3,6 +3,7 @@ mod common;
 use common::*;
 use ferrokinesis::store::StoreOptions;
 use reqwest::Method;
+use reqwest::header::HeaderValue;
 
 fn default_options() -> StoreOptions {
     StoreOptions {
@@ -26,7 +27,10 @@ async fn custom_limit_rejects_body_one_byte_over() {
         .raw_request(Method::POST, "/", signed_headers(), body)
         .await;
 
-    assert_eq!(res.status(), 413);
+    let (status, body) = decode_body(res).await;
+    assert_eq!(status, 413);
+    assert_eq!(body["__type"], "SerializationException");
+    assert!(body["Message"].as_str().is_some());
 }
 
 #[tokio::test]
@@ -69,7 +73,10 @@ async fn custom_limit_rejects_large_body_well_over_limit() {
         .raw_request(Method::POST, "/", signed_headers(), body)
         .await;
 
-    assert_eq!(res.status(), 413);
+    let (status, body) = decode_body(res).await;
+    assert_eq!(status, 413);
+    assert_eq!(body["__type"], "SerializationException");
+    assert!(body["Message"].as_str().is_some());
 }
 
 // --- Default 7 MB limit (matching --max-request-body-mb default) ---
@@ -84,7 +91,10 @@ async fn default_7mb_limit_rejects_body_over_7mb() {
         .raw_request(Method::POST, "/", signed_headers(), body)
         .await;
 
-    assert_eq!(res.status(), 413);
+    let (status, body) = decode_body(res).await;
+    assert_eq!(status, 413);
+    assert_eq!(body["__type"], "SerializationException");
+    assert!(body["Message"].as_str().is_some());
 }
 
 #[tokio::test]
@@ -111,11 +121,10 @@ async fn larger_limit_allows_body_rejected_by_smaller_limit() {
     let res = small_server
         .raw_request(Method::POST, "/", signed_headers(), body.clone())
         .await;
-    assert_eq!(
-        res.status(),
-        413,
-        "512-byte limit must reject 800-byte body"
-    );
+
+    let (status, err_body) = decode_body(res).await;
+    assert_eq!(status, 413, "512-byte limit must reject 800-byte body");
+    assert_eq!(err_body["__type"], "SerializationException");
 
     let large_server = TestServer::with_body_limit(default_options(), 1024).await;
     let res = large_server
@@ -141,7 +150,10 @@ async fn limit_conversion_1mb_rejects_body_of_1mb_plus_1() {
         .raw_request(Method::POST, "/", signed_headers(), body)
         .await;
 
-    assert_eq!(res.status(), 413);
+    let (status, body) = decode_body(res).await;
+    assert_eq!(status, 413);
+    assert_eq!(body["__type"], "SerializationException");
+    assert!(body["Message"].as_str().is_some());
 }
 
 #[tokio::test]
@@ -155,4 +167,56 @@ async fn limit_conversion_1mb_accepts_body_of_exactly_1mb() {
         .await;
 
     assert_ne!(res.status(), 413);
+}
+
+// --- Content-type negotiation for 413 error responses ---
+
+#[tokio::test]
+async fn custom_limit_returns_json_error_for_json_request() {
+    let limit = 512;
+    let server = TestServer::with_body_limit(default_options(), limit).await;
+
+    let mut headers = signed_headers();
+    headers.insert("Content-Type", HeaderValue::from_static(AMZ_JSON));
+
+    let body = vec![b'x'; limit + 1];
+    let res = server.raw_request(Method::POST, "/", headers, body).await;
+
+    let ct = res
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(ct, AMZ_JSON);
+
+    let (status, body) = decode_body(res).await;
+    assert_eq!(status, 413);
+    assert_eq!(body["__type"], "SerializationException");
+}
+
+#[tokio::test]
+async fn custom_limit_returns_cbor_error_for_cbor_request() {
+    let limit = 512;
+    let server = TestServer::with_body_limit(default_options(), limit).await;
+
+    let mut headers = signed_headers();
+    headers.insert("Content-Type", HeaderValue::from_static(AMZ_CBOR));
+
+    let body = vec![b'x'; limit + 1];
+    let res = server.raw_request(Method::POST, "/", headers, body).await;
+
+    let ct = res
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(ct, AMZ_CBOR);
+
+    let (status, body) = decode_body(res).await;
+    assert_eq!(status, 413);
+    assert_eq!(body["__type"], "SerializationException");
 }

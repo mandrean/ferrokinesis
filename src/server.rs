@@ -4,12 +4,11 @@ use crate::store::Store;
 use crate::validation;
 use crate::validation::rules;
 use axum::body::Bytes;
-use axum::extract::State;
+use axum::extract::{Request, State};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
-
-const MAX_REQUEST_BYTES: usize = 7 * 1024 * 1024;
 
 pub async fn handler(
     method: Method,
@@ -113,11 +112,6 @@ pub async fn handler(
             &json!({"__type": error_type}),
             400,
         );
-    }
-
-    if body.len() > MAX_REQUEST_BYTES {
-        response_headers.insert("Transfer-Encoding", "chunked".parse().unwrap());
-        return (StatusCode::from_u16(413).unwrap(), response_headers, "").into_response();
     }
 
     if !content_valid {
@@ -463,6 +457,56 @@ fn send_xml_error_code(extra_headers: &HeaderMap, error_type: &str, status_code:
         StatusCode::from_u16(status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
         headers,
         body,
+    )
+        .into_response()
+}
+
+/// Middleware that intercepts bare 413 responses (from axum's `DefaultBodyLimit`)
+/// and replaces them with Kinesis-shaped `SerializationException` error bodies.
+pub async fn kinesis_413_middleware(request: Request, next: Next) -> Response {
+    let content_type = request
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_owned();
+
+    let response = next.run(request).await;
+
+    if response.status() != StatusCode::PAYLOAD_TOO_LARGE {
+        return response;
+    }
+
+    let error = json!({
+        "__type": constants::SERIALIZATION_EXCEPTION,
+        "Message": "Request body is too large"
+    });
+
+    let response_content_type = if content_type == constants::CONTENT_TYPE_JSON {
+        constants::CONTENT_TYPE_JSON
+    } else {
+        constants::CONTENT_TYPE_CBOR
+    };
+
+    let body_bytes = if response_content_type == constants::CONTENT_TYPE_CBOR {
+        let mut buf = Vec::new();
+        let _ = ciborium::into_writer(&error, &mut buf);
+        buf
+    } else {
+        serde_json::to_vec(&error).unwrap_or_default()
+    };
+
+    (
+        StatusCode::PAYLOAD_TOO_LARGE,
+        [
+            ("Content-Type", response_content_type.to_owned()),
+            ("Content-Length", body_bytes.len().to_string()),
+        ],
+        body_bytes,
     )
         .into_response()
 }
