@@ -112,17 +112,11 @@ fn bench_put_record(c: &mut Criterion) {
     rt.block_on(server.create_stream("put-record-bench", 1));
 
     // 100-byte base64-encoded payload
-    let data = base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        [0u8; 100],
-    );
+    let data = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, [0u8; 100]);
 
     c.bench_function("put_record/single", |b| {
-        b.to_async(&rt).iter(|| async {
-            server
-                .put_record("put-record-bench", &data, "pk")
-                .await
-        });
+        b.to_async(&rt)
+            .iter(|| async { server.put_record("put-record-bench", &data, "pk").await });
     });
 }
 
@@ -130,10 +124,7 @@ fn bench_put_records(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let server = rt.block_on(BenchServer::new(200));
 
-    let data = base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        [0u8; 100],
-    );
+    let data = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, [0u8; 100]);
 
     let mut group = c.benchmark_group("put_records");
     for batch_size in [10, 100, 500] {
@@ -154,9 +145,8 @@ fn bench_put_records(c: &mut Criterion) {
         });
 
         group.bench_function(format!("batch_{batch_size}"), |b| {
-            b.to_async(&rt).iter(|| async {
-                server.request("PutRecords", &payload).await
-            });
+            b.to_async(&rt)
+                .iter(|| async { server.request("PutRecords", &payload).await });
         });
     }
     group.finish();
@@ -166,10 +156,7 @@ fn bench_get_records(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let server = rt.block_on(BenchServer::new(200));
 
-    let data = base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        [0u8; 100],
-    );
+    let data = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, [0u8; 100]);
 
     let mut group = c.benchmark_group("get_records");
     for count in [10, 100, 1000] {
