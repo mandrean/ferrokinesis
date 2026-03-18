@@ -479,9 +479,20 @@ async fn incomplete_signature_missing_signed_headers() {
 
 #[tokio::test]
 async fn server_body_too_large_returns_413() {
-    let server = TestServer::new().await;
+    let limit = 7 * 1024 * 1024;
+    let server = TestServer::with_body_limit(
+        ferrokinesis::store::StoreOptions {
+            create_stream_ms: 0,
+            delete_stream_ms: 0,
+            update_stream_ms: 0,
+            shard_limit: 50,
+            ..Default::default()
+        },
+        limit,
+    )
+    .await;
 
-    let huge_body = vec![b'x'; 7 * 1024 * 1024 + 1];
+    let huge_body = vec![b'x'; limit + 1];
 
     let mut headers = HeaderMap::new();
     headers.insert("Content-Type", HeaderValue::from_static(AMZ_JSON));
@@ -501,7 +512,10 @@ async fn server_body_too_large_returns_413() {
     let res = server
         .raw_request(Method::POST, "/", headers, huge_body)
         .await;
-    assert_eq!(res.status(), 413);
+    let (status, body) = decode_body(res).await;
+    assert_eq!(status, 413);
+    assert_eq!(body["__type"], "SerializationException");
+    assert!(body["Message"].as_str().is_some());
 }
 
 #[tokio::test]
