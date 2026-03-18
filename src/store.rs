@@ -532,4 +532,15 @@ impl Store {
         }
         write_txn.commit().unwrap();
     }
+
+    /// Probe the database with a read transaction to verify it is healthy.
+    pub fn check_ready(&self) -> Result<(), String> {
+        let txn = self
+            .db
+            .begin_read()
+            .map_err(|e| format!("db read failed: {e}"))?;
+        txn.open_table(STREAMS)
+            .map_err(|e| format!("table open failed: {e}"))?;
+        Ok(())
+    }
 }

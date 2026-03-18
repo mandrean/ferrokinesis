@@ -1,14 +1,37 @@
 use axum::extract::DefaultBodyLimit;
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
 use ferrokinesis::config::load_config;
 use ferrokinesis::store::StoreOptions;
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process;
+use std::process::ExitCode;
+use std::time::Duration;
 
 #[derive(Parser, Debug)]
 #[command(name = "ferrokinesis")]
 #[command(about = "A local AWS Kinesis mock server for testing")]
-struct Args {
+#[command(args_conflicts_with_subcommands = true)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+
+    #[command(flatten)]
+    serve_args: ServeArgs,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Start the mock Kinesis server (default when no subcommand is given)
+    Serve(ServeArgs),
+
+    /// Run a health check against a running server (for Docker HEALTHCHECK)
+    HealthCheck(HealthCheckArgs),
+}
+
+#[derive(Args, Debug)]
+struct ServeArgs {
     /// Path to a TOML configuration file
     #[arg(long, env = "FERROKINESIS_CONFIG")]
     config: Option<PathBuf>,
@@ -55,10 +78,87 @@ fn resolve<T>(cli: Option<T>, file: Option<T>, default: T) -> T {
     cli.or(file).unwrap_or(default)
 }
 
-#[tokio::main]
-async fn main() {
-    let args = Args::parse();
+#[derive(Args, Debug)]
+struct HealthCheckArgs {
+    /// Port of the server to check
+    #[arg(long, default_value_t = 4567)]
+    port: u16,
 
+    /// Path to probe
+    #[arg(long, default_value = "/_health/live")]
+    path: String,
+}
+
+fn main() -> ExitCode {
+    let cli = Cli::parse();
+
+    match cli.command {
+        Some(Command::HealthCheck(args)) => run_health_check(&args),
+        Some(Command::Serve(args)) => run_serve(args),
+        None => run_serve(cli.serve_args),
+    }
+}
+
+fn run_health_check(args: &HealthCheckArgs) -> ExitCode {
+    let addr = format!("127.0.0.1:{}", args.port);
+
+    let stream = match TcpStream::connect_timeout(
+        &addr.parse().expect("invalid address"),
+        Duration::from_secs(3),
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("health check failed: connect error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if let Err(e) = stream.set_read_timeout(Some(Duration::from_secs(3))) {
+        eprintln!("health check failed: {e}");
+        return ExitCode::FAILURE;
+    }
+
+    let request = format!(
+        "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+        args.path, addr
+    );
+
+    let mut writer = stream.try_clone().expect("failed to clone TcpStream");
+    if let Err(e) = writer.write_all(request.as_bytes()) {
+        eprintln!("health check failed: write error: {e}");
+        return ExitCode::FAILURE;
+    }
+
+    let reader = BufReader::new(stream);
+    let status_line = match reader.lines().next() {
+        Some(Ok(line)) => line,
+        Some(Err(e)) => {
+            eprintln!("health check failed: read error: {e}");
+            return ExitCode::FAILURE;
+        }
+        None => {
+            eprintln!("health check failed: empty response");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // Parse "HTTP/1.1 200 OK" -> extract status code
+    let status_code: u16 = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+
+    if (200..300).contains(&status_code) {
+        ExitCode::SUCCESS
+    } else {
+        eprintln!("health check failed: {status_line}");
+        ExitCode::FAILURE
+    }
+}
+
+#[tokio::main]
+async fn run_serve(args: ServeArgs) -> ExitCode {
     let file_cfg = args
         .config
         .as_deref()
@@ -103,4 +203,5 @@ async fn main() {
     println!("Listening at http://{addr}");
 
     axum::serve(listener, app).await.unwrap();
+    ExitCode::SUCCESS
 }
