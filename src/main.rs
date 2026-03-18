@@ -28,6 +28,10 @@ enum Command {
 
     /// Run a health check against a running server (for Docker HEALTHCHECK)
     HealthCheck(HealthCheckArgs),
+
+    /// Generate a self-signed TLS certificate and key
+    #[cfg(feature = "tls")]
+    GenerateCert(GenerateCertArgs),
 }
 
 #[derive(Args, Debug)]
@@ -79,6 +83,16 @@ struct ServeArgs {
     /// Retention reaper interval in seconds (0 = disabled, maximum: 86400)
     #[arg(long, env = "FERROKINESIS_RETENTION_CHECK_INTERVAL_SECS", value_parser = clap::value_parser!(u64).range(0..=86400))]
     retention_check_interval_secs: Option<u64>,
+
+    /// Path to TLS certificate PEM file (enables HTTPS)
+    #[cfg(feature = "tls")]
+    #[arg(long, env = "FERROKINESIS_TLS_CERT", requires = "tls_key")]
+    tls_cert: Option<PathBuf>,
+
+    /// Path to TLS private key PEM file (enables HTTPS)
+    #[cfg(feature = "tls")]
+    #[arg(long, env = "FERROKINESIS_TLS_KEY", requires = "tls_cert")]
+    tls_key: Option<PathBuf>,
 }
 
 /// Resolve a value using precedence: CLI/env > config file > default.
@@ -95,6 +109,27 @@ struct HealthCheckArgs {
     /// Path to probe
     #[arg(long, default_value = "/_health/ready")]
     path: String,
+
+    /// Use TLS when connecting (accepts self-signed certificates)
+    #[cfg(feature = "tls")]
+    #[arg(long)]
+    tls: bool,
+}
+
+#[cfg(feature = "tls")]
+#[derive(Args, Debug)]
+struct GenerateCertArgs {
+    /// Output path for the certificate PEM file
+    #[arg(long, default_value = "cert.pem")]
+    cert_out: PathBuf,
+
+    /// Output path for the private key PEM file
+    #[arg(long, default_value = "key.pem")]
+    key_out: PathBuf,
+
+    /// Subject Alternative Names (hostnames/IPs the cert is valid for)
+    #[arg(long, default_values_t = ["localhost".to_string(), "127.0.0.1".to_string(), "::1".to_string()])]
+    san: Vec<String>,
 }
 
 fn main() -> ExitCode {
@@ -102,10 +137,35 @@ fn main() -> ExitCode {
 
     match cli.command {
         Some(Command::HealthCheck(args)) => run_health_check(&args),
-        // run_serve never returns (axum::serve runs forever or panics on error)
         Some(Command::Serve(args)) => run_serve(args),
+        #[cfg(feature = "tls")]
+        Some(Command::GenerateCert(args)) => run_generate_cert(&args),
         None => run_serve(cli.serve_args),
     }
+}
+
+#[cfg(feature = "tls")]
+fn run_generate_cert(args: &GenerateCertArgs) -> ExitCode {
+    let cert = match rcgen::generate_simple_self_signed(args.san.clone()) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("failed to generate certificate: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if let Err(e) = std::fs::write(&args.cert_out, cert.cert.pem()) {
+        eprintln!("failed to write certificate: {e}");
+        return ExitCode::FAILURE;
+    }
+    if let Err(e) = std::fs::write(&args.key_out, cert.signing_key.serialize_pem()) {
+        eprintln!("failed to write private key: {e}");
+        return ExitCode::FAILURE;
+    }
+
+    println!("Certificate written to {}", args.cert_out.display());
+    println!("Private key written to {}", args.key_out.display());
+    ExitCode::SUCCESS
 }
 
 fn run_health_check(args: &HealthCheckArgs) -> ExitCode {
@@ -127,10 +187,16 @@ fn run_health_check(args: &HealthCheckArgs) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let request = format!(
-        "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
-        args.path, addr
-    );
+    #[cfg(feature = "tls")]
+    if args.tls {
+        return run_health_check_tls(stream, &args.path, &addr);
+    }
+
+    run_health_check_plain(stream, &args.path, &addr)
+}
+
+fn run_health_check_plain(stream: TcpStream, path: &str, addr: &str) -> ExitCode {
+    let request = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
 
     let mut writer = stream.try_clone().expect("failed to clone TcpStream");
     if let Err(e) = writer
@@ -141,7 +207,91 @@ fn run_health_check(args: &HealthCheckArgs) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let reader = BufReader::new(stream);
+    parse_health_response(BufReader::new(stream))
+}
+
+#[cfg(feature = "tls")]
+fn run_health_check_tls(stream: TcpStream, path: &str, addr: &str) -> ExitCode {
+    use std::sync::Arc;
+
+    // Build a rustls config that accepts any certificate (for local/self-signed testing)
+    let config = rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(InsecureCertVerifier))
+        .with_no_client_auth();
+
+    let server_name = rustls::pki_types::ServerName::try_from("localhost")
+        .expect("invalid server name")
+        .to_owned();
+    let conn = rustls::ClientConnection::new(Arc::new(config), server_name)
+        .expect("failed to create TLS connection");
+    let mut tls_stream = rustls::StreamOwned::new(conn, stream);
+
+    let request = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+    if let Err(e) = tls_stream
+        .write_all(request.as_bytes())
+        .and_then(|()| tls_stream.flush())
+    {
+        eprintln!("health check failed: TLS write error: {e}");
+        return ExitCode::FAILURE;
+    }
+
+    parse_health_response(BufReader::new(tls_stream))
+}
+
+#[cfg(feature = "tls")]
+#[derive(Debug)]
+struct InsecureCertVerifier;
+
+#[cfg(feature = "tls")]
+impl rustls::client::danger::ServerCertVerifier for InsecureCertVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        vec![
+            rustls::SignatureScheme::RSA_PKCS1_SHA256,
+            rustls::SignatureScheme::RSA_PKCS1_SHA384,
+            rustls::SignatureScheme::RSA_PKCS1_SHA512,
+            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
+            rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
+            rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
+            rustls::SignatureScheme::RSA_PSS_SHA256,
+            rustls::SignatureScheme::RSA_PSS_SHA384,
+            rustls::SignatureScheme::RSA_PSS_SHA512,
+            rustls::SignatureScheme::ED25519,
+            rustls::SignatureScheme::ED448,
+        ]
+    }
+}
+
+fn parse_health_response(reader: BufReader<impl std::io::Read>) -> ExitCode {
     let status_line = match reader.lines().next() {
         Some(Ok(line)) => line,
         Some(Err(e)) => {
@@ -225,6 +375,33 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
     let app = app.layer(DefaultBodyLimit::max(max_bytes));
 
     let addr = format!("0.0.0.0:{port}");
+
+    #[cfg(feature = "tls")]
+    {
+        let tls_cert = args.tls_cert.or(file_cfg.tls_cert);
+        let tls_key = args.tls_key.or(file_cfg.tls_key);
+
+        if let (Some(cert), Some(key)) = (tls_cert, tls_key) {
+            let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert, &key)
+                .await
+                .unwrap_or_else(|e| {
+                    eprintln!("failed to load TLS cert/key: {e}");
+                    process::exit(1);
+                });
+
+            println!("Listening at https://{addr}");
+            if let Err(e) =
+                axum_server::bind_rustls(addr.parse::<std::net::SocketAddr>().unwrap(), tls_config)
+                    .serve(app.into_make_service())
+                    .await
+            {
+                eprintln!("server error: {e}");
+                return ExitCode::FAILURE;
+            }
+            return ExitCode::SUCCESS;
+        }
+    }
+
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     println!("Listening at http://{addr}");
 

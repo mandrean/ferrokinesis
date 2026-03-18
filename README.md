@@ -227,6 +227,108 @@ Options:
 
 **39/39 operations implemented** (100%)
 
+## TLS / HTTPS
+
+ferrokinesis supports TLS when built with the `tls` feature:
+
+### Install with TLS support
+
+```sh
+cargo install ferrokinesis --features tls
+```
+
+### Generate a self-signed certificate
+
+```sh
+ferrokinesis generate-cert
+# Writes cert.pem and key.pem to the current directory
+
+# Custom output paths and SANs:
+ferrokinesis generate-cert \
+    --cert-out /path/to/cert.pem \
+    --key-out /path/to/key.pem \
+    --san localhost --san 127.0.0.1 --san my-hostname
+```
+
+### Start the server with TLS
+
+```sh
+ferrokinesis --tls-cert cert.pem --tls-key key.pem
+# Listening at https://0.0.0.0:4567
+```
+
+### Connecting with AWS CLI
+
+```sh
+aws kinesis list-streams \
+    --endpoint-url https://localhost:4567 \
+    --no-verify-ssl \
+    --region us-east-1
+```
+
+### Connecting with AWS SDK for Python (boto3)
+
+```python
+import boto3
+
+client = boto3.client('kinesis',
+    endpoint_url='https://localhost:4567',
+    verify=False,            # or verify='/path/to/cert.pem'
+    region_name='us-east-1',
+)
+```
+
+### Connecting with AWS SDK for Node.js (v3)
+
+```js
+import { KinesisClient } from "@aws-sdk/client-kinesis";
+import { NodeHttpHandler } from "@smithy/node-http-handler";
+import https from "https";
+
+const client = new KinesisClient({
+  endpoint: "https://localhost:4567",
+  region: "us-east-1",
+  requestHandler: new NodeHttpHandler({
+    httpsAgent: new https.Agent({ rejectUnauthorized: false }),
+  }),
+});
+```
+
+### Connecting with AWS SDK for Go (v2)
+
+```go
+import (
+    "crypto/tls"
+    "net/http"
+    "github.com/aws/aws-sdk-go-v2/config"
+    "github.com/aws/aws-sdk-go-v2/service/kinesis"
+)
+
+cfg, _ := config.LoadDefaultConfig(ctx,
+    config.WithHTTPClient(&http.Client{
+        Transport: &http.Transport{
+            TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+        },
+    }),
+)
+client := kinesis.NewFromConfig(cfg, func(o *kinesis.Options) {
+    o.BaseEndpoint = aws.String("https://localhost:4567")
+})
+```
+
+### Connecting with AWS SDK for Java (v2)
+
+```java
+import software.amazon.awssdk.services.kinesis.KinesisClient;
+import java.net.URI;
+
+KinesisClient client = KinesisClient.builder()
+    .endpointOverride(URI.create("https://localhost:4567"))
+    .region(Region.US_EAST_1)
+    // For self-signed certs, configure a custom TrustManager
+    .build();
+```
+
 ## Building
 
 ```sh
