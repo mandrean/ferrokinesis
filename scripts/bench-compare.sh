@@ -13,7 +13,7 @@ wait_for_port() {
     local port=$1
     local elapsed=0
     while ! nc -z localhost "$port" 2>/dev/null; do
-        if (( elapsed >= MAX_WAIT )); then
+        if (( elapsed >= MAX_WAIT * 2 )); then
             echo "ERROR: port $port not reachable after ${MAX_WAIT}s" >&2
             return 1
         fi

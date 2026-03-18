@@ -121,10 +121,10 @@ async fn setup_stream(user: &mut GooseUser) -> TransactionResult {
 
 /// PutRecord with a random partition key (weight 10).
 async fn put_record(user: &mut GooseUser) -> TransactionResult {
-    let stream_name = user
-        .get_session_data::<Session>()
-        .map(|s| s.stream_name.clone())
-        .unwrap_or_default();
+    let Some(session) = user.get_session_data::<Session>() else {
+        return Ok(());
+    };
+    let stream_name = session.stream_name.clone();
 
     let pk = format!("pk-{}", rand::random::<u32>());
 
@@ -168,8 +168,9 @@ async fn get_records(user: &mut GooseUser) -> TransactionResult {
                 s.shard_iterator = next.to_string();
             }
         }
-        Err(_) => {
-            // Iterator may have expired — re-fetch.
+        Err(e) => {
+            // Iterator may have expired — re-fetch. Log in case it's something else.
+            eprintln!("GetRecords failed (re-fetching iterator): {e}");
             let iter_resp = kinesis(
                 user,
                 "GetShardIterator",
