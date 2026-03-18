@@ -11,6 +11,7 @@ pub const INCOMPLETE_SIGNATURE: &str = "IncompleteSignatureException";
 pub const MISSING_AUTH_TOKEN: &str = "MissingAuthenticationTokenException";
 pub const INVALID_SIGNATURE: &str = "InvalidSignatureException";
 pub const ACCESS_DENIED: &str = "AccessDeniedException";
+
 // HTTP content types
 pub const CONTENT_TYPE_JSON: &str = "application/x-amz-json-1.1";
 pub const CONTENT_TYPE_CBOR: &str = "application/x-amz-cbor-1.1";

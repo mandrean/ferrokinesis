@@ -59,8 +59,13 @@ pub async fn handler(
 
     // Non-POST methods
     if method != Method::POST {
+        let mut h = response_headers.clone();
+        h.insert(
+            "x-amzn-ErrorType",
+            constants::ACCESS_DENIED.parse().unwrap(),
+        );
         return send_xml_error(
-            &response_headers,
+            h,
             constants::ACCESS_DENIED,
             "Unable to determine service/operation name to be authorized",
             403,
@@ -120,14 +125,24 @@ pub async fn handler(
 
     if !content_valid {
         if service.is_empty() || operation_str.is_empty() {
+            let mut h = response_headers.clone();
+            h.insert(
+                "x-amzn-ErrorType",
+                constants::ACCESS_DENIED.parse().unwrap(),
+            );
             return send_xml_error(
-                &response_headers,
+                h,
                 constants::ACCESS_DENIED,
                 "Unable to determine service/operation name to be authorized",
                 403,
             );
         }
-        return send_xml_error_code(&response_headers, constants::UNKNOWN_OPERATION, 404);
+        let mut h = response_headers.clone();
+        h.insert(
+            "x-amzn-ErrorType",
+            constants::UNKNOWN_OPERATION.parse().unwrap(),
+        );
+        return send_xml_error_code(h, constants::UNKNOWN_OPERATION, 404);
     }
 
     // Parse body
@@ -143,7 +158,7 @@ pub async fn handler(
         Some(_) | None => {
             if content_type == "application/json" {
                 return send_json_response(
-                    &response_headers,
+                    response_headers.clone(),
                     "application/json",
                     &json!({
                         "Output": {"__type": "com.amazon.coral.service#SerializationException"},
@@ -160,7 +175,7 @@ pub async fn handler(
     // After this point, application/json doesn't progress further
     if content_type == "application/json" {
         return send_json_response(
-            &response_headers,
+            response_headers.clone(),
             "application/json",
             &json!({
                 "Output": {"__type": "com.amazon.coral.service#UnknownOperationException"},
@@ -317,9 +332,12 @@ pub async fn handler(
 
     // Execute action
     match actions::dispatch(&store, operation, data).await {
-        Ok(Some(result)) => {
-            send_json_response(&response_headers, response_content_type, &result, 200)
-        }
+        Ok(Some(result)) => send_json_response(
+            response_headers.clone(),
+            response_content_type,
+            &result,
+            200,
+        ),
         Ok(None) => {
             response_headers.insert("Content-Type", response_content_type.parse().unwrap());
             response_headers.insert("Content-Length", "0".parse().unwrap());
@@ -386,11 +404,11 @@ fn send_kinesis_error(
             .parse()
             .expect("error_type must be valid ASCII"),
     );
-    send_json_response(&headers, content_type, &err.body, err.status_code)
+    send_json_response(headers, content_type, &err.body, err.status_code)
 }
 
 fn send_json_response(
-    extra_headers: &HeaderMap,
+    mut headers: HeaderMap,
     content_type: &str,
     data: &impl Serialize,
     status_code: u16,
@@ -403,7 +421,6 @@ fn send_json_response(
         serde_json::to_vec(data).unwrap_or_default()
     };
 
-    let mut headers = extra_headers.clone();
     headers.insert("Content-Type", content_type.parse().unwrap());
     headers.insert(
         "Content-Length",
@@ -419,13 +436,12 @@ fn send_json_response(
 }
 
 fn send_xml_error(
-    extra_headers: &HeaderMap,
+    mut headers: HeaderMap,
     error_type: &str,
     message: &str,
     status_code: u16,
 ) -> Response {
     let body = format!("<{error_type}>\n  <Message>{message}</Message>\n</{error_type}>\n");
-    let mut headers = extra_headers.clone();
     headers.insert("Content-Length", body.len().to_string().parse().unwrap());
 
     (
@@ -436,9 +452,8 @@ fn send_xml_error(
         .into_response()
 }
 
-fn send_xml_error_code(extra_headers: &HeaderMap, error_type: &str, status_code: u16) -> Response {
+fn send_xml_error_code(mut headers: HeaderMap, error_type: &str, status_code: u16) -> Response {
     let body = format!("<{error_type}/>\n");
-    let mut headers = extra_headers.clone();
     headers.insert("Content-Length", body.len().to_string().parse().unwrap());
 
     (
@@ -464,8 +479,8 @@ fn send_error_response(
     );
     if content_valid {
         let err = KinesisErrorResponse::new(status_code, error_type, Some(message));
-        send_json_response(&headers, content_type, &err.body, status_code)
+        send_json_response(headers, content_type, &err.body, status_code)
     } else {
-        send_xml_error(&headers, error_type, message, status_code)
+        send_xml_error(headers, error_type, message, status_code)
     }
 }

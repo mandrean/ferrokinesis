@@ -434,6 +434,8 @@ async fn error_type_header_on_unknown_operation() {
     assert_has_error_type_header(&res, "UnknownOperationException");
 }
 
+/// Auth headers are included so this test is isolated to body-emptiness
+/// handling only (mirrors `cbor_error_serialization_exception_no_body`).
 #[tokio::test]
 async fn error_type_header_on_serialization_exception() {
     let server = TestServer::new().await;
@@ -443,6 +445,14 @@ async fn error_type_header_on_serialization_exception() {
         "X-Amz-Target",
         HeaderValue::from_static("Kinesis_20131202.ListStreams"),
     );
+    headers.insert(
+        "Authorization",
+        HeaderValue::from_static(
+            "AWS4-HMAC-SHA256 Credential=AKID/20150101/us-east-1/kinesis/aws4_request, \
+             SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=abcd1234",
+        ),
+    );
+    headers.insert("X-Amz-Date", HeaderValue::from_static("20150101T000000Z"));
     let res = server.raw_request(Method::POST, "/", headers, vec![]).await;
     assert_has_error_type_header(&res, "SerializationException");
 }
