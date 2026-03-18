@@ -33,6 +33,7 @@ jobs:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
         with:
+          shared-key: check
           save-if: false
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
