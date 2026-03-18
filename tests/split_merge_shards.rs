@@ -3,7 +3,6 @@ mod common;
 use common::*;
 use ferrokinesis::store::StoreOptions;
 use serde_json::{Value, json};
-use tokio::time::{Duration, sleep};
 
 // -- SplitShard --
 
@@ -440,7 +439,7 @@ async fn split_at_midpoint(server: &TestServer, name: &str) -> (String, Vec<Valu
         )
         .await;
     assert_eq!(res.status(), 200);
-    sleep(Duration::from_millis(50)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
     let desc = server.describe_stream(name).await;
     let shards = desc["StreamDescription"]["Shards"]
@@ -510,7 +509,7 @@ async fn split_shard_asymmetric_hash_ranges() {
         )
         .await;
     assert_eq!(res.status(), 200);
-    sleep(Duration::from_millis(50)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
     let desc = server.describe_stream(name).await;
     let shards = desc["StreamDescription"]["Shards"].as_array().unwrap();
@@ -566,7 +565,7 @@ async fn merge_shards_partial_range_with_lineage() {
         )
         .await;
     assert_eq!(res.status(), 200);
-    sleep(Duration::from_millis(50)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
     let desc = server.describe_stream(name).await;
     let shards = desc["StreamDescription"]["Shards"].as_array().unwrap();
@@ -661,7 +660,7 @@ async fn split_shard_ending_sequence_number_valid() {
         )
         .await;
     assert_eq!(res.status(), 200);
-    sleep(Duration::from_millis(50)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
     let desc = server.describe_stream(name).await;
     let end_seq =
@@ -713,7 +712,7 @@ async fn merge_shards_ending_sequence_numbers_valid() {
         )
         .await;
     assert_eq!(res.status(), 200);
-    sleep(Duration::from_millis(50)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
     let desc = server.describe_stream(name).await;
     let shards = desc["StreamDescription"]["Shards"].as_array().unwrap();
@@ -803,7 +802,7 @@ async fn put_record_routes_to_merged_shard_after_merge() {
         )
         .await;
     assert_eq!(res.status(), 200);
-    sleep(Duration::from_millis(50)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
     let desc = server.describe_stream(name).await;
     let shards = desc["StreamDescription"]["Shards"].as_array().unwrap();
@@ -1076,5 +1075,173 @@ async fn child_shards_receive_and_serve_records_after_split() {
     assert!(
         result2["NextShardIterator"].as_str().is_some(),
         "open child shard should have non-null NextShardIterator"
+    );
+}
+
+// -- Test 12: LATEST iterator on closed parent after split returns empty --
+
+#[tokio::test]
+async fn closed_parent_latest_iterator_returns_empty() {
+    let server = TestServer::new().await;
+    let name = "test-split-latest-closed";
+    server.create_stream(name, 1).await;
+
+    // Put records before split
+    server.put_record(name, "cmVjMQ==", "pk1").await;
+    server.put_record(name, "cmVjMg==", "pk2").await;
+
+    // Split the shard (closes the parent)
+    let _ = split_at_midpoint(&server, name).await;
+
+    // LATEST on closed parent — should return empty records
+    let iter = server
+        .get_shard_iterator(name, "shardId-000000000000", "LATEST")
+        .await;
+    let result = server.get_records(&iter).await;
+    let records = result["Records"].as_array().unwrap();
+
+    assert_eq!(
+        records.len(),
+        0,
+        "LATEST on closed parent should return no records"
+    );
+
+    // NextShardIterator should become null (shard exhausted)
+    let mut next_iter = result["NextShardIterator"].as_str().map(|s| s.to_string());
+    let mut found_null = false;
+
+    for _ in 0..5 {
+        match next_iter {
+            None => {
+                found_null = true;
+                break;
+            }
+            Some(ref it) => {
+                let result = server.get_records(it).await;
+                assert_eq!(result["Records"].as_array().unwrap().len(), 0);
+                next_iter = result["NextShardIterator"].as_str().map(|s| s.to_string());
+            }
+        }
+    }
+
+    assert!(
+        found_null,
+        "NextShardIterator must become null for closed parent with LATEST iterator"
+    );
+}
+
+// -- Test 13: Split a child shard (re-split) creates third generation --
+
+#[tokio::test]
+async fn split_child_shard_creates_third_generation() {
+    let server = TestServer::new().await;
+    let name = "test-split-resplit";
+    server.create_stream(name, 1).await;
+
+    // First split: parent → child1 (lower) + child2 (upper)
+    let (_, shards) = split_at_midpoint(&server, name).await;
+    assert_eq!(shards.len(), 3);
+
+    let child2_id = shards[2]["ShardId"].as_str().unwrap().to_string();
+    let child2_start: u128 = shards[2]["HashKeyRange"]["StartingHashKey"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let child2_end: u128 = shards[2]["HashKeyRange"]["EndingHashKey"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let child2_mid = child2_start + (child2_end - child2_start) / 2;
+
+    // Second split: child2 → grandchild1 (lower) + grandchild2 (upper)
+    let res = server
+        .request(
+            "SplitShard",
+            &json!({
+                "StreamName": name,
+                "ShardToSplit": child2_id,
+                "NewStartingHashKey": child2_mid.to_string(),
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    let desc = server.describe_stream(name).await;
+    let shards = desc["StreamDescription"]["Shards"].as_array().unwrap();
+
+    // 5 total: parent + child1 + child2 (closed) + grandchild1 + grandchild2
+    assert_eq!(shards.len(), 5);
+
+    // child2 should now be closed
+    assert!(
+        shards[2]["SequenceNumberRange"]["EndingSequenceNumber"]
+            .as_str()
+            .is_some(),
+        "child2 should be closed after re-split"
+    );
+
+    // Grandchildren should reference child2 as parent
+    assert_eq!(shards[3]["ParentShardId"], child2_id);
+    assert_eq!(shards[4]["ParentShardId"], child2_id);
+    assert!(shards[3]["AdjacentParentShardId"].is_null());
+    assert!(shards[4]["AdjacentParentShardId"].is_null());
+
+    // Grandchild hash ranges partition child2's range exactly
+    // Grandchild 1: [child2_start, child2_mid - 1]
+    assert_eq!(
+        shards[3]["HashKeyRange"]["StartingHashKey"]
+            .as_str()
+            .unwrap(),
+        child2_start.to_string()
+    );
+    assert_eq!(
+        shards[3]["HashKeyRange"]["EndingHashKey"].as_str().unwrap(),
+        (child2_mid - 1).to_string()
+    );
+
+    // Grandchild 2: [child2_mid, child2_end]
+    assert_eq!(
+        shards[4]["HashKeyRange"]["StartingHashKey"]
+            .as_str()
+            .unwrap(),
+        child2_mid.to_string()
+    );
+    assert_eq!(
+        shards[4]["HashKeyRange"]["EndingHashKey"].as_str().unwrap(),
+        child2_end.to_string()
+    );
+
+    // Both grandchildren are open
+    assert!(shards[3]["SequenceNumberRange"]["EndingSequenceNumber"].is_null());
+    assert!(shards[4]["SequenceNumberRange"]["EndingSequenceNumber"].is_null());
+
+    // Verify record routing to grandchildren
+    let gc1_id = shards[3]["ShardId"].as_str().unwrap();
+    let gc2_id = shards[4]["ShardId"].as_str().unwrap();
+
+    let r1 =
+        put_record_with_hash_key(&server, name, "dGVzdA==", "pk1", &child2_start.to_string()).await;
+    assert_eq!(
+        r1["ShardId"].as_str().unwrap(),
+        gc1_id,
+        "hash key at child2_start should route to grandchild 1"
+    );
+
+    let r2 =
+        put_record_with_hash_key(&server, name, "dGVzdA==", "pk2", &child2_mid.to_string()).await;
+    assert_eq!(
+        r2["ShardId"].as_str().unwrap(),
+        gc2_id,
+        "hash key at child2_mid should route to grandchild 2"
+    );
+
+    let r3 = put_record_with_hash_key(&server, name, "dGVzdA==", "pk3", MAX_HASH_KEY).await;
+    assert_eq!(
+        r3["ShardId"].as_str().unwrap(),
+        gc2_id,
+        "hash key max should route to grandchild 2"
     );
 }
