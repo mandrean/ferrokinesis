@@ -52,6 +52,50 @@ jobs:
           files: lcov.info
           fail_ci_if_error: false
 
+  benchmark:
+    name: Benchmark
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-rust-toolchain
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: check
+      - name: Install critcmp
+        uses: taiki-e/install-action@v2
+        with:
+          tool: critcmp
+      - name: Benchmark base branch
+        id: bench_base
+        continue-on-error: true
+        run: |
+          git checkout ${{ github.event.pull_request.base.sha }}
+          cargo bench --bench kinesis_api -- --save-baseline base
+      - name: Benchmark PR branch
+        run: |
+          git checkout ${{ github.event.pull_request.head.sha }}
+          cargo bench --bench kinesis_api -- --save-baseline pr
+      - name: Compare and gate on >10% regression
+        if: steps.bench_base.outcome == 'success'
+        run: |
+          critcmp base pr --threshold 10 | tee bench-comparison.txt
+          if critcmp base pr --threshold 10 2>&1 | grep -qiE 'regressed'; then
+            echo "::error::Benchmark regression >10% detected"
+            exit 1
+          fi
+      - name: Upload benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: |
+            target/criterion/
+            bench-comparison.txt
+          retention-days: 90
+
   audit:
     name: Security Audit
     runs-on: ubuntu-latest
