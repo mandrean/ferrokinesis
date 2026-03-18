@@ -26,8 +26,9 @@ pub async fn decode_body(res: reqwest::Response) -> (u16, Value) {
         return (status, Value::Null);
     }
     if ct.contains("cbor") {
-        let val: Value = ciborium::from_reader(&bytes[..]).unwrap_or(Value::Null);
-        (status, val)
+        let cbor_val: ciborium::Value =
+            ciborium::from_reader(&bytes[..]).unwrap_or(ciborium::Value::Null);
+        (status, ferrokinesis::server::cbor_to_json(&cbor_val))
     } else {
         let val: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         (status, val)
@@ -101,6 +102,63 @@ impl TestServer {
             )
             .header("X-Amz-Date", "20150101T000000Z")
             .body(serde_json::to_vec(data).unwrap())
+            .send()
+            .await
+            .unwrap()
+    }
+
+    /// Make a signed Kinesis API request (CBOR content type).
+    /// Note: serializes serde_json::Value via ciborium, so strings are emitted as
+    /// CBOR text strings (major type 3), not byte strings. Use `cbor_request_raw_data`
+    /// to send true CBOR byte strings (major type 2) for Blob fields.
+    pub async fn cbor_request(&self, target: &str, data: &Value) -> reqwest::Response {
+        let mut buf = Vec::new();
+        ciborium::into_writer(data, &mut buf).unwrap();
+        self.client
+            .post(self.url())
+            .header("Content-Type", AMZ_CBOR)
+            .header("X-Amz-Target", format!("{VERSION}.{target}"))
+            .header(
+                "Authorization",
+                "AWS4-HMAC-SHA256 Credential=AKID/20150101/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=abcd1234",
+            )
+            .header("X-Amz-Date", "20150101T000000Z")
+            .body(buf)
+            .send()
+            .await
+            .unwrap()
+    }
+
+    /// Send the same request as both JSON and CBOR, decode both responses.
+    pub async fn request_both(&self, target: &str, data: &Value) -> ((u16, Value), (u16, Value)) {
+        let json_resp = decode_body(self.request(target, data).await).await;
+        let cbor_resp = decode_body(self.cbor_request(target, data).await).await;
+        (json_resp, cbor_resp)
+    }
+
+    /// Make a CBOR request with Data encoded as CBOR byte string (major type 2).
+    /// This simulates real SDK v2 behavior where Blob fields are CBOR bytes, not base64 text.
+    /// `raw_data` is the raw bytes (not base64-encoded).
+    pub async fn cbor_request_raw_data(
+        &self,
+        target: &str,
+        fields: &Value,
+        data_field_path: &str,
+        raw_data: &[u8],
+    ) -> reqwest::Response {
+        let cbor_val = json_to_cbor_with_bytes(fields, data_field_path, raw_data);
+        let mut buf = Vec::new();
+        ciborium::into_writer(&cbor_val, &mut buf).unwrap();
+        self.client
+            .post(self.url())
+            .header("Content-Type", AMZ_CBOR)
+            .header("X-Amz-Target", format!("{VERSION}.{target}"))
+            .header(
+                "Authorization",
+                "AWS4-HMAC-SHA256 Credential=AKID/20150101/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=abcd1234",
+            )
+            .header("X-Amz-Date", "20150101T000000Z")
+            .body(buf)
             .send()
             .await
             .unwrap()
@@ -220,4 +278,109 @@ pub fn signed_headers() -> HeaderMap {
     );
     h.insert("X-Amz-Date", HeaderValue::from_static("20150101T000000Z"));
     h
+}
+
+/// Convert a serde_json::Value to ciborium::Value, replacing the field at
+/// `data_field_path` with CBOR Bytes. Path syntax: dot-separated segments where
+/// `*` is a wildcard that iterates array elements (e.g. `"Data"`, `"Records.*.Data"`).
+/// `raw_data` is the raw bytes for that field.
+///
+/// Unlike the server-side `json_to_cbor_with_blob_bytes` (which matches by key name
+/// at any depth), this uses explicit paths so tests can precisely target fields.
+pub fn json_to_cbor_with_bytes(
+    val: &Value,
+    data_field_path: &str,
+    raw_data: &[u8],
+) -> ciborium::Value {
+    json_to_cbor_inner(val, data_field_path, raw_data)
+}
+
+fn json_to_cbor_inner(val: &Value, path: &str, raw_data: &[u8]) -> ciborium::Value {
+    match val {
+        Value::Null => ciborium::Value::Null,
+        Value::Bool(b) => ciborium::Value::Bool(*b),
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                ciborium::Value::Integer(i.into())
+            } else if let Some(f) = n.as_f64() {
+                ciborium::Value::Float(f)
+            } else {
+                ciborium::Value::Null
+            }
+        }
+        Value::String(s) => ciborium::Value::Text(s.clone()),
+        Value::Array(arr) => {
+            // Handle "Records.*.Data" style paths
+            let (first, rest) = path.split_once('.').unwrap_or((path, ""));
+            if first == "*" {
+                ciborium::Value::Array(
+                    arr.iter()
+                        .map(|item| json_to_cbor_inner(item, rest, raw_data))
+                        .collect(),
+                )
+            } else {
+                ciborium::Value::Array(
+                    arr.iter()
+                        .map(|item| json_to_cbor_inner(item, "", &[]))
+                        .collect(),
+                )
+            }
+        }
+        Value::Object(map) => {
+            let (first, rest) = path.split_once('.').unwrap_or((path, ""));
+            ciborium::Value::Map(
+                map.iter()
+                    .map(|(k, v)| {
+                        let cbor_key = ciborium::Value::Text(k.clone());
+                        let cbor_val = if k == first && rest.is_empty() {
+                            // This is the target field — replace with Bytes
+                            ciborium::Value::Bytes(raw_data.to_vec())
+                        } else if k == first {
+                            // Traverse deeper
+                            json_to_cbor_inner(v, rest, raw_data)
+                        } else {
+                            json_to_cbor_inner(v, "", &[])
+                        };
+                        (cbor_key, cbor_val)
+                    })
+                    .collect(),
+            )
+        }
+    }
+}
+
+/// Remove specified keys from a JSON Value (recursive).
+pub fn strip_keys(val: &mut Value, keys: &[&str]) {
+    match val {
+        Value::Object(map) => {
+            for key in keys {
+                map.remove(*key);
+            }
+            for v in map.values_mut() {
+                strip_keys(v, keys);
+            }
+        }
+        Value::Array(arr) => {
+            for item in arr {
+                strip_keys(item, keys);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Assert two JSON Values are structurally equivalent, ignoring specified volatile keys.
+pub fn assert_values_equivalent(a: &Value, b: &Value, ignore_keys: &[&str]) {
+    let mut a = a.clone();
+    let mut b = b.clone();
+    strip_keys(&mut a, ignore_keys);
+    strip_keys(&mut b, ignore_keys);
+    assert_eq!(
+        a,
+        b,
+        "Values not equivalent after stripping {:?}:\n  left:  {}\n  right: {}",
+        ignore_keys,
+        serde_json::to_string_pretty(&a).unwrap(),
+        serde_json::to_string_pretty(&b).unwrap(),
+    );
 }
