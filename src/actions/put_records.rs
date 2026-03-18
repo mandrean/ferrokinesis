@@ -76,7 +76,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         hash_keys.push(hash_key);
     }
 
-    let (return_records, batch) = store
+    let (return_records, batch, encryption_type) = store
         .update_stream(&stream_name, |stream| {
             if !matches!(
                 stream.stream_status,
@@ -188,13 +188,14 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
             }
 
             let batch: Vec<(String, StoredRecord)> = batch_ops.into_iter().flatten().collect();
-            Ok((return_records, batch))
+            Ok((return_records, batch, stream.encryption_type))
         })
         .await?;
 
     store.put_records_batch(&stream_name, batch).await;
 
     Ok(Some(json!({
+        "EncryptionType": encryption_type,
         "FailedRecordCount": 0,
         "Records": return_records,
     })))

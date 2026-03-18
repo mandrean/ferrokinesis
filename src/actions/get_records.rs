@@ -106,9 +106,10 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         }
 
         items.push(json!({
-            "PartitionKey": record.partition_key,
-            "Data": record.data,
             "ApproximateArrivalTimestamp": record.approximate_arrival_timestamp,
+            "Data": record.data,
+            "EncryptionType": stream.encryption_type,
+            "PartitionKey": record.partition_key,
             "SequenceNumber": seq_num,
         }));
 
