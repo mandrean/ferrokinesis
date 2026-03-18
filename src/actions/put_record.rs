@@ -9,7 +9,25 @@ use num_traits::{One, Zero};
 use serde_json::{Value, json};
 
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
-    let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
+    let stream_name_raw = data[constants::STREAM_NAME].as_str().unwrap_or("");
+    let stream_arn = data[constants::STREAM_ARN].as_str().unwrap_or("");
+
+    let stream_name = if !stream_name_raw.is_empty() {
+        stream_name_raw.to_string()
+    } else if !stream_arn.is_empty() {
+        store.stream_name_from_arn(stream_arn).ok_or_else(|| {
+            KinesisErrorResponse::client_error(
+                constants::RESOURCE_NOT_FOUND,
+                Some("Could not resolve stream from ARN."),
+            )
+        })?
+    } else {
+        return Err(KinesisErrorResponse::client_error(
+            constants::INVALID_ARGUMENT,
+            Some("Either StreamName or StreamARN must be provided."),
+        ));
+    };
+
     let partition_key = data[constants::PARTITION_KEY].as_str().unwrap_or("");
     let record_data = data[constants::DATA].as_str().unwrap_or("");
     let explicit_hash_key = data[constants::EXPLICIT_HASH_KEY].as_str();
@@ -57,7 +75,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     }
 
     let (shard_id, seq_num, stream_key, now) = store
-        .update_stream(stream_name, |stream| {
+        .update_stream(&stream_name, |stream| {
             if !matches!(
                 stream.stream_status,
                 StreamStatus::Active | StreamStatus::Updating
@@ -137,7 +155,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         approximate_arrival_timestamp: now as f64 / 1000.0,
     };
 
-    store.put_record(stream_name, &stream_key, record).await;
+    store.put_record(&stream_name, &stream_key, record).await;
 
     Ok(Some(json!({
         "ShardId": shard_id,

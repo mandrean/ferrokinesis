@@ -5,4 +5,4 @@ echo "Running cargo fmt check..."
 cargo fmt --all -- --check
 
 echo "Running cargo clippy..."
-cargo clippy -- -D warnings
+cargo clippy --all-targets -- -D warnings

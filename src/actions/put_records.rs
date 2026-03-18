@@ -4,8 +4,6 @@ use crate::sequence;
 use crate::store::Store;
 use crate::types::{StoredRecord, StreamStatus};
 use crate::util::current_time_ms;
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
 use num_bigint::BigUint;
 use num_traits::{One, Zero};
 use serde_json::{Value, json};
@@ -17,21 +15,41 @@ struct SeqPiece {
 }
 
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
-    let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
+    let stream_name_raw = data[constants::STREAM_NAME].as_str().unwrap_or("");
+    let stream_arn = data[constants::STREAM_ARN].as_str().unwrap_or("");
+
+    let stream_name = if !stream_name_raw.is_empty() {
+        stream_name_raw.to_string()
+    } else if !stream_arn.is_empty() {
+        store.stream_name_from_arn(stream_arn).ok_or_else(|| {
+            KinesisErrorResponse::client_error(
+                constants::RESOURCE_NOT_FOUND,
+                Some("Could not resolve stream from ARN."),
+            )
+        })?
+    } else {
+        return Err(KinesisErrorResponse::client_error(
+            constants::INVALID_ARGUMENT,
+            Some("Either StreamName or StreamARN must be provided."),
+        ));
+    };
+
     let records = data[constants::RECORDS].as_array().ok_or_else(|| {
         KinesisErrorResponse::client_error(constants::SERIALIZATION_EXCEPTION, None)
     })?;
 
-    // Validate total batch payload size (5 MB limit)
+    // NOTE: Per-record 1 MB data limits are enforced by the validation layer
+    // (validation/rules.rs) before this handler runs. This only checks the
+    // aggregate batch payload against the 5 MB limit.
     const MAX_BATCH_BYTES: usize = 5_242_880;
     let total_payload: usize = records
         .iter()
         .map(|r| {
             let data_bytes = r["Data"]
                 .as_str()
-                .and_then(|s| STANDARD.decode(s).ok())
-                .map(|v| v.len())
+                .map(crate::util::base64_decoded_len)
                 .unwrap_or(0);
+            // AWS counts partition key contribution as UTF-8 byte length
             let key_bytes = r["PartitionKey"].as_str().map(|s| s.len()).unwrap_or(0);
             data_bytes + key_bytes
         })
@@ -39,7 +57,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     if total_payload > MAX_BATCH_BYTES {
         return Err(KinesisErrorResponse::client_error(
             constants::INVALID_ARGUMENT,
-            Some("Records size exceeds 5 MB limit"),
+            Some("Records' total data + partition key payload exceeds 5242880 bytes"),
         ));
     }
 
@@ -69,7 +87,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     }
 
     let (return_records, batch) = store
-        .update_stream(stream_name, |stream| {
+        .update_stream(&stream_name, |stream| {
             if !matches!(
                 stream.stream_status,
                 StreamStatus::Active | StreamStatus::Updating
@@ -184,7 +202,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         })
         .await?;
 
-    store.put_records_batch(stream_name, batch).await;
+    store.put_records_batch(&stream_name, batch).await;
 
     Ok(Some(json!({
         "FailedRecordCount": 0,

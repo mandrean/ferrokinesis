@@ -31,6 +31,9 @@ fn make_records_batch(count: usize, data: &str, key_prefix: &str) -> Vec<Value> 
 
 // ===========================================================================
 // Group A: PutRecord Max Record Size
+// These tests exercise the validation layer's existing per-record 1 MB limit
+// (enforced in src/validation/rules.rs via Data field's len_lte(1048576)),
+// not the new batch-level 5 MB code.
 // ===========================================================================
 
 #[tokio::test]
@@ -185,6 +188,7 @@ async fn put_records_5mb_total_succeeds() {
     // Use 10 records with large data. 5_242_880 / 10 = 524_288 per record.
     // key "k" = 1 byte => data = 524_287 bytes each.
     // total = 10 * (524_287 + 1) = 5_242_880 ✓
+    // Partition keys "0" through "9" are ASCII digits, each exactly 1 UTF-8 byte.
     let data = make_b64_data(524_287);
     let records: Vec<Value> = (0..10)
         .map(|i| {
@@ -223,7 +227,7 @@ async fn put_records_over_5mb_total_rejected() {
     server.create_stream(name, 1).await;
 
     // 10 records, each with 524_288 decoded bytes + 1-byte key = 524_289 per record
-    // total = 10 * 524_289 = 5_242_890 > 5_242_880
+    // total = 10 * 524_289 = 5_242_890, intentionally 10 bytes over the 5_242_880 limit.
     let data = make_b64_data(524_288);
     let records: Vec<Value> = (0..10)
         .map(|i| {
@@ -459,10 +463,12 @@ async fn get_records_10000_custom_limit() {
         assert!(iterations < 1000, "too many iterations");
     }
     assert_eq!(total, 10_000);
-    // With limit=500 and 10,000 records, expect ~20 iterations
-    assert!(
-        (15..=30).contains(&iterations),
-        "expected ~20 iterations, got {iterations}"
+    // 10,000 records / 500 limit = exactly 20 iterations.
+    // In test conditions (fresh stream, no retention-aged records to skip),
+    // GetRecords returns exactly `limit` records per call.
+    assert_eq!(
+        iterations, 20,
+        "expected exactly 20 iterations, got {iterations}"
     );
 }
 
@@ -593,4 +599,56 @@ async fn put_records_mixed_binary_and_unicode() {
             .unwrap();
         assert_eq!(decoded, *original_data, "data mismatch at index {i}");
     }
+}
+
+// ===========================================================================
+// Group F: StreamARN Support
+// ===========================================================================
+
+#[tokio::test]
+async fn put_records_via_stream_arn_succeeds() {
+    let server = TestServer::new().await;
+    let name = "stress-prs-arn";
+    server.create_stream(name, 1).await;
+
+    let arn = server.get_stream_arn(name).await;
+
+    let records = make_records_batch(5, "AAAA", "k");
+    let res = server
+        .request(
+            "PutRecords",
+            &json!({
+                "StreamARN": arn,
+                "Records": records,
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["FailedRecordCount"], 0);
+    assert_eq!(body["Records"].as_array().unwrap().len(), 5);
+}
+
+#[tokio::test]
+async fn put_record_via_stream_arn_succeeds() {
+    let server = TestServer::new().await;
+    let name = "stress-pr-arn";
+    server.create_stream(name, 1).await;
+
+    let arn = server.get_stream_arn(name).await;
+
+    let res = server
+        .request(
+            "PutRecord",
+            &json!({
+                "StreamARN": arn,
+                "Data": "AAAA",
+                "PartitionKey": "k",
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    assert!(body["ShardId"].as_str().is_some());
+    assert!(body["SequenceNumber"].as_str().is_some());
 }

@@ -182,6 +182,15 @@ impl TestServer {
         body["ShardIterator"].as_str().unwrap().to_string()
     }
 
+    /// Helper: get a stream's ARN via DescribeStream
+    pub async fn get_stream_arn(&self, name: &str) -> String {
+        let desc = self.describe_stream(name).await;
+        desc["StreamDescription"]["StreamARN"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
     /// Helper: get records
     pub async fn get_records(&self, iterator: &str) -> Value {
         let res = self

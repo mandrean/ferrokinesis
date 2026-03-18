@@ -8,6 +8,14 @@ fn stream_name_field() -> FieldDef {
         .len_lte(128)
 }
 
+/// StreamName without not_null — for actions that accept StreamARN as alternative.
+fn stream_name_optional_field() -> FieldDef {
+    FieldDef::new(FieldType::String)
+        .regex("[a-zA-Z0-9_.-]+")
+        .len_gte(1)
+        .len_lte(128)
+}
+
 pub fn create_stream() -> Vec<(&'static str, FieldDef)> {
     vec![
         (
@@ -111,7 +119,8 @@ pub fn put_record() -> Vec<(&'static str, FieldDef)> {
             "Data",
             FieldDef::new(FieldType::Blob).not_null().len_lte(1048576),
         ),
-        ("StreamName", stream_name_field()),
+        ("StreamARN", stream_arn_field()),
+        ("StreamName", stream_name_optional_field()),
     ]
 }
 
@@ -145,7 +154,8 @@ pub fn put_records() -> Vec<(&'static str, FieldDef)> {
             .len_lte(500)
             .member_str("com.amazonaws.kinesis.v20131202.PutRecordsRequestEntry@c965e310"),
         ),
-        ("StreamName", stream_name_field()),
+        ("StreamARN", stream_arn_field()),
+        ("StreamName", stream_name_optional_field()),
     ]
 }
 
