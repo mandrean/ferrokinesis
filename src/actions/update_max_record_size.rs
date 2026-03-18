@@ -40,12 +40,9 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     store
         .update_stream(&name, |stream| {
             if stream.stream_status != StreamStatus::Active {
-                return Err(KinesisErrorResponse::client_error(
-                    constants::RESOURCE_IN_USE,
-                    Some(&format!(
-                        "Stream {} under account {} is not ACTIVE.",
-                        name, store.aws_account_id
-                    )),
+                return Err(KinesisErrorResponse::stream_not_active(
+                    &name,
+                    &store.aws_account_id,
                 ));
             }
 

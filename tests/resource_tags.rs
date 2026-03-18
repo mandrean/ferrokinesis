@@ -327,7 +327,10 @@ async fn list_tags_for_resource_empty_arn_direct() {
     )
     .await;
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().body.__type, "InvalidArgumentException");
+    assert_eq!(
+        result.unwrap_err().body.error_type,
+        "InvalidArgumentException"
+    );
 }
 
 #[tokio::test]
@@ -339,7 +342,10 @@ async fn untag_resource_empty_arn_direct() {
     )
     .await;
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().body.__type, "InvalidArgumentException");
+    assert_eq!(
+        result.unwrap_err().body.error_type,
+        "InvalidArgumentException"
+    );
 }
 
 #[tokio::test]
@@ -354,7 +360,10 @@ async fn untag_resource_tag_keys_not_array_direct() {
     )
     .await;
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().body.__type, "InvalidArgumentException");
+    assert_eq!(
+        result.unwrap_err().body.error_type,
+        "InvalidArgumentException"
+    );
 }
 
 #[tokio::test]
@@ -366,7 +375,10 @@ async fn tag_resource_empty_arn_direct() {
     )
     .await;
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().body.__type, "InvalidArgumentException");
+    assert_eq!(
+        result.unwrap_err().body.error_type,
+        "InvalidArgumentException"
+    );
 }
 
 #[tokio::test]
@@ -381,7 +393,10 @@ async fn tag_resource_tags_not_object_direct() {
     )
     .await;
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().body.__type, "InvalidArgumentException");
+    assert_eq!(
+        result.unwrap_err().body.error_type,
+        "InvalidArgumentException"
+    );
 }
 
 // -- TagResource / UntagResource with consumer ARN (non-stream path) --

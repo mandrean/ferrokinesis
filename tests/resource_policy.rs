@@ -226,7 +226,7 @@ async fn delete_resource_policy_empty_arn_direct() {
     .await;
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert_eq!(err.body.__type, "InvalidArgumentException");
+    assert_eq!(err.body.error_type, "InvalidArgumentException");
 }
 
 #[tokio::test]
@@ -236,7 +236,10 @@ async fn get_resource_policy_empty_arn_direct() {
         ferrokinesis::actions::get_resource_policy::execute(&store, json!({ "ResourceARN": "" }))
             .await;
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().body.__type, "InvalidArgumentException");
+    assert_eq!(
+        result.unwrap_err().body.error_type,
+        "InvalidArgumentException"
+    );
 }
 
 #[tokio::test]
@@ -248,5 +251,8 @@ async fn put_resource_policy_empty_arn_direct() {
     )
     .await;
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().body.__type, "InvalidArgumentException");
+    assert_eq!(
+        result.unwrap_err().body.error_type,
+        "InvalidArgumentException"
+    );
 }

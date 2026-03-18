@@ -1,5 +1,6 @@
 use crate::actions::{self, Operation};
 use crate::constants;
+use crate::error::KinesisErrorResponse;
 use crate::store::Store;
 use crate::validation;
 use crate::validation::rules;
@@ -59,7 +60,7 @@ pub async fn handler(
     if method != Method::POST {
         return send_xml_error(
             &response_headers,
-            "AccessDeniedException",
+            constants::ACCESS_DENIED,
             "Unable to determine service/operation name to be authorized",
             403,
         );
@@ -107,12 +108,8 @@ pub async fn handler(
         } else {
             constants::UNKNOWN_OPERATION
         };
-        return send_json_response(
-            &response_headers,
-            response_content_type,
-            &json!({"__type": error_type}),
-            400,
-        );
+        let err = KinesisErrorResponse::client_error(error_type, None);
+        return send_kinesis_error(&response_headers, response_content_type, &err);
     }
 
     if body.len() > MAX_REQUEST_BYTES {
@@ -124,7 +121,7 @@ pub async fn handler(
         if service.is_empty() || operation_str.is_empty() {
             return send_xml_error(
                 &response_headers,
-                "AccessDeniedException",
+                constants::ACCESS_DENIED,
                 "Unable to determine service/operation name to be authorized",
                 403,
             );
@@ -154,12 +151,8 @@ pub async fn handler(
                     400,
                 );
             }
-            return send_json_response(
-                &response_headers,
-                response_content_type,
-                &json!({"__type": constants::SERIALIZATION_EXCEPTION}),
-                400,
-            );
+            let err = KinesisErrorResponse::client_error(constants::SERIALIZATION_EXCEPTION, None);
+            return send_kinesis_error(&response_headers, response_content_type, &err);
         }
     };
 
@@ -177,21 +170,13 @@ pub async fn handler(
     }
 
     let Some(operation) = operation else {
-        return send_json_response(
-            &response_headers,
-            response_content_type,
-            &json!({"__type": constants::UNKNOWN_OPERATION}),
-            400,
-        );
+        let err = KinesisErrorResponse::client_error(constants::UNKNOWN_OPERATION, None);
+        return send_kinesis_error(&response_headers, response_content_type, &err);
     };
 
     if !service_valid {
-        return send_json_response(
-            &response_headers,
-            response_content_type,
-            &json!({"__type": constants::UNKNOWN_OPERATION}),
-            400,
-        );
+        let err = KinesisErrorResponse::client_error(constants::UNKNOWN_OPERATION, None);
+        return send_kinesis_error(&response_headers, response_content_type, &err);
     }
 
     // Auth checking
@@ -204,7 +189,7 @@ pub async fn handler(
             &response_headers,
             content_valid,
             response_content_type,
-            "InvalidSignatureException",
+            constants::INVALID_SIGNATURE,
             "Found both 'X-Amz-Algorithm' as a query-string param and 'Authorization' as HTTP header.",
             400,
         );
@@ -215,7 +200,7 @@ pub async fn handler(
             &response_headers,
             content_valid,
             response_content_type,
-            "MissingAuthenticationTokenException",
+            constants::MISSING_AUTH_TOKEN,
             "Missing Authentication Token",
             400,
         );
@@ -251,9 +236,9 @@ pub async fn handler(
                 &response_headers,
                 content_valid,
                 response_content_type,
-                "IncompleteSignatureException",
+                constants::INCOMPLETE_SIGNATURE,
                 &msg,
-                400,
+                403,
             );
         }
     } else {
@@ -292,9 +277,9 @@ pub async fn handler(
                 &response_headers,
                 content_valid,
                 response_content_type,
-                "IncompleteSignatureException",
+                constants::INCOMPLETE_SIGNATURE,
                 &msg,
-                400,
+                403,
             );
         }
     }
@@ -307,22 +292,12 @@ pub async fn handler(
     let data = match validation::check_types(&data, &field_refs) {
         Ok(d) => d,
         Err(err) => {
-            return send_json_response(
-                &response_headers,
-                response_content_type,
-                &json!({"__type": err.body.__type, "Message": err.body.message_upper}),
-                err.status_code,
-            );
+            return send_kinesis_error(&response_headers, response_content_type, &err);
         }
     };
 
     if let Err(err) = validation::check_validations(&data, &field_refs, None) {
-        return send_json_response(
-            &response_headers,
-            response_content_type,
-            &json!({"__type": err.body.__type, "message": err.body.message}),
-            err.status_code,
-        );
+        return send_kinesis_error(&response_headers, response_content_type, &err);
     }
 
     // Handle SubscribeToShard separately (streaming response)
@@ -335,12 +310,7 @@ pub async fn handler(
                 );
                 (StatusCode::OK, response_headers, body).into_response()
             }
-            Err(err) => send_json_response(
-                &response_headers,
-                response_content_type,
-                &json!({"__type": err.body.__type, "message": err.body.message}),
-                err.status_code,
-            ),
+            Err(err) => send_kinesis_error(&response_headers, response_content_type, &err),
         };
     }
 
@@ -354,12 +324,7 @@ pub async fn handler(
             response_headers.insert("Content-Length", "0".parse().unwrap());
             (StatusCode::OK, response_headers, "").into_response()
         }
-        Err(err) => send_json_response(
-            &response_headers,
-            response_content_type,
-            &json!({"__type": err.body.__type, "message": err.body.message}),
-            err.status_code,
-        ),
+        Err(err) => send_kinesis_error(&response_headers, response_content_type, &err),
     }
 }
 
@@ -405,6 +370,17 @@ fn get_validation_rules(operation: Operation) -> Vec<(&'static str, validation::
         Operation::UpdateStreamMode => rules::update_stream_mode(),
         Operation::UpdateStreamWarmThroughput => rules::update_stream_warm_throughput(),
     }
+}
+
+fn send_kinesis_error(
+    extra_headers: &HeaderMap,
+    content_type: &str,
+    err: &KinesisErrorResponse,
+) -> Response {
+    let data = serde_json::to_value(&err.body).unwrap_or_default();
+    let mut headers = extra_headers.clone();
+    headers.insert("x-amzn-ErrorType", err.body.error_type.parse().unwrap());
+    send_json_response(&headers, content_type, &data, err.status_code)
 }
 
 fn send_json_response(
@@ -475,14 +451,13 @@ fn send_error_response(
     message: &str,
     status_code: u16,
 ) -> Response {
+    let mut headers = extra_headers.clone();
+    headers.insert("x-amzn-ErrorType", error_type.parse().unwrap());
     if content_valid {
-        send_json_response(
-            extra_headers,
-            content_type,
-            &json!({"__type": error_type, "message": message}),
-            status_code,
-        )
+        let err = KinesisErrorResponse::new(status_code, error_type, Some(message));
+        let data = serde_json::to_value(&err.body).unwrap_or_default();
+        send_json_response(&headers, content_type, &data, status_code)
     } else {
-        send_xml_error(extra_headers, error_type, message, 403)
+        send_xml_error(&headers, error_type, message, 403)
     }
 }

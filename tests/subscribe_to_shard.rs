@@ -241,7 +241,10 @@ async fn subscribe_empty_consumer_arn_direct() {
     )
     .await;
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().body.__type, "InvalidArgumentException");
+    assert_eq!(
+        result.unwrap_err().body.error_type,
+        "InvalidArgumentException"
+    );
 }
 
 #[tokio::test]
@@ -257,7 +260,10 @@ async fn subscribe_empty_shard_id_direct() {
     )
     .await;
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().body.__type, "InvalidArgumentException");
+    assert_eq!(
+        result.unwrap_err().body.error_type,
+        "InvalidArgumentException"
+    );
 }
 
 #[tokio::test]
@@ -288,7 +294,10 @@ async fn subscribe_stream_not_found_from_consumer_arn() {
     )
     .await;
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().body.__type, "ResourceNotFoundException");
+    assert_eq!(
+        result.unwrap_err().body.error_type,
+        "ResourceNotFoundException"
+    );
 }
 
 #[tokio::test]
@@ -318,7 +327,10 @@ async fn subscribe_consumer_arn_missing_consumer_segment() {
     )
     .await;
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().body.__type, "InvalidArgumentException");
+    assert_eq!(
+        result.unwrap_err().body.error_type,
+        "InvalidArgumentException"
+    );
 }
 
 #[tokio::test]
@@ -348,7 +360,10 @@ async fn subscribe_consumer_arn_unresolvable_stream_name() {
     )
     .await;
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().body.__type, "ResourceNotFoundException");
+    assert_eq!(
+        result.unwrap_err().body.error_type,
+        "ResourceNotFoundException"
+    );
 }
 
 #[tokio::test]
@@ -483,7 +498,10 @@ async fn subscribe_unknown_position_type_direct() {
     )
     .await;
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().body.__type, "InvalidArgumentException");
+    assert_eq!(
+        result.unwrap_err().body.error_type,
+        "InvalidArgumentException"
+    );
 }
 
 #[tokio::test]
