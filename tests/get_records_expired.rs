@@ -195,3 +195,61 @@ async fn update_warm_throughput_stream_not_active() {
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["__type"], "ResourceInUseException");
 }
+
+/// Configurable TTL: a 1-second TTL should expire an iterator older than 1 second.
+#[tokio::test]
+async fn get_records_configurable_ttl_expires_iterator() {
+    let server = TestServer::with_options(StoreOptions {
+        create_stream_ms: 0,
+        delete_stream_ms: 0,
+        update_stream_ms: 0,
+        shard_limit: 50,
+        iterator_ttl_seconds: 1,
+        ..Default::default()
+    })
+    .await;
+    let name = "gr-custom-ttl";
+    server.create_stream(name, 1).await;
+
+    let put_body = server.put_record(name, "AAAA", "pk").await;
+    let seq = put_body["SequenceNumber"].as_str().unwrap().to_string();
+
+    // Create an iterator 2 seconds in the past — should be expired with 1s TTL
+    let old_ts = now_ms() - 2_000;
+    let expired_iter = create_iterator_with_timestamp(name, "shardId-000000000000", &seq, old_ts);
+
+    let res = server
+        .request("GetRecords", &json!({ "ShardIterator": expired_iter }))
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "ExpiredIteratorException");
+}
+
+/// An iterator within the custom TTL should NOT be expired.
+#[tokio::test]
+async fn get_records_within_custom_ttl_is_valid() {
+    let server = TestServer::with_options(StoreOptions {
+        create_stream_ms: 0,
+        delete_stream_ms: 0,
+        update_stream_ms: 0,
+        shard_limit: 50,
+        iterator_ttl_seconds: 600,
+        ..Default::default()
+    })
+    .await;
+    let name = "gr-custom-ttl-valid";
+    server.create_stream(name, 1).await;
+
+    let put_body = server.put_record(name, "AAAA", "pk").await;
+    let seq = put_body["SequenceNumber"].as_str().unwrap().to_string();
+
+    // Create an iterator 5 minutes in the past — within 10-minute TTL
+    let old_ts = now_ms() - 300_000;
+    let iter = create_iterator_with_timestamp(name, "shardId-000000000000", &seq, old_ts);
+
+    let res = server
+        .request("GetRecords", &json!({ "ShardIterator": iter }))
+        .await;
+    assert_eq!(res.status(), 200);
+}

@@ -29,6 +29,7 @@ pub struct StoreOptions {
     pub delete_stream_ms: u64,
     pub update_stream_ms: u64,
     pub shard_limit: u32,
+    pub iterator_ttl_seconds: u64,
     pub aws_account_id: String,
     pub aws_region: String,
 }
@@ -40,6 +41,7 @@ impl Default for StoreOptions {
             delete_stream_ms: 500,
             update_stream_ms: 500,
             shard_limit: 10,
+            iterator_ttl_seconds: 300,
             aws_account_id: "000000000000".to_string(),
             aws_region: "us-east-1".to_string(),
         }

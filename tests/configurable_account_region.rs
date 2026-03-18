@@ -13,6 +13,7 @@ async fn custom_account_id_appears_in_stream_arn() {
         shard_limit: 50,
         aws_account_id: "123456789012".to_string(),
         aws_region: "eu-west-1".to_string(),
+        ..Default::default()
     })
     .await;
 
@@ -78,6 +79,7 @@ async fn custom_region_in_consumer_arn() {
         shard_limit: 50,
         aws_account_id: "111222333444".to_string(),
         aws_region: "ap-southeast-1".to_string(),
+        ..Default::default()
     })
     .await;
 
@@ -111,6 +113,7 @@ async fn account_id_strips_non_digits() {
         shard_limit: 50,
         aws_account_id: "1234-5678-9012".to_string(),
         aws_region: "us-west-2".to_string(),
+        ..Default::default()
     })
     .await;
 

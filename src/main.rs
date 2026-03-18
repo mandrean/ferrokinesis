@@ -68,6 +68,10 @@ struct ServeArgs {
     #[arg(long, env = "FERROKINESIS_SHARD_LIMIT")]
     shard_limit: Option<u32>,
 
+    /// Shard iterator time-to-live in seconds (minimum: 1, maximum: 86400)
+    #[arg(long, env = "FERROKINESIS_ITERATOR_TTL_SECONDS", value_parser = clap::value_parser!(u64).range(1..=86400))]
+    iterator_ttl_seconds: Option<u64>,
+
     /// Maximum request body size in megabytes (minimum: 1, maximum: 4096)
     #[arg(long, env = "FERROKINESIS_MAX_REQUEST_BODY_MB", value_parser = clap::value_parser!(u64).range(1..=4096))]
     max_request_body_mb: Option<u64>,
@@ -181,6 +185,11 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
     let delete_stream_ms = resolve(args.delete_stream_ms, file_cfg.delete_stream_ms, 500);
     let update_stream_ms = resolve(args.update_stream_ms, file_cfg.update_stream_ms, 500);
     let shard_limit = resolve(args.shard_limit, file_cfg.shard_limit, 10);
+    let iterator_ttl_seconds = resolve(
+        args.iterator_ttl_seconds,
+        file_cfg.iterator_ttl_seconds,
+        300,
+    );
     let max_request_body_mb = resolve(args.max_request_body_mb, file_cfg.max_request_body_mb, 7);
     let aws_account_id = resolve(args.account_id, file_cfg.account_id, "000000000000".into());
     let aws_region = resolve(
@@ -194,6 +203,7 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
         delete_stream_ms,
         update_stream_ms,
         shard_limit,
+        iterator_ttl_seconds,
         aws_account_id,
         aws_region,
     };
