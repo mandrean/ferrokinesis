@@ -54,9 +54,7 @@ pub fn load_config(path: &Path) -> Result<FileConfig, ConfigError> {
     {
         return Err(ConfigError::Validation {
             path: path.display().to_string(),
-            message: format!(
-                "retention_check_interval_secs must be between 0 and 86400, got {v}"
-            ),
+            message: format!("retention_check_interval_secs must be between 0 and 86400, got {v}"),
         });
     }
     Ok(config)

@@ -42,10 +42,10 @@ async fn insert_backdated_record(
 /// Get the shard_create_time from a stream's first shard.
 async fn shard_create_time(server: &TestServer, stream_name: &str) -> u64 {
     let desc = server.describe_stream(stream_name).await;
-    let start_seq = desc["StreamDescription"]["Shards"][0]["SequenceNumberRange"]
-        ["StartingSequenceNumber"]
-        .as_str()
-        .unwrap();
+    let start_seq =
+        desc["StreamDescription"]["Shards"][0]["SequenceNumberRange"]["StartingSequenceNumber"]
+            .as_str()
+            .unwrap();
     sequence::parse_sequence(start_seq)
         .unwrap()
         .shard_create_time
@@ -181,9 +181,7 @@ async fn reaper_skips_non_active_streams() {
     // Verify it's in CREATING state
     let desc = server.describe_stream(name).await;
     assert_eq!(
-        desc["StreamDescription"]["StreamStatus"]
-            .as_str()
-            .unwrap(),
+        desc["StreamDescription"]["StreamStatus"].as_str().unwrap(),
         "CREATING"
     );
 
