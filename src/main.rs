@@ -26,8 +26,8 @@ struct Args {
     #[arg(long, default_value_t = 10)]
     shard_limit: u32,
 
-    /// Maximum request body size in megabytes (minimum: 1, default: 7)
-    #[arg(long, default_value_t = 7, value_parser = clap::value_parser!(u64).range(1..))]
+    /// Maximum request body size in megabytes (minimum: 1, maximum: 4096, default: 7)
+    #[arg(long, default_value_t = 7, value_parser = clap::value_parser!(u64).range(1..=4096))]
     max_request_body_mb: u64,
 }
 

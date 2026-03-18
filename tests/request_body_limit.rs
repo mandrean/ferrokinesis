@@ -59,7 +59,11 @@ async fn custom_limit_allows_body_at_exact_limit() {
         .raw_request(Method::POST, "/", kinesis_headers(), body)
         .await;
 
-    assert_ne!(res.status(), 413, "body at exact limit should not be rejected by DefaultBodyLimit");
+    assert_ne!(
+        res.status(),
+        413,
+        "body at exact limit should not be rejected by DefaultBodyLimit"
+    );
 }
 
 #[tokio::test]
@@ -126,13 +130,21 @@ async fn larger_limit_allows_body_rejected_by_smaller_limit() {
     let res = small_server
         .raw_request(Method::POST, "/", kinesis_headers(), body.clone())
         .await;
-    assert_eq!(res.status(), 413, "512-byte limit must reject 800-byte body");
+    assert_eq!(
+        res.status(),
+        413,
+        "512-byte limit must reject 800-byte body"
+    );
 
     let large_server = TestServer::with_body_limit(default_options(), 1024).await;
     let res = large_server
         .raw_request(Method::POST, "/", kinesis_headers(), body)
         .await;
-    assert_ne!(res.status(), 413, "1 KB limit must not reject 800-byte body at the axum layer");
+    assert_ne!(
+        res.status(),
+        413,
+        "1 KB limit must not reject 800-byte body at the axum layer"
+    );
 }
 
 // --- mb-to-bytes conversion correctness ---
