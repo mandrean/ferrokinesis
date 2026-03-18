@@ -184,6 +184,14 @@ jobs:
           docker buildx imagetools create $TAG_ARGS localhost:5000/ferrokinesis:smoke
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
+      - name: Scan image for vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ghcr.io/${{ github.repository }}:latest
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
 
   publish:
     name: Publish
