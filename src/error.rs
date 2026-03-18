@@ -1,5 +1,6 @@
 use crate::constants;
 use serde::Serialize;
+use std::fmt;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct KinesisError {
@@ -16,6 +17,14 @@ pub struct KinesisErrorResponse {
     pub status_code: u16,
     pub body: KinesisError,
 }
+
+impl fmt::Display for KinesisErrorResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} (HTTP {})", self.body.__type, self.status_code)
+    }
+}
+
+impl std::error::Error for KinesisErrorResponse {}
 
 impl KinesisErrorResponse {
     pub fn client_error(error_type: &str, message: Option<&str>) -> Self {
