@@ -25,6 +25,7 @@ pub struct FileConfig {
     pub create_stream_ms: Option<u64>,
     pub delete_stream_ms: Option<u64>,
     pub update_stream_ms: Option<u64>,
+    pub iterator_ttl_seconds: Option<u64>,
     pub max_request_body_mb: Option<u64>,
 }
 

@@ -45,15 +45,17 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         return Err(invalid_shard_iterator());
     }
 
-    // Check expiry (5 minutes)
-    if now - iterator_time > 300000 {
+    // Check expiry (configurable TTL)
+    let ttl_ms = store.options.iterator_ttl_seconds * 1000;
+    if now - iterator_time > ttl_ms {
         return Err(KinesisErrorResponse::client_error(
             constants::EXPIRED_ITERATOR,
             Some(&format!(
                 "Iterator expired. The iterator was created at time {} while right now it is {} \
-                 which is further in the future than the tolerated delay of 300000 milliseconds.",
+                 which is further in the future than the tolerated delay of {} milliseconds.",
                 to_amz_utc_string(iterator_time),
-                to_amz_utc_string(now)
+                to_amz_utc_string(now),
+                ttl_ms
             )),
         ));
     }
