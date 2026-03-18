@@ -658,7 +658,12 @@ fn get_data_length(data: &Value, field_type: &FieldType) -> usize {
     match field_type {
         FieldType::Blob => {
             if let Some(s) = data.as_str() {
-                crate::util::base64_decoded_len(s)
+                let decoded = crate::util::base64_decoded_len(s);
+                if decoded > 0 || s.is_empty() {
+                    decoded
+                } else {
+                    s.len()
+                }
             } else {
                 0
             }

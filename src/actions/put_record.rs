@@ -9,24 +9,7 @@ use num_traits::{One, Zero};
 use serde_json::{Value, json};
 
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
-    let stream_name_raw = data[constants::STREAM_NAME].as_str().unwrap_or("");
-    let stream_arn = data[constants::STREAM_ARN].as_str().unwrap_or("");
-
-    let stream_name = if !stream_name_raw.is_empty() {
-        stream_name_raw.to_string()
-    } else if !stream_arn.is_empty() {
-        store.stream_name_from_arn(stream_arn).ok_or_else(|| {
-            KinesisErrorResponse::client_error(
-                constants::RESOURCE_NOT_FOUND,
-                Some("Could not resolve stream from ARN."),
-            )
-        })?
-    } else {
-        return Err(KinesisErrorResponse::client_error(
-            constants::INVALID_ARGUMENT,
-            Some("Either StreamName or StreamARN must be provided."),
-        ));
-    };
+    let stream_name = store.resolve_stream_name(&data)?;
 
     let partition_key = data[constants::PARTITION_KEY].as_str().unwrap_or("");
     let record_data = data[constants::DATA].as_str().unwrap_or("");

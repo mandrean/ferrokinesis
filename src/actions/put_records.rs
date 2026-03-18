@@ -15,24 +15,7 @@ struct SeqPiece {
 }
 
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
-    let stream_name_raw = data[constants::STREAM_NAME].as_str().unwrap_or("");
-    let stream_arn = data[constants::STREAM_ARN].as_str().unwrap_or("");
-
-    let stream_name = if !stream_name_raw.is_empty() {
-        stream_name_raw.to_string()
-    } else if !stream_arn.is_empty() {
-        store.stream_name_from_arn(stream_arn).ok_or_else(|| {
-            KinesisErrorResponse::client_error(
-                constants::RESOURCE_NOT_FOUND,
-                Some("Could not resolve stream from ARN."),
-            )
-        })?
-    } else {
-        return Err(KinesisErrorResponse::client_error(
-            constants::INVALID_ARGUMENT,
-            Some("Either StreamName or StreamARN must be provided."),
-        ));
-    };
+    let stream_name = store.resolve_stream_name(&data)?;
 
     let records = data[constants::RECORDS].as_array().ok_or_else(|| {
         KinesisErrorResponse::client_error(constants::SERIALIZATION_EXCEPTION, None)
@@ -47,7 +30,14 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         .map(|r| {
             let data_bytes = r["Data"]
                 .as_str()
-                .map(crate::util::base64_decoded_len)
+                .map(|s| {
+                    let decoded = crate::util::base64_decoded_len(s);
+                    if decoded > 0 || s.is_empty() {
+                        decoded
+                    } else {
+                        s.len()
+                    }
+                })
                 .unwrap_or(0);
             // AWS counts partition key contribution as UTF-8 byte length
             let key_bytes = r["PartitionKey"].as_str().map(|s| s.len()).unwrap_or(0);

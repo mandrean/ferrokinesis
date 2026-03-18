@@ -500,6 +500,29 @@ impl Store {
         arn.split("/").nth(1).map(|s| s.to_string())
     }
 
+    /// Resolve a stream name from a JSON request body that may contain
+    /// `StreamName`, `StreamARN`, or both.
+    pub fn resolve_stream_name(&self, data: &Value) -> Result<String, KinesisErrorResponse> {
+        let stream_name_raw = data[constants::STREAM_NAME].as_str().unwrap_or("");
+        let stream_arn = data[constants::STREAM_ARN].as_str().unwrap_or("");
+
+        if !stream_name_raw.is_empty() {
+            Ok(stream_name_raw.to_string())
+        } else if !stream_arn.is_empty() {
+            self.stream_name_from_arn(stream_arn).ok_or_else(|| {
+                KinesisErrorResponse::client_error(
+                    constants::RESOURCE_NOT_FOUND,
+                    Some("Could not resolve stream from ARN."),
+                )
+            })
+        } else {
+            Err(KinesisErrorResponse::client_error(
+                constants::INVALID_ARGUMENT,
+                Some("Either StreamName or StreamARN must be provided."),
+            ))
+        }
+    }
+
     // --- Resource tag operations (for non-stream resources like consumers) ---
 
     pub async fn get_resource_tags(&self, resource_arn: &str) -> BTreeMap<String, String> {
