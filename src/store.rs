@@ -501,10 +501,18 @@ impl Store {
     }
 
     /// Resolve a stream name from a JSON request body that may contain
-    /// `StreamName`, `StreamARN`, or both.
+    /// `StreamName`, `StreamARN`, or both.  AWS rejects requests that
+    /// supply both, so we do the same.
     pub fn resolve_stream_name(&self, data: &Value) -> Result<String, KinesisErrorResponse> {
         let stream_name_raw = data[constants::STREAM_NAME].as_str().unwrap_or("");
         let stream_arn = data[constants::STREAM_ARN].as_str().unwrap_or("");
+
+        if !stream_name_raw.is_empty() && !stream_arn.is_empty() {
+            return Err(KinesisErrorResponse::client_error(
+                constants::INVALID_ARGUMENT,
+                Some("StreamARN and StreamName cannot be provided together."),
+            ));
+        }
 
         if !stream_name_raw.is_empty() {
             Ok(stream_name_raw.to_string())

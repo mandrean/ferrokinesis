@@ -18,5 +18,9 @@ pub fn base64_decoded_len(b64: &str) -> usize {
         .rev()
         .take_while(|&&b| b == b'=')
         .count();
+    // Valid base64 has at most 2 padding characters; more means invalid input
+    if padding > 2 {
+        return 0;
+    }
     (len * 3) / 4 - padding
 }

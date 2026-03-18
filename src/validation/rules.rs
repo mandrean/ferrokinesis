@@ -321,6 +321,7 @@ pub fn decrease_stream_retention_period() -> Vec<(&'static str, FieldDef)> {
     ]
 }
 
+// TODO: add ARN format regex (e.g. `arn:aws:kinesis:.+:\d{12}:stream/.+`)
 fn stream_arn_field() -> FieldDef {
     FieldDef::new(FieldType::String).len_gte(1).len_lte(2048)
 }

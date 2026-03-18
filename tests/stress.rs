@@ -652,3 +652,32 @@ async fn put_record_via_stream_arn_succeeds() {
     assert!(body["ShardId"].as_str().is_some());
     assert!(body["SequenceNumber"].as_str().is_some());
 }
+
+#[tokio::test]
+async fn put_record_both_stream_name_and_arn_rejected() {
+    let server = TestServer::new().await;
+    let name = "stress-pr-both";
+    server.create_stream(name, 1).await;
+
+    let arn = server.get_stream_arn(name).await;
+
+    let res = server
+        .request(
+            "PutRecord",
+            &json!({
+                "StreamName": name,
+                "StreamARN": arn,
+                "Data": "AAAA",
+                "PartitionKey": "k",
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "InvalidArgumentException");
+    let msg = body["message"].as_str().unwrap();
+    assert!(
+        msg.contains("cannot be provided together"),
+        "expected mutual exclusion error, got: {msg}"
+    );
+}
