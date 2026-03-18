@@ -156,15 +156,15 @@ public class KinesisV2ConformanceTest {
         // Get stream ARN
         DescribeStreamResponse descResp = client.describeStream(
                 DescribeStreamRequest.builder().streamName(STREAM_NAME).build());
-        String streamArn = descResp.streamDescription().streamArn();
+        String streamArn = descResp.streamDescription().streamARN();
 
         // Register consumer
         RegisterStreamConsumerResponse regResp = client.registerStreamConsumer(
                 RegisterStreamConsumerRequest.builder()
-                        .streamArn(streamArn)
+                        .streamARN(streamArn)
                         .consumerName("java-v2-subscriber")
                         .build());
-        String consumerArn = regResp.consumer().consumerArn();
+        String consumerArn = regResp.consumer().consumerARN();
 
         // Wait for consumer to become ACTIVE
         Thread.sleep(600);
