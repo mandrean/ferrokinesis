@@ -7,6 +7,15 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+/// Errors that can occur when probing store health.
+#[derive(Debug, thiserror::Error)]
+pub enum StoreHealthError {
+    #[error("db read failed: {0}")]
+    ReadFailed(String),
+    #[error("table open failed: {0}")]
+    TableOpenFailed(String),
+}
+
 const STREAMS: TableDefinition<&str, &[u8]> = TableDefinition::new("streams");
 const RECORDS: TableDefinition<&str, &[u8]> = TableDefinition::new("records");
 const CONSUMERS: TableDefinition<&str, &[u8]> = TableDefinition::new("consumers");
@@ -531,5 +540,21 @@ impl Store {
             table.insert("account_settings", bytes.as_slice()).unwrap();
         }
         write_txn.commit().unwrap();
+    }
+
+    /// Probe the database with a read transaction to verify all core tables are accessible.
+    pub fn check_ready(&self) -> Result<(), StoreHealthError> {
+        let txn = self
+            .db
+            .begin_read()
+            .map_err(|e| StoreHealthError::ReadFailed(e.to_string()))?;
+        for table in [STREAMS, RECORDS, CONSUMERS, RESOURCE_TAGS, ACCOUNT_SETTINGS] {
+            txn.open_table(table)
+                .map_err(|e| StoreHealthError::TableOpenFailed(e.to_string()))?;
+        }
+        // POLICIES has a different value type (&str vs &[u8]), so it can't share the loop above.
+        txn.open_table(POLICIES)
+            .map_err(|e| StoreHealthError::TableOpenFailed(e.to_string()))?;
+        Ok(())
     }
 }
