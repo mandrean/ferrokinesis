@@ -1,5 +1,6 @@
 package ferrokinesis.conformance;
 
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
@@ -111,6 +112,7 @@ public class KinesisV2ConformanceTest {
 
     @Test @Order(6)
     void getShardIterator() {
+        assertNotNull(putShardId, "putRecord must succeed before getShardIterator");
         GetShardIteratorResponse resp = client.getShardIterator(GetShardIteratorRequest.builder()
                 .streamName(STREAM_NAME)
                 .shardId(putShardId)
@@ -123,6 +125,7 @@ public class KinesisV2ConformanceTest {
 
     @Test @Order(7)
     void getRecords() {
+        assertNotNull(shardIterator, "getShardIterator must succeed before getRecords");
         GetRecordsResponse resp = client.getRecords(GetRecordsRequest.builder()
                 .shardIterator(shardIterator)
                 .build());
@@ -131,10 +134,13 @@ public class KinesisV2ConformanceTest {
         assertEquals("hello from java-v2", first);
     }
 
-    @Test @Order(8)
-    void deleteStream() {
-        client.deleteStream(DeleteStreamRequest.builder()
-                .streamName(STREAM_NAME)
-                .build());
+    @AfterAll
+    static void cleanup() {
+        try {
+            client.deleteStream(DeleteStreamRequest.builder()
+                    .streamName(STREAM_NAME)
+                    .build());
+        } catch (Exception ignored) {
+        }
     }
 }

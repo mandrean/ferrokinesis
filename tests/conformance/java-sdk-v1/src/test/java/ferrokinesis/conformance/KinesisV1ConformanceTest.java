@@ -6,6 +6,7 @@ import com.amazonaws.client.builder.AwsClientBuilder.EndpointConfiguration;
 import com.amazonaws.services.kinesis.AmazonKinesis;
 import com.amazonaws.services.kinesis.AmazonKinesisClientBuilder;
 import com.amazonaws.services.kinesis.model.*;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
@@ -106,6 +107,7 @@ public class KinesisV1ConformanceTest {
 
     @Test @Order(6)
     void getShardIterator() {
+        assertNotNull(putShardId, "putRecord must succeed before getShardIterator");
         GetShardIteratorResult result = client.getShardIterator(
                 STREAM_NAME, putShardId, "TRIM_HORIZON");
         assertNotNull(result.getShardIterator());
@@ -115,6 +117,7 @@ public class KinesisV1ConformanceTest {
 
     @Test @Order(7)
     void getRecords() {
+        assertNotNull(shardIterator, "getShardIterator must succeed before getRecords");
         GetRecordsResult result = client.getRecords(
                 new GetRecordsRequest().withShardIterator(shardIterator));
         assertTrue(result.getRecords().size() >= 1);
@@ -123,8 +126,11 @@ public class KinesisV1ConformanceTest {
         assertEquals("hello from java-v1", first);
     }
 
-    @Test @Order(8)
-    void deleteStream() {
-        client.deleteStream(STREAM_NAME);
+    @AfterAll
+    static void cleanup() {
+        try {
+            client.deleteStream(STREAM_NAME);
+        } catch (Exception ignored) {
+        }
     }
 }

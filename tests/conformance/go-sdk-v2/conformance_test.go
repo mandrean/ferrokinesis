@@ -50,6 +50,12 @@ func TestConformance(t *testing.T) {
 	ctx := context.Background()
 	streamName := "go-conformance"
 
+	t.Cleanup(func() {
+		client.DeleteStream(ctx, &kinesis.DeleteStreamInput{
+			StreamName: aws.String(streamName),
+		})
+	})
+
 	// 1. CreateStream
 	t.Run("CreateStream", func(t *testing.T) {
 		_, err := client.CreateStream(ctx, &kinesis.CreateStreamInput{
@@ -148,6 +154,9 @@ func TestConformance(t *testing.T) {
 	// 6. GetShardIterator
 	var shardIterator string
 	t.Run("GetShardIterator", func(t *testing.T) {
+		if putShardID == "" {
+			t.Fatal("PutRecord must succeed before GetShardIterator")
+		}
 		out, err := client.GetShardIterator(ctx, &kinesis.GetShardIteratorInput{
 			StreamName:        aws.String(streamName),
 			ShardId:           aws.String(putShardID),
@@ -164,6 +173,9 @@ func TestConformance(t *testing.T) {
 
 	// 7. GetRecords
 	t.Run("GetRecords", func(t *testing.T) {
+		if shardIterator == "" {
+			t.Fatal("GetShardIterator must succeed before GetRecords")
+		}
 		out, err := client.GetRecords(ctx, &kinesis.GetRecordsInput{
 			ShardIterator: aws.String(shardIterator),
 		})
@@ -179,13 +191,4 @@ func TestConformance(t *testing.T) {
 		}
 	})
 
-	// 8. DeleteStream
-	t.Run("DeleteStream", func(t *testing.T) {
-		_, err := client.DeleteStream(ctx, &kinesis.DeleteStreamInput{
-			StreamName: aws.String(streamName),
-		})
-		if err != nil {
-			t.Fatalf("DeleteStream: %v", err)
-		}
-	})
 }
