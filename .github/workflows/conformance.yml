@@ -1,0 +1,126 @@
+name: Conformance
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-server:
+    name: Build Server
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust-toolchain
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build release binary
+        run: cargo build --release
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ferrokinesis-linux
+          path: target/release/ferrokinesis
+
+  conformance:
+    name: SDK (${{ matrix.name }})
+    needs: build-server
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Go v2
+            lang: go
+            dir: tests/conformance/go-sdk-v2
+            setup: |
+              echo "Go toolchain already installed via setup-go"
+            run: go test -v -count=1 -timeout 60s ./...
+          - name: Python (boto3)
+            lang: python
+            dir: tests/conformance/python-boto3
+            setup: pip install -r requirements.txt
+            run: pytest -v test_conformance.py
+          - name: Node.js v3
+            lang: node
+            dir: tests/conformance/node-sdk-v3
+            setup: npm ci
+            run: npx vitest run --reporter=verbose
+          - name: Java SDK v2
+            lang: java-v2
+            dir: tests/conformance/java-sdk-v2
+            setup: echo "Maven handles deps"
+            run: mvn -B test
+          - name: Java SDK v1
+            lang: java-v1
+            dir: tests/conformance/java-sdk-v1
+            setup: echo "Maven handles deps"
+            run: mvn -B test
+    env:
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+      KINESIS_ENDPOINT: http://localhost:4567
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download server binary
+        uses: actions/download-artifact@v4
+        with:
+          name: ferrokinesis-linux
+
+      - name: Start server
+        run: |
+          chmod +x ferrokinesis
+          ./ferrokinesis \
+            --create-stream-ms 0 \
+            --delete-stream-ms 0 \
+            --update-stream-ms 0 &
+
+      - name: Wait for server
+        run: bash tests/conformance/wait-for-server.sh
+
+      - name: Setup Go
+        if: matrix.lang == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: ${{ matrix.dir }}/go.sum
+
+      - name: Setup Node.js
+        if: matrix.lang == 'node'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: ${{ matrix.dir }}/package-lock.json
+
+      - name: Setup Java
+        if: startsWith(matrix.lang, 'java')
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "11"
+          cache: maven
+
+      - name: Cache pip
+        if: matrix.lang == 'python'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-conformance-${{ hashFiles('tests/conformance/python-boto3/requirements.txt') }}
+
+      - name: Install dependencies
+        working-directory: ${{ matrix.dir }}
+        run: ${{ matrix.setup }}
+
+      - name: Run conformance tests
+        working-directory: ${{ matrix.dir }}
+        run: ${{ matrix.run }}
+
+      - name: Stop server
+        if: always()
+        run: pkill -f ferrokinesis || true
