@@ -658,11 +658,12 @@ fn get_data_length(data: &Value, field_type: &FieldType) -> usize {
     match field_type {
         FieldType::Blob => {
             if let Some(s) = data.as_str() {
-                use base64::Engine;
-                base64::engine::general_purpose::STANDARD
-                    .decode(s)
-                    .map(|v| v.len())
-                    .unwrap_or(s.len())
+                let decoded = crate::util::base64_decoded_len(s);
+                if decoded > 0 || s.is_empty() {
+                    decoded
+                } else {
+                    s.len()
+                }
             } else {
                 0
             }
@@ -719,11 +720,7 @@ fn value_str(data: &Value, field_type: &FieldType, member_str: &Option<String>) 
     match field_type {
         FieldType::Blob => {
             if let Some(s) = data.as_str() {
-                use base64::Engine;
-                let length = base64::engine::general_purpose::STANDARD
-                    .decode(s)
-                    .map(|v| v.len())
-                    .unwrap_or(0);
+                let length = crate::util::base64_decoded_len(s);
                 format!("java.nio.HeapByteBuffer[pos=0 lim={length} cap={length}]")
             } else {
                 "null".to_string()

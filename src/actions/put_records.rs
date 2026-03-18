@@ -15,10 +15,41 @@ struct SeqPiece {
 }
 
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
-    let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
+    let stream_name = store.resolve_stream_name(&data)?;
+
     let records = data[constants::RECORDS].as_array().ok_or_else(|| {
         KinesisErrorResponse::client_error(constants::SERIALIZATION_EXCEPTION, None)
     })?;
+
+    // NOTE: Per-record 1 MB data limits are enforced by the validation layer
+    // (validation/rules.rs) before this handler runs. This only checks the
+    // aggregate batch payload against the 5 MB limit.
+    const MAX_BATCH_BYTES: usize = 5_242_880;
+    let total_payload: usize = records
+        .iter()
+        .map(|r| {
+            let data_bytes = r["Data"]
+                .as_str()
+                .map(|s| {
+                    let decoded = crate::util::base64_decoded_len(s);
+                    if decoded > 0 || s.is_empty() {
+                        decoded
+                    } else {
+                        s.len()
+                    }
+                })
+                .unwrap_or(0);
+            // AWS counts partition key contribution as UTF-8 byte length
+            let key_bytes = r["PartitionKey"].as_str().map(|s| s.len()).unwrap_or(0);
+            data_bytes + key_bytes
+        })
+        .sum();
+    if total_payload > MAX_BATCH_BYTES {
+        return Err(KinesisErrorResponse::client_error(
+            constants::INVALID_ARGUMENT,
+            Some("Records' total data + partition key payload exceeds 5242880 bytes"),
+        ));
+    }
 
     // Pre-compute hash keys (no stream access needed)
     let pow_128 = BigUint::one() << 128;
@@ -46,7 +77,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     }
 
     let (return_records, batch) = store
-        .update_stream(stream_name, |stream| {
+        .update_stream(&stream_name, |stream| {
             if !matches!(
                 stream.stream_status,
                 StreamStatus::Active | StreamStatus::Updating
@@ -161,7 +192,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         })
         .await?;
 
-    store.put_records_batch(stream_name, batch).await;
+    store.put_records_batch(&stream_name, batch).await;
 
     Ok(Some(json!({
         "FailedRecordCount": 0,

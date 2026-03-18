@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cmd=$(jq -r '.tool_input.command // \"\"'); echo \"$cmd\" | grep -qE '(^|[^a-z])git commit([^a-z]|$)' || exit 0; cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings",
+            "timeout": 120,
+            "statusMessage": "Running cargo fmt and clippy before commit..."
+          }
+        ]
+      }
+    ]
+  }
+}
