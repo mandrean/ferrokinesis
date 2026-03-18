@@ -1,0 +1,40 @@
+name: Stress Tests
+
+on:
+  schedule:
+    - cron: "0 3 * * *" # Nightly at 03:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  concurrent-stress:
+    name: Concurrent Stress Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust-toolchain
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: check
+          save-if: false
+      - name: Run concurrent stress tests
+        run: cargo test --test concurrent_stress -- --nocapture --test-threads=1
+        timeout-minutes: 10
+
+  ignored-stress:
+    name: Slow Stress Tests (ignored)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust-toolchain
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: check
+          save-if: false
+      - name: Run ignored stress tests
+        run: cargo test -- --ignored --nocapture --test-threads=1
+        timeout-minutes: 25
