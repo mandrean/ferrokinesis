@@ -82,8 +82,8 @@ pub fn parse_sequence(seq: &str) -> Result<SeqObj, SequenceError> {
                 i64::from_str_radix(shard_ix_hex_raw, 16).unwrap_or(0)
             };
 
-            let shard_create_secs =
-                u64::from_str_radix(&hex[1..10], 16).map_err(|e| SequenceError::HexParse(e.to_string()))?;
+            let shard_create_secs = u64::from_str_radix(&hex[1..10], 16)
+                .map_err(|e| SequenceError::HexParse(e.to_string()))?;
             if shard_create_secs >= 16025175000 {
                 return Err(SequenceError::DateTooLarge(shard_create_secs));
             }
@@ -103,8 +103,8 @@ pub fn parse_sequence(seq: &str) -> Result<SeqObj, SequenceError> {
             })
         }
         1 => {
-            let shard_create_secs =
-                u64::from_str_radix(&hex[1..10], 16).map_err(|e| SequenceError::HexParse(e.to_string()))?;
+            let shard_create_secs = u64::from_str_radix(&hex[1..10], 16)
+                .map_err(|e| SequenceError::HexParse(e.to_string()))?;
             let shard_ix_hex = &hex[38..46];
             let shard_ix = i64::from_str_radix(shard_ix_hex, 16).unwrap_or(0);
 
@@ -121,8 +121,8 @@ pub fn parse_sequence(seq: &str) -> Result<SeqObj, SequenceError> {
             })
         }
         0 => {
-            let shard_create_secs =
-                u64::from_str_radix(&hex[1..10], 16).map_err(|e| SequenceError::HexParse(e.to_string()))?;
+            let shard_create_secs = u64::from_str_radix(&hex[1..10], 16)
+                .map_err(|e| SequenceError::HexParse(e.to_string()))?;
             if shard_create_secs >= 16025175000 {
                 return Err(SequenceError::DateTooLarge(shard_create_secs));
             }
