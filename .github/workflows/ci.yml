@@ -63,7 +63,7 @@ jobs:
       - uses: ./.github/actions/setup-rust-toolchain
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: false
+          shared-key: check
       - name: Install critcmp
         uses: taiki-e/install-action@v2
         with:
