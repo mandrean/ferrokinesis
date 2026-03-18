@@ -46,7 +46,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     }
 
     // Check expiry (configurable TTL)
-    let ttl_ms = store.options.iterator_ttl_seconds * 1000;
+    let ttl_ms = store.options.iterator_ttl_seconds.saturating_mul(1000);
     if now - iterator_time > ttl_ms {
         return Err(KinesisErrorResponse::client_error(
             constants::EXPIRED_ITERATOR,

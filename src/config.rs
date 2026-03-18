@@ -14,6 +14,8 @@ pub enum ConfigError {
         path: String,
         source: toml::de::Error,
     },
+    #[error("invalid value in config file {path}: {message}")]
+    Validation { path: String, message: String },
 }
 
 #[derive(Deserialize, Default)]
@@ -34,8 +36,17 @@ pub fn load_config(path: &Path) -> Result<FileConfig, ConfigError> {
         path: path.display().to_string(),
         source: e,
     })?;
-    toml::from_str(&content).map_err(|e| ConfigError::Parse {
+    let config: FileConfig = toml::from_str(&content).map_err(|e| ConfigError::Parse {
         path: path.display().to_string(),
         source: e,
-    })
+    })?;
+    if let Some(ttl) = config.iterator_ttl_seconds
+        && !(1..=86400).contains(&ttl)
+    {
+        return Err(ConfigError::Validation {
+            path: path.display().to_string(),
+            message: format!("iterator_ttl_seconds must be between 1 and 86400, got {ttl}"),
+        });
+    }
+    Ok(config)
 }
