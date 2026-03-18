@@ -25,6 +25,10 @@ struct Args {
     #[arg(long, env = "AWS_REGION")]
     region: Option<String>,
 
+    /// AWS region fallback (used when --region and AWS_REGION are unset)
+    #[arg(long, env = "AWS_DEFAULT_REGION", hide = true)]
+    default_region: Option<String>,
+
     /// Amount of time streams stay in CREATING state (ms)
     #[arg(long, env = "FERROKINESIS_CREATE_STREAM_MS")]
     create_stream_ms: Option<u64>,
@@ -73,7 +77,11 @@ async fn main() {
     let shard_limit = resolve(args.shard_limit, file_cfg.shard_limit, 10);
     let max_request_body_mb = resolve(args.max_request_body_mb, file_cfg.max_request_body_mb, 7);
     let aws_account_id = resolve(args.account_id, file_cfg.account_id, "000000000000".into());
-    let aws_region = resolve(args.region, file_cfg.region, "us-east-1".into());
+    let aws_region = resolve(
+        args.region.or(args.default_region),
+        file_cfg.region,
+        "us-east-1".into(),
+    );
 
     let options = StoreOptions {
         create_stream_ms,

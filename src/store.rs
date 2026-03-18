@@ -108,11 +108,18 @@ fn record_range(stream_name: &str, start: &str, end: &str) -> (String, String) {
 
 impl Store {
     pub fn new(options: StoreOptions) -> Self {
-        let aws_account_id = options
+        let aws_account_id: String = options
             .aws_account_id
             .chars()
             .filter(|c| c.is_ascii_digit())
             .collect();
+
+        if aws_account_id.len() != 12 {
+            eprintln!(
+                "warning: AWS account ID has {} digits after stripping non-digits (expected 12)",
+                aws_account_id.len()
+            );
+        }
 
         let aws_region = options.aws_region.clone();
 
