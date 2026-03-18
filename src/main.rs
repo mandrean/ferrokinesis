@@ -1,3 +1,4 @@
+use axum::extract::DefaultBodyLimit;
 use clap::Parser;
 use ferrokinesis::store::StoreOptions;
 
@@ -24,6 +25,10 @@ struct Args {
     /// Shard limit for error reporting
     #[arg(long, default_value_t = 10)]
     shard_limit: u32,
+
+    /// Maximum request body size in megabytes (minimum: 1, maximum: 4096, default: 7)
+    #[arg(long, default_value_t = 7, value_parser = clap::value_parser!(u64).range(1..=4096))]
+    max_request_body_mb: u64,
 }
 
 #[tokio::main]
@@ -37,7 +42,11 @@ async fn main() {
         shard_limit: args.shard_limit,
     };
 
+    let max_bytes: usize = (args.max_request_body_mb * 1024 * 1024)
+        .try_into()
+        .expect("--max-request-body-mb value overflows usize");
     let (app, _store) = ferrokinesis::create_app(options);
+    let app = app.layer(DefaultBodyLimit::max(max_bytes));
 
     let addr = format!("0.0.0.0:{}", args.port);
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();

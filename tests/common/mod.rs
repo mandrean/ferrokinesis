@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use axum::extract::DefaultBodyLimit;
 use ferrokinesis::store::StoreOptions;
 use reqwest::Client;
 use reqwest::header::{HeaderMap, HeaderValue};
@@ -51,6 +52,22 @@ impl TestServer {
 
     pub async fn with_options(options: StoreOptions) -> Self {
         let (app, _store) = ferrokinesis::create_app(options);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        TestServer {
+            addr,
+            client: Client::new(),
+        }
+    }
+
+    pub async fn with_body_limit(options: StoreOptions, max_body_bytes: usize) -> Self {
+        let (app, _store) = ferrokinesis::create_app(options);
+        let app = app.layer(DefaultBodyLimit::max(max_body_bytes));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
