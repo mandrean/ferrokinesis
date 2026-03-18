@@ -45,6 +45,7 @@ async fn delete_stream_deleting_state() {
         delete_stream_ms: 200,
         update_stream_ms: 0,
         shard_limit: 50,
+        ..Default::default()
     })
     .await;
 

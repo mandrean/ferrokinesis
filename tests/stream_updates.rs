@@ -602,6 +602,7 @@ async fn update_warm_throughput_by_arn_on_creating_stream() {
         delete_stream_ms: 0,
         update_stream_ms: 0,
         shard_limit: 50,
+        ..Default::default()
     })
     .await;
     let name = "cx-uwt-arn-creat";
