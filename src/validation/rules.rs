@@ -322,6 +322,7 @@ pub fn decrease_stream_retention_period() -> Vec<(&'static str, FieldDef)> {
 }
 
 fn stream_arn_field() -> FieldDef {
+    // Pattern from AWS Kinesis API Reference
     FieldDef::new(FieldType::String)
         .regex("arn:aws.*:kinesis:.*:\\d{12}:stream/\\S+")
         .len_gte(1)
@@ -329,6 +330,8 @@ fn stream_arn_field() -> FieldDef {
 }
 
 fn resource_arn_field() -> FieldDef {
+    // Pattern from AWS Kinesis API Reference — `.*stream/` is intentionally permissive
+    // to accept both stream ARNs and consumer ARNs (which contain a longer path after `stream/`)
     FieldDef::new(FieldType::String)
         .regex("arn:aws.*:kinesis:.*:\\d{12}:.*stream/\\S+")
         .len_gte(1)
@@ -336,6 +339,8 @@ fn resource_arn_field() -> FieldDef {
 }
 
 fn consumer_arn_field() -> FieldDef {
+    // Pattern from AWS Kinesis API Reference — the `(arn)` capture group is verbatim from the
+    // spec; it's a no-op for validation since we only call `is_match()`
     FieldDef::new(FieldType::String)
         .regex("(arn):aws.*:kinesis:.*:\\d{12}:.*stream/[a-zA-Z0-9_.-]+/consumer/[a-zA-Z0-9_.-]+:[0-9]+")
         .len_gte(1)

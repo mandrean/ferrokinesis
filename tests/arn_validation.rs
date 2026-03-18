@@ -131,6 +131,27 @@ async fn stream_arn_china_partition_accepted() {
     assert_ne!(body["__type"], "ValidationException");
 }
 
+#[tokio::test]
+async fn stream_arn_exceeding_max_length_rejected() {
+    let server = TestServer::new().await;
+    // Build a valid-shaped ARN that exceeds the 2048-char limit
+    let long_name = "x".repeat(2048);
+    let arn = format!("arn:aws:kinesis:us-east-1:000000000000:stream/{long_name}");
+    let res = server
+        .request(
+            "PutRecord",
+            &json!({
+                "StreamARN": arn,
+                "Data": "dGVzdA==",
+                "PartitionKey": "key1",
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "ValidationException");
+}
+
 // -- ResourceARN validation --
 
 #[tokio::test]

@@ -2,6 +2,12 @@ pub mod rules;
 
 use crate::error::KinesisErrorResponse;
 use serde_json::Value;
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+thread_local! {
+    static REGEX_CACHE: RefCell<HashMap<String, regex::Regex>> = RefCell::new(HashMap::new());
+}
 
 pub fn to_lower_first(s: &str) -> String {
     let mut chars = s.chars();
@@ -449,9 +455,15 @@ pub fn check_validations(
             && let Some(s) = data.as_str()
         {
             let full_pattern = format!("^{pattern}$");
-            let re = regex::Regex::new(&full_pattern).unwrap();
+            let matched = REGEX_CACHE.with(|cache| {
+                let mut cache = cache.borrow_mut();
+                let re = cache
+                    .entry(full_pattern)
+                    .or_insert_with_key(|p| regex::Regex::new(p).unwrap());
+                re.is_match(s)
+            });
             validate(
-                re.is_match(s),
+                matched,
                 &format!("Member must satisfy regular expression pattern: {pattern}"),
                 data,
                 &field_def.field_type,
