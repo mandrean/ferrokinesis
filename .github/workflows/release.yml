@@ -105,6 +105,45 @@ jobs:
           mv docker-context/amd64/ferrokinesis-linux-amd64 docker-context/amd64/ferrokinesis
           mv docker-context/arm64/ferrokinesis-linux-arm64 docker-context/arm64/ferrokinesis
           chmod +x docker-context/*/ferrokinesis
+      - name: Smoke test
+        run: |
+          # Build a local linux/amd64-only image for smoke testing (no push)
+          docker buildx build \
+            --platform linux/amd64 \
+            --build-arg TARGETARCH=amd64 \
+            --load \
+            --tag ferrokinesis-smoke:test \
+            --file ./Dockerfile \
+            docker-context
+
+          # Start the container
+          docker run -d --name ferrokinesis-smoke -p 4567:4567 ferrokinesis-smoke:test
+
+          # Wait for the service to be ready
+          curl --retry 10 --retry-delay 1 --retry-connrefused --silent --fail \
+            http://localhost:4567/ || true
+
+          # CreateStream
+          curl --silent --fail --show-error \
+            -X POST http://localhost:4567/ \
+            -H 'Content-Type: application/x-amz-json-1.1' \
+            -H 'X-Amz-Target: Kinesis_20131202.CreateStream' \
+            -d '{"StreamName":"smoke-test","ShardCount":1}'
+
+          # Wait briefly for the stream to become available
+          sleep 1
+
+          # ListStreams – assert the response contains "smoke-test"
+          RESPONSE=$(curl --silent --fail --show-error \
+            -X POST http://localhost:4567/ \
+            -H 'Content-Type: application/x-amz-json-1.1' \
+            -H 'X-Amz-Target: Kinesis_20131202.ListStreams' \
+            -d '{}')
+          echo "ListStreams response: $RESPONSE"
+          echo "$RESPONSE" | grep -q "smoke-test"
+
+          # Cleanup
+          docker stop ferrokinesis-smoke && docker rm ferrokinesis-smoke
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Login to GHCR
