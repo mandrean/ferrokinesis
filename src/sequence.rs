@@ -1,6 +1,25 @@
 use num_bigint::BigUint;
 use num_traits::{Num, One, ToPrimitive, Zero};
 
+/// Errors from parsing or resolving sequence numbers and shard IDs.
+#[derive(Debug, thiserror::Error)]
+pub enum SequenceError {
+    #[error("invalid sequence number: {0}")]
+    InvalidSequenceNumber(String),
+    #[error("unknown version for sequence: {0}")]
+    UnknownVersion(String),
+    #[error("sequence index too high")]
+    SequenceIndexTooHigh,
+    #[error("date too large: {0}")]
+    DateTooLarge(u64),
+    #[error("hex parse error: {0}")]
+    HexParse(String),
+    #[error("invalid shard ID")]
+    InvalidShardId,
+    #[error("shard index out of range: {0}")]
+    ShardIndexOutOfRange(i64),
+}
+
 /// Parsed sequence number components
 #[derive(Debug, Clone)]
 pub struct SeqObj {
@@ -17,10 +36,10 @@ fn pow_2(n: u32) -> BigUint {
     BigUint::one() << n
 }
 
-pub fn parse_sequence(seq: &str) -> Result<SeqObj, String> {
+pub fn parse_sequence(seq: &str) -> Result<SeqObj, SequenceError> {
     let seq_num: BigUint = seq
         .parse()
-        .map_err(|_| format!("Invalid sequence number: {seq}"))?;
+        .map_err(|_| SequenceError::InvalidSequenceNumber(seq.to_string()))?;
 
     let pow_2_124 = pow_2(124);
     let seq_num = if seq_num < pow_2_124 {
@@ -41,7 +60,7 @@ pub fn parse_sequence(seq: &str) -> Result<SeqObj, String> {
         let last_char = &hex[hex.len() - 1..];
         u32::from_str_radix(last_char, 16).unwrap_or(0)
     } else {
-        return Err(format!("Unknown version for sequence: {seq}"));
+        return Err(SequenceError::UnknownVersion(seq.to_string()));
     };
 
     match version {
@@ -51,7 +70,7 @@ pub fn parse_sequence(seq: &str) -> Result<SeqObj, String> {
 
             let first_nibble = u8::from_str_radix(&seq_ix_hex[..1], 16).unwrap_or(0);
             if first_nibble > 7 {
-                return Err("Sequence index too high".to_string());
+                return Err(SequenceError::SequenceIndexTooHigh);
             }
 
             let shard_ix_first = u8::from_str_radix(&shard_ix_hex_raw[..1], 16).unwrap_or(0);
@@ -63,10 +82,10 @@ pub fn parse_sequence(seq: &str) -> Result<SeqObj, String> {
                 i64::from_str_radix(shard_ix_hex_raw, 16).unwrap_or(0)
             };
 
-            let shard_create_secs =
-                u64::from_str_radix(&hex[1..10], 16).map_err(|e| e.to_string())?;
+            let shard_create_secs = u64::from_str_radix(&hex[1..10], 16)
+                .map_err(|e| SequenceError::HexParse(e.to_string()))?;
             if shard_create_secs >= 16025175000 {
-                return Err(format!("Date too large: {shard_create_secs}"));
+                return Err(SequenceError::DateTooLarge(shard_create_secs));
             }
 
             let seq_time = u64::from_str_radix(&hex[29..38], 16).unwrap_or(0) * 1000;
@@ -84,8 +103,8 @@ pub fn parse_sequence(seq: &str) -> Result<SeqObj, String> {
             })
         }
         1 => {
-            let shard_create_secs =
-                u64::from_str_radix(&hex[1..10], 16).map_err(|e| e.to_string())?;
+            let shard_create_secs = u64::from_str_radix(&hex[1..10], 16)
+                .map_err(|e| SequenceError::HexParse(e.to_string()))?;
             let shard_ix_hex = &hex[38..46];
             let shard_ix = i64::from_str_radix(shard_ix_hex, 16).unwrap_or(0);
 
@@ -102,10 +121,10 @@ pub fn parse_sequence(seq: &str) -> Result<SeqObj, String> {
             })
         }
         0 => {
-            let shard_create_secs =
-                u64::from_str_radix(&hex[1..10], 16).map_err(|e| e.to_string())?;
+            let shard_create_secs = u64::from_str_radix(&hex[1..10], 16)
+                .map_err(|e| SequenceError::HexParse(e.to_string()))?;
             if shard_create_secs >= 16025175000 {
-                return Err(format!("Date too large: {shard_create_secs}"));
+                return Err(SequenceError::DateTooLarge(shard_create_secs));
             }
 
             let shard_ix_hex = &hex[28..32];
@@ -121,7 +140,7 @@ pub fn parse_sequence(seq: &str) -> Result<SeqObj, String> {
                 version,
             })
         }
-        _ => Err(format!("Unknown version: {version}")),
+        _ => Err(SequenceError::UnknownVersion(version.to_string())),
     }
 }
 
@@ -228,16 +247,14 @@ pub fn shard_id_name(shard_ix: i64) -> String {
     }
 }
 
-pub fn resolve_shard_id(shard_id: &str) -> Result<(String, i64), String> {
+pub fn resolve_shard_id(shard_id: &str) -> Result<(String, i64), SequenceError> {
     let parts: Vec<&str> = shard_id.splitn(2, '-').collect();
     let id_part = if parts.len() > 1 { parts[1] } else { parts[0] };
 
-    let shard_ix: i64 = id_part
-        .parse()
-        .map_err(|_| "INVALID_SHARD_ID".to_string())?;
+    let shard_ix: i64 = id_part.parse().map_err(|_| SequenceError::InvalidShardId)?;
 
     if !(0..=2147483647).contains(&shard_ix) {
-        return Err("INVALID_SHARD_ID".to_string());
+        return Err(SequenceError::ShardIndexOutOfRange(shard_ix));
     }
 
     Ok((shard_id_name(shard_ix), shard_ix))
