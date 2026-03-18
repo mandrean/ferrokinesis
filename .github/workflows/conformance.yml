@@ -68,6 +68,7 @@ jobs:
       AWS_SECRET_ACCESS_KEY: test
       AWS_DEFAULT_REGION: us-east-1
       KINESIS_ENDPOINT: http://localhost:4567
+      # Used by java-kcl-v1 only; harmless for other matrix entries
       DYNAMODB_ENDPOINT: http://localhost:8000
     steps:
       - uses: actions/checkout@v4
@@ -93,7 +94,12 @@ jobs:
         run: |
           docker run -d --name dynamodb-local -p 8000:8000 amazon/dynamodb-local
           for i in $(seq 1 15); do
-            curl -s http://localhost:8000 > /dev/null 2>&1 && break
+            if curl -sf -X POST http://localhost:8000 \
+              -H 'Content-Type: application/x-amz-json-1.0' \
+              -H 'X-Amz-Target: DynamoDB_20120810.ListTables' \
+              -d '{"Limit": 1}' > /dev/null 2>&1; then
+              break
+            fi
             sleep 1
           done
 

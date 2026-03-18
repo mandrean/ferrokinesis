@@ -8,6 +8,8 @@ import com.amazonaws.services.kinesis.model.Record;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -15,17 +17,17 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class TestRecordProcessor implements IRecordProcessor {
 
     private static final ConcurrentLinkedQueue<Record> receivedRecords = new ConcurrentLinkedQueue<>();
+    private static final Set<String> seenSequenceNumbers = ConcurrentHashMap.newKeySet();
     private static volatile CountDownLatch latch;
     private static final AtomicBoolean initializeCalled = new AtomicBoolean(false);
-    private static final AtomicBoolean shutdownCalled = new AtomicBoolean(false);
 
     private String shardId;
 
     public static void reset(int expectedCount) {
         receivedRecords.clear();
+        seenSequenceNumbers.clear();
         latch = new CountDownLatch(expectedCount);
         initializeCalled.set(false);
-        shutdownCalled.set(false);
     }
 
     public static List<Record> getRecords() {
@@ -40,10 +42,6 @@ public class TestRecordProcessor implements IRecordProcessor {
         return initializeCalled.get();
     }
 
-    public static boolean wasShutdownCalled() {
-        return shutdownCalled.get();
-    }
-
     @Override
     public void initialize(InitializationInput initializationInput) {
         this.shardId = initializationInput.getShardId();
@@ -53,8 +51,10 @@ public class TestRecordProcessor implements IRecordProcessor {
     @Override
     public void processRecords(ProcessRecordsInput processRecordsInput) {
         for (Record record : processRecordsInput.getRecords()) {
-            receivedRecords.add(record);
-            latch.countDown();
+            if (seenSequenceNumbers.add(record.getSequenceNumber())) {
+                receivedRecords.add(record);
+                latch.countDown();
+            }
         }
         try {
             processRecordsInput.getCheckpointer().checkpoint();
@@ -65,7 +65,6 @@ public class TestRecordProcessor implements IRecordProcessor {
 
     @Override
     public void shutdown(ShutdownInput shutdownInput) {
-        shutdownCalled.set(true);
         if (shutdownInput.getShutdownReason() ==
                 com.amazonaws.services.kinesis.clientlibrary.lib.worker.ShutdownReason.TERMINATE) {
             try {

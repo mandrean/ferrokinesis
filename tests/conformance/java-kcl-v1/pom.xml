@@ -12,6 +12,7 @@
         <maven.compiler.source>11</maven.compiler.source>
         <maven.compiler.target>11</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- Must be compatible with amazon-kinesis-client 1.15.2 (uses AWS SDK v1 internally) -->
         <aws.sdk.version>1.12.780</aws.sdk.version>
     </properties>
 
@@ -35,12 +36,6 @@
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
             <version>5.11.4</version>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.awaitility</groupId>
-            <artifactId>awaitility</artifactId>
-            <version>4.2.2</version>
             <scope>test</scope>
         </dependency>
     </dependencies>

@@ -16,6 +16,7 @@ import com.amazonaws.services.kinesis.metrics.impl.NullMetricsFactory;
 import com.amazonaws.services.kinesis.model.DescribeStreamResult;
 import com.amazonaws.services.kinesis.model.PutRecordRequest;
 import com.amazonaws.services.kinesis.model.Record;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
@@ -66,6 +67,7 @@ public class KclV1IntegrationTest {
 
     private static Worker worker;
     private static ExecutorService executor;
+    private static boolean cleanedUp = false;
 
     private void waitForActive(String streamName) {
         for (int i = 0; i < 30; i++) {
@@ -174,5 +176,31 @@ public class KclV1IntegrationTest {
             executor.awaitTermination(10, TimeUnit.SECONDS);
         }
         kinesisClient.deleteStream(STREAM_NAME);
+        cleanedUp = true;
+    }
+
+    @AfterAll
+    static void safetyNetCleanup() {
+        if (cleanedUp) {
+            return;
+        }
+        try {
+            if (worker != null) worker.shutdown();
+        } catch (Exception e) {
+            System.err.println("Safety-net worker shutdown failed: " + e.getMessage());
+        }
+        try {
+            if (executor != null) {
+                executor.shutdownNow();
+                executor.awaitTermination(5, TimeUnit.SECONDS);
+            }
+        } catch (Exception e) {
+            System.err.println("Safety-net executor shutdown failed: " + e.getMessage());
+        }
+        try {
+            kinesisClient.deleteStream(STREAM_NAME);
+        } catch (Exception e) {
+            System.err.println("Safety-net stream delete failed: " + e.getMessage());
+        }
     }
 }
