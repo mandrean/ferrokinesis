@@ -446,6 +446,7 @@ async fn cross_put_records_cbor_get_json() {
             {"Data": b64, "PartitionKey": "pk1"},
         ],
     });
+    // "Records.*.Data" — wildcard iterates each array element, replacing Data with Bytes
     let resp = server
         .cbor_request_raw_data("PutRecords", &payload, "Records.*.Data", raw)
         .await;

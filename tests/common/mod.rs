@@ -281,8 +281,12 @@ pub fn signed_headers() -> HeaderMap {
 }
 
 /// Convert a serde_json::Value to ciborium::Value, replacing the field at
-/// `data_field_path` (e.g., "Data" or "Records.*.Data") with CBOR Bytes.
+/// `data_field_path` with CBOR Bytes. Path syntax: dot-separated segments where
+/// `*` is a wildcard that iterates array elements (e.g. `"Data"`, `"Records.*.Data"`).
 /// `raw_data` is the raw bytes for that field.
+///
+/// Unlike the server-side `json_to_cbor_with_blob_bytes` (which matches by key name
+/// at any depth), this uses explicit paths so tests can precisely target fields.
 pub fn json_to_cbor_with_bytes(
     val: &Value,
     data_field_path: &str,

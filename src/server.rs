@@ -411,7 +411,8 @@ fn send_json_response(
     let body_bytes = if content_type == constants::CONTENT_TYPE_CBOR {
         // Convert to ciborium::Value so Blob fields (Data) become CBOR byte strings
         // (major type 2) instead of text strings, matching real AWS Kinesis behavior.
-        let json_val = serde_json::to_value(data).unwrap_or(Value::Null);
+        let json_val =
+            serde_json::to_value(data).expect("response type must be serializable to JSON");
         let cbor_val = json_to_cbor_with_blob_bytes(&json_val);
         let mut buf = Vec::new();
         let _ = ciborium::into_writer(&cbor_val, &mut buf);
@@ -537,6 +538,10 @@ fn send_error_response(
 /// Convert ciborium::Value to serde_json::Value.
 /// CBOR byte strings (major type 2) are converted to base64-encoded strings,
 /// so the rest of the pipeline can treat all data uniformly.
+///
+/// Exposed for integration tests (`tests/common/mod.rs` needs to decode CBOR
+/// responses the same way the server does). Not part of the public API.
+#[doc(hidden)]
 pub fn cbor_to_json(val: &ciborium::Value) -> Value {
     match val {
         ciborium::Value::Null => Value::Null,
@@ -545,12 +550,14 @@ pub fn cbor_to_json(val: &ciborium::Value) -> Value {
             let n: i128 = (*n).into();
             if let Ok(i) = i64::try_from(n) {
                 Value::Number(serde_json::Number::from(i))
-            // Fallback: i128 values outside i64 range lose precision when cast to f64.
-            // Theoretical for Kinesis (all integers fit in i64), but handles CBOR edge cases.
-            } else if let Some(num) = serde_json::Number::from_f64(n as f64) {
-                Value::Number(num)
             } else {
-                Value::Null
+                // Fallback: i128 values outside i64 range lose precision when cast to f64.
+                // Theoretical for Kinesis (all integers fit in i64), but handles CBOR edge cases.
+                #[allow(clippy::cast_precision_loss)]
+                let f = n as f64;
+                serde_json::Number::from_f64(f)
+                    .map(Value::Number)
+                    .unwrap_or(Value::Null)
             }
         }
         ciborium::Value::Float(f) => serde_json::Number::from_f64(*f)
@@ -587,6 +594,11 @@ const BLOB_FIELD_KEYS: &[&str] = &["Data"];
 
 /// Convert serde_json::Value to ciborium::Value for CBOR response serialization.
 /// Values under known Blob keys are decoded from base64 and emitted as CBOR byte strings.
+///
+/// Note: `tests/common/mod.rs` has a similar `json_to_cbor_with_bytes` that uses
+/// explicit path-based replacement (e.g. `"Records.*.Data"`) for constructing test
+/// requests. This function uses key-name matching because the server doesn't know
+/// the request path at serialization time.
 fn json_to_cbor_with_blob_bytes(val: &Value) -> ciborium::Value {
     json_to_cbor_impl(val, false)
 }
