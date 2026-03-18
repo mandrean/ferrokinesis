@@ -63,12 +63,9 @@ pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, Kines
     let stream = store.get_stream(&stream_name).await?;
 
     if stream.stream_status != StreamStatus::Active {
-        return Err(KinesisErrorResponse::client_error(
-            constants::RESOURCE_IN_USE,
-            Some(&format!(
-                "Stream {} under account {} is not ACTIVE.",
-                stream_name, store.aws_account_id
-            )),
+        return Err(KinesisErrorResponse::stream_not_active(
+            &stream_name,
+            &store.aws_account_id,
         ));
     }
 

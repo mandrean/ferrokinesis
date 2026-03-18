@@ -163,12 +163,9 @@ impl Store {
         let table = read_txn.open_table(STREAMS).unwrap();
         match table.get(name).unwrap() {
             Some(guard) => Ok(deserialize_stream(guard.value())),
-            None => Err(KinesisErrorResponse::client_error(
-                constants::RESOURCE_NOT_FOUND,
-                Some(&format!(
-                    "Stream {} under account {} not found.",
-                    name, self.aws_account_id
-                )),
+            None => Err(KinesisErrorResponse::stream_not_found(
+                name,
+                &self.aws_account_id,
             )),
         }
     }
@@ -240,13 +237,7 @@ impl Store {
         {
             let mut table = write_txn.open_table(STREAMS).unwrap();
             let bytes = table.get(name).unwrap().ok_or_else(|| {
-                KinesisErrorResponse::client_error(
-                    "ResourceNotFoundException",
-                    Some(&format!(
-                        "Stream {} under account {} not found.",
-                        name, self.aws_account_id
-                    )),
-                )
+                KinesisErrorResponse::stream_not_found(name, &self.aws_account_id)
             })?;
             let mut stream = deserialize_stream(bytes.value());
             drop(bytes);

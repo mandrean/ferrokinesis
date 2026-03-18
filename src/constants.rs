@@ -7,6 +7,10 @@ pub const EXPIRED_ITERATOR: &str = "ExpiredIteratorException";
 pub const SERIALIZATION_EXCEPTION: &str = "SerializationException";
 pub const VALIDATION_EXCEPTION: &str = "ValidationException";
 pub const UNKNOWN_OPERATION: &str = "UnknownOperationException";
+pub const INCOMPLETE_SIGNATURE: &str = "IncompleteSignatureException";
+pub const MISSING_AUTH_TOKEN: &str = "MissingAuthenticationTokenException";
+pub const INVALID_SIGNATURE: &str = "InvalidSignatureException";
+pub const ACCESS_DENIED: &str = "AccessDeniedException";
 
 // HTTP content types
 pub const CONTENT_TYPE_JSON: &str = "application/x-amz-json-1.1";

@@ -496,7 +496,10 @@ async fn update_stream_mode_invalid_mode_direct() {
     )
     .await;
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().body.__type, "InvalidArgumentException");
+    assert_eq!(
+        result.unwrap_err().body.error_type,
+        "InvalidArgumentException"
+    );
 }
 
 #[tokio::test]
@@ -527,7 +530,10 @@ async fn update_max_record_size_empty_arn_direct() {
     )
     .await;
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().body.__type, "InvalidArgumentException");
+    assert_eq!(
+        result.unwrap_err().body.error_type,
+        "InvalidArgumentException"
+    );
 }
 
 #[tokio::test]
@@ -542,7 +548,10 @@ async fn update_max_record_size_kib_not_integer_direct() {
     )
     .await;
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().body.__type, "InvalidArgumentException");
+    assert_eq!(
+        result.unwrap_err().body.error_type,
+        "InvalidArgumentException"
+    );
 }
 
 #[tokio::test]
@@ -558,7 +567,7 @@ async fn update_max_record_size_kib_below_range_direct() {
     .await;
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert_eq!(err.body.__type, "InvalidArgumentException");
+    assert_eq!(err.body.error_type, "InvalidArgumentException");
     assert!(
         err.body
             .message
@@ -577,7 +586,10 @@ async fn update_warm_throughput_both_empty_direct() {
     )
     .await;
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().body.__type, "InvalidArgumentException");
+    assert_eq!(
+        result.unwrap_err().body.error_type,
+        "InvalidArgumentException"
+    );
 }
 
 #[tokio::test]
@@ -592,7 +604,10 @@ async fn update_warm_throughput_mibps_not_integer_direct() {
     )
     .await;
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().body.__type, "InvalidArgumentException");
+    assert_eq!(
+        result.unwrap_err().body.error_type,
+        "InvalidArgumentException"
+    );
 }
 
 #[tokio::test]

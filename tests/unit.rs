@@ -71,7 +71,7 @@ fn error_server_error_with_some_args() {
 
     let err = KinesisErrorResponse::server_error(Some("CustomError"), Some("custom message"));
     assert_eq!(err.status_code, 500);
-    assert_eq!(err.body.__type, "CustomError");
+    assert_eq!(err.body.error_type, "CustomError");
     assert_eq!(err.body.message.as_deref(), Some("custom message"));
 
     let _ = format!("{:?}", err.body);

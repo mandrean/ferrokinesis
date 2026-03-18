@@ -41,7 +41,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     })?;
 
     let stream = store.get_stream(stream_name).await.map_err(|mut err| {
-        if err.body.__type == constants::RESOURCE_NOT_FOUND {
+        if err.body.error_type == constants::RESOURCE_NOT_FOUND {
             err.body.message = Some(format!(
                 "Shard {} in stream {} under account {} does not exist",
                 shard_id, stream_name, store.aws_account_id
@@ -51,12 +51,10 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     })?;
 
     if shard_ix >= stream.shards.len() as i64 {
-        return Err(KinesisErrorResponse::client_error(
-            constants::RESOURCE_NOT_FOUND,
-            Some(&format!(
-                "Shard {} in stream {} under account {} does not exist",
-                shard_id, stream_name, store.aws_account_id
-            )),
+        return Err(KinesisErrorResponse::shard_not_found(
+            &shard_id,
+            stream_name,
+            &store.aws_account_id,
         ));
     }
 

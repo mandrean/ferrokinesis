@@ -189,7 +189,7 @@ async fn json_incomplete_signature_if_invalid_auth() {
     let res = server
         .raw_request(Method::POST, "/", headers, b"{}".to_vec())
         .await;
-    assert_eq!(res.status(), 400);
+    assert_eq!(res.status(), 403);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["__type"], "IncompleteSignatureException");
     let msg = body["message"].as_str().unwrap();
@@ -235,7 +235,7 @@ async fn json_incomplete_signature_if_empty_query_params() {
     let res = server
         .raw_request(Method::POST, "/?X-Amz-Algorithm", headers, b"{}".to_vec())
         .await;
-    assert_eq!(res.status(), 400);
+    assert_eq!(res.status(), 403);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["__type"], "IncompleteSignatureException");
     let msg = body["message"].as_str().unwrap();
@@ -260,7 +260,7 @@ async fn json_incomplete_signature_if_missing_signed_headers_query() {
             b"{}".to_vec(),
         )
         .await;
-    assert_eq!(res.status(), 400);
+    assert_eq!(res.status(), 403);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["__type"], "IncompleteSignatureException");
     let msg = body["message"].as_str().unwrap();
@@ -467,7 +467,7 @@ async fn incomplete_signature_missing_signed_headers() {
     let res = server
         .raw_request(Method::POST, "/", headers, b"{}".to_vec())
         .await;
-    assert_eq!(res.status(), 400);
+    assert_eq!(res.status(), 403);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["__type"], "IncompleteSignatureException");
     let msg = body["message"].as_str().unwrap();

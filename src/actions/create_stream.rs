@@ -17,12 +17,9 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
 
     // Check if stream already exists
     if store.contains_stream(stream_name).await {
-        return Err(KinesisErrorResponse::client_error(
-            constants::RESOURCE_IN_USE,
-            Some(&format!(
-                "Stream {} under account {} already exists.",
-                stream_name, store.aws_account_id
-            )),
+        return Err(KinesisErrorResponse::stream_in_use(
+            stream_name,
+            &store.aws_account_id,
         ));
     }
 

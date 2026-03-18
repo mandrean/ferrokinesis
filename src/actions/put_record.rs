@@ -63,12 +63,9 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                 stream.stream_status,
                 StreamStatus::Active | StreamStatus::Updating
             ) {
-                return Err(KinesisErrorResponse::client_error(
-                    constants::RESOURCE_NOT_FOUND,
-                    Some(&format!(
-                        "Stream {} under account {} not found.",
-                        stream_name, store.aws_account_id
-                    )),
+                return Err(KinesisErrorResponse::stream_not_found(
+                    &stream_name,
+                    &store.aws_account_id,
                 ));
             }
 

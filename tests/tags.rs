@@ -412,7 +412,7 @@ async fn remove_tags_tag_keys_not_array_direct() {
     .await;
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert_eq!(err.body.__type, "SerializationException");
+    assert_eq!(err.body.error_type, "SerializationException");
 }
 
 #[tokio::test]
@@ -425,7 +425,7 @@ async fn add_tags_tags_not_object_direct() {
     .await;
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert_eq!(err.body.__type, "SerializationException");
+    assert_eq!(err.body.error_type, "SerializationException");
 }
 
 #[tokio::test]
