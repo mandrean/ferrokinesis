@@ -548,10 +548,13 @@ impl Store {
             .db
             .begin_read()
             .map_err(|e| StoreHealthError::ReadFailed(e.to_string()))?;
-        for table in [STREAMS, RECORDS, CONSUMERS] {
+        for table in [STREAMS, RECORDS, CONSUMERS, RESOURCE_TAGS, ACCOUNT_SETTINGS] {
             txn.open_table(table)
                 .map_err(|e| StoreHealthError::TableOpenFailed(e.to_string()))?;
         }
+        // POLICIES has a different value type (&str vs &[u8]), so it can't share the loop above.
+        txn.open_table(POLICIES)
+            .map_err(|e| StoreHealthError::TableOpenFailed(e.to_string()))?;
         Ok(())
     }
 }

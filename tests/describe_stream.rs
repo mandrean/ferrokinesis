@@ -55,11 +55,10 @@ async fn describe_stream_full_response() {
     // Each shard has a sequence number range
     for shard in shards {
         assert!(
-            shard["SequenceNumberRange"]["StartingSequenceNumber"]
+            !shard["SequenceNumberRange"]["StartingSequenceNumber"]
                 .as_str()
                 .unwrap()
-                .len()
-                > 0
+                .is_empty()
         );
         assert!(shard["SequenceNumberRange"]["EndingSequenceNumber"].is_null());
     }

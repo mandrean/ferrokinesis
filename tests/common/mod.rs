@@ -89,7 +89,7 @@ impl TestServer {
     /// Make a signed Kinesis API request (JSON content type)
     pub async fn request(&self, target: &str, data: &Value) -> reqwest::Response {
         self.client
-            .post(&self.url())
+            .post(self.url())
             .header("Content-Type", AMZ_JSON)
             .header("X-Amz-Target", format!("{VERSION}.{target}"))
             .header(

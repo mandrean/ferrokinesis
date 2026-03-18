@@ -85,7 +85,7 @@ struct HealthCheckArgs {
     port: u16,
 
     /// Path to probe
-    #[arg(long, default_value = "/_health/live")]
+    #[arg(long, default_value = "/_health/ready")]
     path: String,
 }
 
@@ -146,7 +146,9 @@ fn run_health_check(args: &HealthCheckArgs) -> ExitCode {
         }
     };
 
-    // Parse "HTTP/1.1 200 OK" -> extract status code
+    // Parse "HTTP/1.1 200 OK" -> extract status code.
+    // Defaults to 0 if the response isn't valid HTTP, which falls outside
+    // 200..300 and correctly fails the health check.
     let status_code: u16 = status_line
         .split_whitespace()
         .nth(1)
