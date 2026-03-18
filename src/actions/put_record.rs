@@ -57,7 +57,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         }
     }
 
-    let (shard_id, seq_num, stream_key, now) = store
+    let (shard_id, seq_num, stream_key, now, encryption_type) = store
         .update_stream(&stream_name, |stream| {
             if !matches!(
                 stream.stream_status,
@@ -125,7 +125,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
             let stream_key = format!("{}/{}", sequence::shard_ix_to_hex(shard_ix), seq_num);
             stream.seq_ix[seq_ix_ix] = Some(current_seq_ix + 1);
 
-            Ok((shard_id, seq_num, stream_key, now))
+            Ok((shard_id, seq_num, stream_key, now, stream.encryption_type))
         })
         .await?;
 
@@ -138,7 +138,8 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     store.put_record(&stream_name, &stream_key, record).await;
 
     Ok(Some(json!({
-        "ShardId": shard_id,
+        "EncryptionType": encryption_type,
         "SequenceNumber": seq_num,
+        "ShardId": shard_id,
     })))
 }

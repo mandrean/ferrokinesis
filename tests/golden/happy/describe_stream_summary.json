@@ -1,0 +1,26 @@
+{
+  "operation": "DescribeStreamSummary",
+  "scenario": "happy_path",
+  "http_status": 200,
+  "required_headers": ["x-amzn-RequestId", "x-amz-id-2", "Content-Type"],
+  "body": {
+    "StreamDescriptionSummary": {
+      "ConsumerCount": 0,
+      "EncryptionType": "NONE",
+      "EnhancedMonitoring": [
+        {
+          "ShardLevelMetrics": []
+        }
+      ],
+      "OpenShardCount": 1,
+      "RetentionPeriodHours": 24,
+      "StreamARN": "arn:aws:kinesis:us-east-1:000000000000:stream/test-stream",
+      "StreamCreationTimestamp": 1700000000.0,
+      "StreamModeDetails": {
+        "StreamMode": "PROVISIONED"
+      },
+      "StreamName": "test-stream",
+      "StreamStatus": "ACTIVE"
+    }
+  }
+}

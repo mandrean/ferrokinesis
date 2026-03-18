@@ -1,0 +1,37 @@
+{
+  "operation": "DescribeStream",
+  "scenario": "happy_path",
+  "http_status": 200,
+  "required_headers": ["x-amzn-RequestId", "x-amz-id-2", "Content-Type"],
+  "body": {
+    "StreamDescription": {
+      "EncryptionType": "NONE",
+      "EnhancedMonitoring": [
+        {
+          "ShardLevelMetrics": []
+        }
+      ],
+      "HasMoreShards": false,
+      "RetentionPeriodHours": 24,
+      "Shards": [
+        {
+          "HashKeyRange": {
+            "EndingHashKey": "340282366920938463463374607431768211455",
+            "StartingHashKey": "0"
+          },
+          "SequenceNumberRange": {
+            "StartingSequenceNumber": "49590338271490256608559692538361571095921575989136588898"
+          },
+          "ShardId": "shardId-000000000000"
+        }
+      ],
+      "StreamARN": "arn:aws:kinesis:us-east-1:000000000000:stream/test-stream",
+      "StreamCreationTimestamp": 1700000000.0,
+      "StreamModeDetails": {
+        "StreamMode": "PROVISIONED"
+      },
+      "StreamName": "test-stream",
+      "StreamStatus": "ACTIVE"
+    }
+  }
+}
