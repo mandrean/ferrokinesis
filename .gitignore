@@ -23,3 +23,10 @@ coverage/
 # Environment
 .env
 .env.local
+
+# Conformance test artifacts
+tests/conformance/java-sdk-v1/target/
+tests/conformance/java-sdk-v2/target/
+tests/conformance/node-sdk-v3/node_modules/
+tests/conformance/python-boto3/__pycache__/
+tests/conformance/python-boto3/.pytest_cache/

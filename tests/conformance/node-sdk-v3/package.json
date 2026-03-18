@@ -1,0 +1,14 @@
+{
+  "name": "ferrokinesis-conformance-node",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@aws-sdk/client-kinesis": "^3.700.0"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.0"
+  }
+}
