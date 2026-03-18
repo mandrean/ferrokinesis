@@ -1,3 +1,5 @@
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::sequence;
@@ -19,6 +21,27 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     let records = data[constants::RECORDS].as_array().ok_or_else(|| {
         KinesisErrorResponse::client_error(constants::SERIALIZATION_EXCEPTION, None)
     })?;
+
+    // Validate total batch payload size (5 MB limit)
+    const MAX_BATCH_BYTES: usize = 5_242_880;
+    let total_payload: usize = records
+        .iter()
+        .map(|r| {
+            let data_bytes = r["Data"]
+                .as_str()
+                .and_then(|s| STANDARD.decode(s).ok())
+                .map(|v| v.len())
+                .unwrap_or(0);
+            let key_bytes = r["PartitionKey"].as_str().map(|s| s.len()).unwrap_or(0);
+            data_bytes + key_bytes
+        })
+        .sum();
+    if total_payload > MAX_BATCH_BYTES {
+        return Err(KinesisErrorResponse::client_error(
+            constants::INVALID_ARGUMENT,
+            Some("Records size exceeds 5 MB limit"),
+        ));
+    }
 
     // Pre-compute hash keys (no stream access needed)
     let pow_128 = BigUint::one() << 128;
