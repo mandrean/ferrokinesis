@@ -72,6 +72,7 @@ async fn create_stream_shard_limit_exceeded() {
         delete_stream_ms: 0,
         update_stream_ms: 0,
         shard_limit: 5,
+        ..Default::default()
     })
     .await;
 
@@ -192,6 +193,7 @@ async fn create_stream_creating_then_active() {
         delete_stream_ms: 0,
         update_stream_ms: 0,
         shard_limit: 50,
+        ..Default::default()
     })
     .await;
 

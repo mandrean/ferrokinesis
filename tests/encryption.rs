@@ -243,6 +243,7 @@ async fn stop_encryption_on_creating_stream() {
         delete_stream_ms: 0,
         update_stream_ms: 0,
         shard_limit: 50,
+        ..Default::default()
     })
     .await;
     let name = "cx-stop-creating";
@@ -277,6 +278,7 @@ async fn stop_encryption_on_updating_stream() {
         delete_stream_ms: 0,
         update_stream_ms: 500,
         shard_limit: 50,
+        ..Default::default()
     })
     .await;
     let name = "cx-stop-updating";
@@ -316,6 +318,7 @@ async fn start_encryption_on_creating_stream() {
         delete_stream_ms: 0,
         update_stream_ms: 0,
         shard_limit: 50,
+        ..Default::default()
     })
     .await;
     let name = "cx-start-creating";
@@ -350,6 +353,7 @@ async fn start_encryption_on_deleting_stream() {
         delete_stream_ms: 500,
         update_stream_ms: 0,
         shard_limit: 50,
+        ..Default::default()
     })
     .await;
     let name = "cx-start-deleting";

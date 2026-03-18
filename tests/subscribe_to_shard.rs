@@ -446,6 +446,7 @@ async fn subscribe_unknown_position_type_direct() {
         delete_stream_ms: 0,
         update_stream_ms: 0,
         shard_limit: 10,
+        ..Default::default()
     });
     let stream_name = "test-sub-unknown-pos";
 
@@ -860,6 +861,7 @@ async fn subscribe_to_updating_stream_returns_error() {
         delete_stream_ms: 0,
         update_stream_ms: 2000,
         shard_limit: 50,
+        ..Default::default()
     })
     .await;
     let name = "cx-sub-updating";

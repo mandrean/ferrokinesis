@@ -137,6 +137,7 @@ async fn update_max_record_size_stream_not_active() {
         delete_stream_ms: 0,
         update_stream_ms: 0,
         shard_limit: 50,
+        ..Default::default()
     })
     .await;
     let name = "umrs-creating";
@@ -171,6 +172,7 @@ async fn update_warm_throughput_stream_not_active() {
         delete_stream_ms: 0,
         update_stream_ms: 0,
         shard_limit: 50,
+        ..Default::default()
     })
     .await;
     let name = "uwt-creating";
