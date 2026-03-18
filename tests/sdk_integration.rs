@@ -3,8 +3,12 @@ mod common;
 use aws_credential_types::Credentials;
 use aws_sdk_kinesis::Client;
 use aws_sdk_kinesis::primitives::Blob;
-use aws_sdk_kinesis::types::{PutRecordsRequestEntry, ShardIteratorType, StreamStatus};
+use aws_sdk_kinesis::types::{
+    PutRecordsRequestEntry, ShardIteratorType, StartingPosition, StreamStatus,
+    SubscribeToShardEventStream,
+};
 use common::TestServer;
+use std::time::Duration;
 
 async fn sdk_client(server: &TestServer) -> Client {
     let config = aws_sdk_kinesis::Config::builder()
@@ -252,4 +256,210 @@ async fn sdk_tagging() {
     assert_eq!(tags.tags().len(), 1);
     assert_eq!(tags.tags()[0].key(), "project");
     assert_eq!(tags.tags()[0].value().unwrap_or_default(), "ferrokinesis");
+}
+
+#[tokio::test]
+async fn sdk_subscribe_to_shard_delivers_records() {
+    let server = TestServer::new().await;
+    let client = sdk_client(&server).await;
+
+    // Create stream with 1 shard
+    client
+        .create_stream()
+        .stream_name("sdk-sub-records")
+        .shard_count(1)
+        .send()
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Get stream ARN
+    let desc = client
+        .describe_stream()
+        .stream_name("sdk-sub-records")
+        .send()
+        .await
+        .unwrap();
+    let stream_arn = desc.stream_description().unwrap().stream_arn().to_string();
+
+    // Put 3 records
+    for i in 0..3 {
+        client
+            .put_record()
+            .stream_name("sdk-sub-records")
+            .data(Blob::new(format!("record-{i}").into_bytes()))
+            .partition_key(format!("pk-{i}"))
+            .send()
+            .await
+            .unwrap();
+    }
+
+    // Register consumer and wait for ACTIVE
+    client
+        .register_stream_consumer()
+        .stream_arn(&stream_arn)
+        .consumer_name("sub-consumer")
+        .send()
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(600)).await;
+
+    // Get consumer ARN
+    let consumers = client
+        .list_stream_consumers()
+        .stream_arn(&stream_arn)
+        .send()
+        .await
+        .unwrap();
+    let consumer_arn = consumers.consumers()[0].consumer_arn().to_string();
+
+    // Subscribe with TRIM_HORIZON
+    let mut resp = client
+        .subscribe_to_shard()
+        .consumer_arn(&consumer_arn)
+        .shard_id("shardId-000000000000")
+        .starting_position(
+            StartingPosition::builder()
+                .r#type(ShardIteratorType::TrimHorizon)
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    // Collect records with timeout
+    let mut all_records: Vec<String> = Vec::new();
+    let mut last_continuation_seq = String::new();
+    let mut last_millis_behind: i64 = -1;
+
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Ok(Some(event)) = resp.event_stream.recv().await {
+            if let SubscribeToShardEventStream::SubscribeToShardEvent(e) = event {
+                for record in e.records() {
+                    all_records.push(String::from_utf8(record.data().as_ref().to_vec()).unwrap());
+                }
+                last_continuation_seq = e.continuation_sequence_number().to_string();
+                last_millis_behind = e.millis_behind_latest();
+                if all_records.len() >= 3 {
+                    return;
+                }
+            }
+        }
+    })
+    .await;
+
+    assert!(result.is_ok(), "timed out waiting for records");
+    assert_eq!(all_records.len(), 3);
+    for i in 0..3 {
+        assert!(
+            all_records.contains(&format!("record-{i}")),
+            "missing record-{i}"
+        );
+    }
+    assert!(!last_continuation_seq.is_empty());
+    assert!(last_millis_behind >= 0);
+}
+
+#[tokio::test]
+async fn sdk_subscribe_to_shard_concurrent_puts() {
+    let server = TestServer::new().await;
+    let client = sdk_client(&server).await;
+
+    // Create stream with 1 shard
+    client
+        .create_stream()
+        .stream_name("sdk-sub-concurrent")
+        .shard_count(1)
+        .send()
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Get stream ARN and register consumer
+    let desc = client
+        .describe_stream()
+        .stream_name("sdk-sub-concurrent")
+        .send()
+        .await
+        .unwrap();
+    let stream_arn = desc.stream_description().unwrap().stream_arn().to_string();
+
+    client
+        .register_stream_consumer()
+        .stream_arn(&stream_arn)
+        .consumer_name("concurrent-consumer")
+        .send()
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(600)).await;
+
+    let consumers = client
+        .list_stream_consumers()
+        .stream_arn(&stream_arn)
+        .send()
+        .await
+        .unwrap();
+    let consumer_arn = consumers.consumers()[0].consumer_arn().to_string();
+
+    // Subscribe with LATEST
+    let mut resp = client
+        .subscribe_to_shard()
+        .consumer_arn(&consumer_arn)
+        .shard_id("shardId-000000000000")
+        .starting_position(
+            StartingPosition::builder()
+                .r#type(ShardIteratorType::Latest)
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    // Spawn background task to put records after a delay
+    let put_client = sdk_client(&server).await;
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        for i in 0..2 {
+            put_client
+                .put_record()
+                .stream_name("sdk-sub-concurrent")
+                .data(Blob::new(format!("concurrent-{i}").into_bytes()))
+                .partition_key(format!("pk-{i}"))
+                .send()
+                .await
+                .unwrap();
+        }
+    });
+
+    // Collect records with timeout
+    let mut all_records: Vec<String> = Vec::new();
+
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Ok(Some(event)) = resp.event_stream.recv().await {
+            if let SubscribeToShardEventStream::SubscribeToShardEvent(e) = event {
+                for record in e.records() {
+                    all_records.push(String::from_utf8(record.data().as_ref().to_vec()).unwrap());
+                }
+                if all_records.len() >= 2 {
+                    return;
+                }
+            }
+        }
+    })
+    .await;
+
+    assert!(result.is_ok(), "timed out waiting for concurrent records");
+    assert_eq!(all_records.len(), 2);
+    for i in 0..2 {
+        assert!(
+            all_records.contains(&format!("concurrent-{i}")),
+            "missing concurrent-{i}"
+        );
+    }
 }

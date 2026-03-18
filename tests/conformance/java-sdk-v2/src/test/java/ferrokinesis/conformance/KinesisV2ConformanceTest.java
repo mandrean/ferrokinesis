@@ -7,14 +7,21 @@ import org.junit.jupiter.api.TestMethodOrder;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.core.SdkBytes;
+import software.amazon.awssdk.http.Protocol;
+import software.amazon.awssdk.http.nio.netty.NettyNioAsyncHttpClient;
 import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.kinesis.KinesisAsyncClient;
 import software.amazon.awssdk.services.kinesis.KinesisClient;
 import software.amazon.awssdk.services.kinesis.model.*;
 
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -35,6 +42,16 @@ public class KinesisV2ConformanceTest {
             .region(Region.US_EAST_1)
             .credentialsProvider(StaticCredentialsProvider.create(
                     AwsBasicCredentials.create("test", "test")))
+            .build();
+
+    private static final KinesisAsyncClient asyncClient = KinesisAsyncClient.builder()
+            .endpointOverride(URI.create(ENDPOINT))
+            .region(Region.US_EAST_1)
+            .credentialsProvider(StaticCredentialsProvider.create(
+                    AwsBasicCredentials.create("test", "test")))
+            .httpClient(NettyNioAsyncHttpClient.builder()
+                    .protocol(Protocol.HTTP1_1)
+                    .build())
             .build();
 
     // Shared across ordered tests — requires @TestMethodOrder(OrderAnnotation) (do not run in parallel)
@@ -135,6 +152,73 @@ public class KinesisV2ConformanceTest {
     }
 
     @Test @Order(8)
+    void subscribeToShard() throws Exception {
+        // Get stream ARN
+        DescribeStreamResponse descResp = client.describeStream(
+                DescribeStreamRequest.builder().streamName(STREAM_NAME).build());
+        String streamArn = descResp.streamDescription().streamArn();
+
+        // Register consumer
+        RegisterStreamConsumerResponse regResp = client.registerStreamConsumer(
+                RegisterStreamConsumerRequest.builder()
+                        .streamArn(streamArn)
+                        .consumerName("java-v2-subscriber")
+                        .build());
+        String consumerArn = regResp.consumer().consumerArn();
+
+        // Wait for consumer to become ACTIVE
+        Thread.sleep(600);
+
+        // Put a record before subscribing
+        client.putRecord(PutRecordRequest.builder()
+                .streamName(STREAM_NAME)
+                .data(SdkBytes.fromUtf8String("subscribe-test"))
+                .partitionKey("pk-sub")
+                .build());
+
+        // Subscribe to shard
+        CountDownLatch latch = new CountDownLatch(1);
+        List<Record> receivedRecords = new ArrayList<>();
+        AtomicReference<Throwable> error = new AtomicReference<>();
+
+        SubscribeToShardRequest subscribeRequest = SubscribeToShardRequest.builder()
+                .consumerARN(consumerArn)
+                .shardId("shardId-000000000000")
+                .startingPosition(StartingPosition.builder()
+                        .type(ShardIteratorType.TRIM_HORIZON)
+                        .build())
+                .build();
+
+        SubscribeToShardResponseHandler responseHandler = SubscribeToShardResponseHandler.builder()
+                .onError(error::set)
+                .subscriber(event -> {
+                    if (event instanceof SubscribeToShardEvent) {
+                        SubscribeToShardEvent shardEvent = (SubscribeToShardEvent) event;
+                        receivedRecords.addAll(shardEvent.records());
+                        if (!receivedRecords.isEmpty()) {
+                            latch.countDown();
+                        }
+                    }
+                })
+                .build();
+
+        asyncClient.subscribeToShard(subscribeRequest, responseHandler).join();
+        assertTrue(latch.await(10, TimeUnit.SECONDS), "Timed out waiting for events");
+        assertNull(error.get(), "Event stream error: " + error.get());
+        assertFalse(receivedRecords.isEmpty(), "Should have received at least one record");
+
+        // Verify record data
+        boolean found = receivedRecords.stream()
+                .anyMatch(r -> "subscribe-test".equals(r.data().asUtf8String()));
+        assertTrue(found, "Expected to find 'subscribe-test' record");
+
+        // Deregister consumer
+        client.deregisterStreamConsumer(DeregisterStreamConsumerRequest.builder()
+                .consumerARN(consumerArn)
+                .build());
+    }
+
+    @Test @Order(9)
     void deleteStream() {
         client.deleteStream(DeleteStreamRequest.builder()
                 .streamName(STREAM_NAME)
