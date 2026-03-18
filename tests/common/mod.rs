@@ -301,18 +301,14 @@ pub fn cbor_to_json(val: &ciborium::Value) -> Value {
             let n: i128 = (*n).into();
             Value::Number(serde_json::Number::from(n as i64))
         }
-        ciborium::Value::Float(f) => {
-            serde_json::Number::from_f64(*f)
-                .map(Value::Number)
-                .unwrap_or(Value::Null)
-        }
+        ciborium::Value::Float(f) => serde_json::Number::from_f64(*f)
+            .map(Value::Number)
+            .unwrap_or(Value::Null),
         ciborium::Value::Text(s) => Value::String(s.clone()),
         ciborium::Value::Bytes(b) => {
             Value::String(base64::engine::general_purpose::STANDARD.encode(b))
         }
-        ciborium::Value::Array(arr) => {
-            Value::Array(arr.iter().map(cbor_to_json).collect())
-        }
+        ciborium::Value::Array(arr) => Value::Array(arr.iter().map(cbor_to_json).collect()),
         ciborium::Value::Map(map) => {
             let mut obj = serde_json::Map::new();
             for (k, v) in map {
@@ -421,7 +417,8 @@ pub fn assert_values_equivalent(a: &Value, b: &Value, ignore_keys: &[&str]) {
     strip_keys(&mut a, ignore_keys);
     strip_keys(&mut b, ignore_keys);
     assert_eq!(
-        a, b,
+        a,
+        b,
         "Values not equivalent after stripping {:?}:\n  left:  {}\n  right: {}",
         ignore_keys,
         serde_json::to_string_pretty(&a).unwrap(),
