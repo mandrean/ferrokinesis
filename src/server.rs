@@ -544,6 +544,8 @@ pub fn cbor_to_json(val: &ciborium::Value) -> Value {
             let n: i128 = (*n).into();
             if let Ok(i) = i64::try_from(n) {
                 Value::Number(serde_json::Number::from(i))
+            // Fallback: i128 values outside i64 range lose precision when cast to f64.
+            // Theoretical for Kinesis (all integers fit in i64), but handles CBOR edge cases.
             } else if let Some(num) = serde_json::Number::from_f64(n as f64) {
                 Value::Number(num)
             } else {
@@ -563,6 +565,8 @@ pub fn cbor_to_json(val: &ciborium::Value) -> Value {
             for (k, v) in map {
                 let key = match k {
                     ciborium::Value::Text(s) => s.clone(),
+                    // Debug format fallback — Kinesis only uses text keys, so this is
+                    // a defensive catch-all that avoids panicking on malformed CBOR.
                     _ => format!("{k:?}"),
                 };
                 obj.insert(key, cbor_to_json(v));
@@ -576,6 +580,8 @@ pub fn cbor_to_json(val: &ciborium::Value) -> Value {
 
 /// Keys whose values are Blob fields — base64 strings in JSON that must become
 /// CBOR byte strings (major type 2) in CBOR responses.
+/// Matches at any nesting depth, which is correct for Kinesis where `Data` is
+/// always a blob. Would need path-aware matching if non-blob `Data` fields existed.
 const BLOB_FIELD_KEYS: &[&str] = &["Data"];
 
 /// Convert serde_json::Value to ciborium::Value for CBOR response serialization.

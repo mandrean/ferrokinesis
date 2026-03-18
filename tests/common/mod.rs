@@ -26,8 +26,9 @@ pub async fn decode_body(res: reqwest::Response) -> (u16, Value) {
         return (status, Value::Null);
     }
     if ct.contains("cbor") {
-        let val: Value = ciborium::from_reader(&bytes[..]).unwrap_or(Value::Null);
-        (status, val)
+        let cbor_val: ciborium::Value =
+            ciborium::from_reader(&bytes[..]).unwrap_or(ciborium::Value::Null);
+        (status, ferrokinesis::server::cbor_to_json(&cbor_val))
     } else {
         let val: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         (status, val)
@@ -129,10 +130,9 @@ impl TestServer {
     }
 
     /// Send the same request as both JSON and CBOR, decode both responses.
-    /// Uses `decode_cbor_body` for the CBOR leg so CBOR byte strings are handled correctly.
     pub async fn request_both(&self, target: &str, data: &Value) -> ((u16, Value), (u16, Value)) {
         let json_resp = decode_body(self.request(target, data).await).await;
-        let cbor_resp = decode_cbor_body(self.cbor_request(target, data).await).await;
+        let cbor_resp = decode_body(self.cbor_request(target, data).await).await;
         (json_resp, cbor_resp)
     }
 
@@ -278,20 +278,6 @@ pub fn signed_headers() -> HeaderMap {
     );
     h.insert("X-Amz-Date", HeaderValue::from_static("20150101T000000Z"));
     h
-}
-
-/// Decode a CBOR response body, handling byte strings in Data fields by converting
-/// them to base64 strings (matching JSON representation) for comparison.
-pub async fn decode_cbor_body(res: reqwest::Response) -> (u16, Value) {
-    let status = res.status().as_u16();
-    let bytes = res.bytes().await.unwrap();
-    if bytes.is_empty() {
-        return (status, Value::Null);
-    }
-    let cbor_val: ciborium::Value =
-        ciborium::from_reader(&bytes[..]).unwrap_or(ciborium::Value::Null);
-    let json_val = ferrokinesis::server::cbor_to_json(&cbor_val);
-    (status, json_val)
 }
 
 /// Convert a serde_json::Value to ciborium::Value, replacing the field at

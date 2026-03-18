@@ -1,7 +1,7 @@
 mod common;
 
 use base64::Engine;
-use common::{TestServer, assert_values_equivalent, decode_body, decode_cbor_body};
+use common::{TestServer, assert_values_equivalent, decode_body};
 use ferrokinesis::store::StoreOptions;
 use serde_json::json;
 
@@ -100,6 +100,15 @@ async fn equiv_create_stream() {
     .await;
     assert_eq!(json_status, cbor_status);
     assert_eq!(json_status, 200);
+
+    // Verify the CBOR-created stream actually exists
+    let (desc_status, _) = decode_body(
+        server
+            .request("DescribeStream", &json!({"StreamName": "cs-cbor"}))
+            .await,
+    )
+    .await;
+    assert_eq!(desc_status, 200);
 }
 
 #[tokio::test]
@@ -194,7 +203,7 @@ async fn equiv_get_records_empty() {
     .await;
     let cbor_iter = cbor_iter_resp.1["ShardIterator"].as_str().unwrap();
 
-    let cbor_resp = decode_cbor_body(
+    let cbor_resp = decode_body(
         server
             .cbor_request("GetRecords", &json!({"ShardIterator": cbor_iter}))
             .await,
@@ -251,7 +260,7 @@ async fn equiv_get_records_with_data() {
     )
     .await;
     let cbor_iter = cbor_iter_resp.1["ShardIterator"].as_str().unwrap();
-    let cbor_resp = decode_cbor_body(
+    let cbor_resp = decode_body(
         server
             .cbor_request("GetRecords", &json!({"ShardIterator": cbor_iter}))
             .await,
@@ -315,8 +324,7 @@ async fn cross_put_json_get_cbor() {
     .await;
     let iter = iter_resp.1["ShardIterator"].as_str().unwrap();
 
-    // Use decode_cbor_body which handles byte strings
-    let resp = decode_cbor_body(
+    let resp = decode_body(
         server
             .cbor_request("GetRecords", &json!({"ShardIterator": iter}))
             .await,
@@ -409,7 +417,7 @@ async fn cross_put_records_json_get_cbor() {
     .await;
     let iter = iter_resp.1["ShardIterator"].as_str().unwrap();
 
-    let resp = decode_cbor_body(
+    let resp = decode_body(
         server
             .cbor_request("GetRecords", &json!({"ShardIterator": iter}))
             .await,
@@ -432,47 +440,14 @@ async fn cross_put_records_cbor_get_json() {
     let raw = b"cbor-batch";
     let b64 = base64::engine::general_purpose::STANDARD.encode(raw);
 
-    // Build CBOR payload with byte string Data inside Records array
     let payload = json!({
         "StreamName": "cross-prs-cj",
         "Records": [
             {"Data": b64, "PartitionKey": "pk1"},
         ],
     });
-    let cbor_val = common::json_to_cbor_with_bytes(&payload, "Records.*.Data", raw);
-    let mut buf = Vec::new();
-    ciborium::into_writer(&cbor_val, &mut buf).unwrap();
-
     let resp = server
-        .raw_request(
-            reqwest::Method::POST,
-            "/",
-            {
-                let mut h = reqwest::header::HeaderMap::new();
-                h.insert(
-                    "Content-Type",
-                    reqwest::header::HeaderValue::from_static(common::AMZ_CBOR),
-                );
-                h.insert(
-                    "X-Amz-Target",
-                    reqwest::header::HeaderValue::from_static(
-                        "Kinesis_20131202.PutRecords",
-                    ),
-                );
-                h.insert(
-                    "Authorization",
-                    reqwest::header::HeaderValue::from_static(
-                        "AWS4-HMAC-SHA256 Credential=AKID/20150101/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=abcd1234",
-                    ),
-                );
-                h.insert(
-                    "X-Amz-Date",
-                    reqwest::header::HeaderValue::from_static("20150101T000000Z"),
-                );
-                h
-            },
-            buf,
-        )
+        .cbor_request_raw_data("PutRecords", &payload, "Records.*.Data", raw)
         .await;
     assert_eq!(resp.status(), 200);
 
@@ -564,7 +539,7 @@ async fn cross_empty_data() {
     )
     .await;
     let iter = iter_resp.1["ShardIterator"].as_str().unwrap();
-    let cbor_resp = decode_cbor_body(
+    let cbor_resp = decode_body(
         server
             .cbor_request("GetRecords", &json!({"ShardIterator": iter}))
             .await,
@@ -651,7 +626,7 @@ async fn cross_binary_data() {
     )
     .await;
     let iter = iter_resp.1["ShardIterator"].as_str().unwrap();
-    let cbor_resp = decode_cbor_body(
+    let cbor_resp = decode_body(
         server
             .cbor_request("GetRecords", &json!({"ShardIterator": iter}))
             .await,
@@ -705,7 +680,7 @@ async fn cross_large_data() {
     )
     .await;
     let iter = iter_resp.1["ShardIterator"].as_str().unwrap();
-    let cbor_resp = decode_cbor_body(
+    let cbor_resp = decode_body(
         server
             .cbor_request("GetRecords", &json!({"ShardIterator": iter}))
             .await,
