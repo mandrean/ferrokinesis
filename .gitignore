@@ -20,6 +20,10 @@ lcov.info
 tarpaulin-report.html
 coverage/
 
+# Benchmark reports
+ferro-report.html
+kinesalite-report.html
+
 # Environment
 .env
 .env.local

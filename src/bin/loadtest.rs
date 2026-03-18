@@ -68,6 +68,7 @@ async fn setup_stream(user: &mut GooseUser) -> TransactionResult {
     .await?;
 
     // Poll until the stream reaches ACTIVE (server default: 500 ms transition).
+    let mut stream_active = false;
     for _ in 0..20 {
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         let goose = kinesis(user, "DescribeStream", &json!({"StreamName": &stream_name})).await?;
@@ -75,8 +76,15 @@ async fn setup_stream(user: &mut GooseUser) -> TransactionResult {
             && let Ok(body) = resp.json::<Value>().await
             && body["StreamDescription"]["StreamStatus"].as_str() == Some("ACTIVE")
         {
+            stream_active = true;
             break;
         }
+    }
+    if !stream_active {
+        eprintln!(
+            "WARNING: stream {stream_name} did not reach ACTIVE within 5 s — \
+             subsequent requests may fail"
+        );
     }
 
     // Obtain an initial shard iterator.

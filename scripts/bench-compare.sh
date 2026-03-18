@@ -7,6 +7,20 @@ STARTUP_TIME="${BENCH_STARTUP_TIME:-5s}"
 RUN_TIME="${BENCH_RUN_TIME:-30s}"
 FERRO_PORT=4567
 KINESALITE_PORT=4568
+MAX_WAIT=30  # seconds to wait for a server port to become reachable
+
+wait_for_port() {
+    local port=$1
+    local elapsed=0
+    while ! nc -z localhost "$port" 2>/dev/null; do
+        if (( elapsed >= MAX_WAIT )); then
+            echo "ERROR: port $port not reachable after ${MAX_WAIT}s" >&2
+            return 1
+        fi
+        sleep 0.5
+        (( elapsed++ )) || true
+    done
+}
 
 cleanup() {
     echo "Cleaning up…"
@@ -27,7 +41,7 @@ echo "==> Starting ferrokinesis on port $FERRO_PORT…"
 ./target/release/ferrokinesis --port "$FERRO_PORT" \
     --create-stream-ms 0 --delete-stream-ms 0 &
 FERRO_PID=$!
-sleep 1
+wait_for_port "$FERRO_PORT"
 
 echo "==> Running load test against ferrokinesis…"
 "$LOADTEST" \
@@ -35,8 +49,7 @@ echo "==> Running load test against ferrokinesis…"
     --users "$USERS" \
     --startup-time "$STARTUP_TIME" \
     --run-time "$RUN_TIME" \
-    --report-file ferro-report.html \
-    --no-reset-metrics || true
+    --report-file ferro-report.html || true
 
 kill "$FERRO_PID" 2>/dev/null || true
 wait "$FERRO_PID" 2>/dev/null || true
@@ -49,7 +62,7 @@ if command -v npx &>/dev/null; then
     npx kinesalite --port "$KINESALITE_PORT" \
         --createStreamMs 0 --deleteStreamMs 0 &
     KINESALITE_PID=$!
-    sleep 2
+    wait_for_port "$KINESALITE_PORT"
 
     echo "==> Running load test against kinesalite…"
     "$LOADTEST" \
@@ -57,8 +70,7 @@ if command -v npx &>/dev/null; then
         --users "$USERS" \
         --startup-time "$STARTUP_TIME" \
         --run-time "$RUN_TIME" \
-        --report-file kinesalite-report.html \
-        --no-reset-metrics || true
+        --report-file kinesalite-report.html || true
 
     kill "$KINESALITE_PID" 2>/dev/null || true
     wait "$KINESALITE_PID" 2>/dev/null || true
