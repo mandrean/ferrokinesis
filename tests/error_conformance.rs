@@ -553,6 +553,9 @@ async fn cbor_error_resource_in_use() {
     assert!(body.get("message").is_some());
 }
 
+/// Sending an empty body should return SerializationException regardless of
+/// the target operation being valid.  Auth headers are included so this test
+/// is isolated to body-emptiness handling only.
 #[tokio::test]
 async fn cbor_error_serialization_exception_no_body() {
     let server = TestServer::new().await;
@@ -562,6 +565,14 @@ async fn cbor_error_serialization_exception_no_body() {
         "X-Amz-Target",
         HeaderValue::from_static("Kinesis_20131202.ListStreams"),
     );
+    headers.insert(
+        "Authorization",
+        HeaderValue::from_static(
+            "AWS4-HMAC-SHA256 Credential=AKID/20150101/us-east-1/kinesis/aws4_request, \
+             SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=abcd1234",
+        ),
+    );
+    headers.insert("X-Amz-Date", HeaderValue::from_static("20150101T000000Z"));
     let res = server.raw_request(Method::POST, "/", headers, vec![]).await;
     let (status, body) = decode_body(res).await;
     assert_eq!(status, 400);
@@ -656,5 +667,41 @@ async fn error_message_stream_already_exists_format() {
     assert_eq!(
         body["message"].as_str().unwrap(),
         "Stream bar under account 000000000000 already exists."
+    );
+}
+
+// ===========================================================================
+// Server error (500) conformance tests
+// ===========================================================================
+
+#[tokio::test]
+async fn error_server_error_500_shape() {
+    let server = TestServer::new().await;
+    server.create_stream("test-500", 1).await;
+
+    // AT_SEQUENCE_NUMBER with "0" triggers a version-0 sequence parse → 500
+    let res = server
+        .request(
+            "GetShardIterator",
+            &json!({
+                "StreamName": "test-500",
+                "ShardId": "shardId-000000000000",
+                "ShardIteratorType": "AT_SEQUENCE_NUMBER",
+                "StartingSequenceNumber": "0",
+            }),
+        )
+        .await;
+
+    assert_eq!(res.status(), 500);
+    assert_has_error_type_header(&res, "InternalFailure");
+    let body: Value = res.json().await.unwrap();
+    assert_error_shape(&body, "InternalFailure");
+    assert!(
+        body.get("message").is_none(),
+        "Server error with no message should omit 'message'"
+    );
+    assert!(
+        body.get("Message").is_none(),
+        "Server error should not use uppercase 'Message'"
     );
 }

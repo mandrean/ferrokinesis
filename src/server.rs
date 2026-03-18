@@ -8,6 +8,7 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
+use serde::Serialize;
 use serde_json::{Value, json};
 
 const MAX_REQUEST_BYTES: usize = 7 * 1024 * 1024;
@@ -377,16 +378,21 @@ fn send_kinesis_error(
     content_type: &str,
     err: &KinesisErrorResponse,
 ) -> Response {
-    let data = serde_json::to_value(&err.body).unwrap_or_default();
     let mut headers = extra_headers.clone();
-    headers.insert("x-amzn-ErrorType", err.body.error_type.parse().unwrap());
-    send_json_response(&headers, content_type, &data, err.status_code)
+    headers.insert(
+        "x-amzn-ErrorType",
+        err.body
+            .error_type
+            .parse()
+            .expect("error_type must be valid ASCII"),
+    );
+    send_json_response(&headers, content_type, &err.body, err.status_code)
 }
 
 fn send_json_response(
     extra_headers: &HeaderMap,
     content_type: &str,
-    data: &Value,
+    data: &impl Serialize,
     status_code: u16,
 ) -> Response {
     let body_bytes = if content_type == constants::CONTENT_TYPE_CBOR {
@@ -452,12 +458,14 @@ fn send_error_response(
     status_code: u16,
 ) -> Response {
     let mut headers = extra_headers.clone();
-    headers.insert("x-amzn-ErrorType", error_type.parse().unwrap());
+    headers.insert(
+        "x-amzn-ErrorType",
+        error_type.parse().expect("error_type must be valid ASCII"),
+    );
     if content_valid {
         let err = KinesisErrorResponse::new(status_code, error_type, Some(message));
-        let data = serde_json::to_value(&err.body).unwrap_or_default();
-        send_json_response(&headers, content_type, &data, status_code)
+        send_json_response(&headers, content_type, &err.body, status_code)
     } else {
-        send_xml_error(&headers, error_type, message, 403)
+        send_xml_error(&headers, error_type, message, status_code)
     }
 }
