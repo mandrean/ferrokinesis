@@ -9,6 +9,7 @@ use axum::extract::{Request, State};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
+use base64::Engine;
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -141,8 +142,11 @@ pub async fn handler(
 
     // Parse body
     let data: Option<Value> = if content_type == constants::CONTENT_TYPE_CBOR {
-        // Try CBOR decode
-        ciborium::from_reader::<Value, _>(&body[..]).ok()
+        // Parse via ciborium::Value to handle CBOR byte strings (major type 2),
+        // which SDK v2 clients send for Blob fields like Data.
+        ciborium::from_reader::<ciborium::Value, _>(&body[..])
+            .ok()
+            .map(|v| cbor_to_json(&v))
     } else {
         serde_json::from_slice(&body).ok()
     };
@@ -405,8 +409,11 @@ fn send_json_response(
     status_code: u16,
 ) -> Response {
     let body_bytes = if content_type == constants::CONTENT_TYPE_CBOR {
+        // Convert to ciborium::Value so Blob fields (Data) become CBOR byte strings
+        // (major type 2) instead of text strings, matching real AWS Kinesis behavior.
+        let cbor_val = json_to_cbor_with_blob_bytes(data);
         let mut buf = Vec::new();
-        let _ = ciborium::into_writer(data, &mut buf);
+        let _ = ciborium::into_writer(&cbor_val, &mut buf);
         buf
     } else {
         serde_json::to_vec(data).unwrap_or_default()
@@ -523,5 +530,89 @@ fn send_error_response(
             error_type.parse().expect("error_type must be valid ASCII"),
         );
         send_xml_error(headers, error_type, message, status_code)
+    }
+}
+
+/// Convert ciborium::Value to serde_json::Value.
+/// CBOR byte strings (major type 2) are converted to base64-encoded strings,
+/// so the rest of the pipeline can treat all data uniformly.
+fn cbor_to_json(val: &ciborium::Value) -> Value {
+    match val {
+        ciborium::Value::Null => Value::Null,
+        ciborium::Value::Bool(b) => Value::Bool(*b),
+        ciborium::Value::Integer(n) => {
+            let n: i128 = (*n).into();
+            Value::Number(serde_json::Number::from(n as i64))
+        }
+        ciborium::Value::Float(f) => serde_json::Number::from_f64(*f)
+            .map(Value::Number)
+            .unwrap_or(Value::Null),
+        ciborium::Value::Text(s) => Value::String(s.clone()),
+        ciborium::Value::Bytes(b) => {
+            Value::String(base64::engine::general_purpose::STANDARD.encode(b))
+        }
+        ciborium::Value::Array(arr) => Value::Array(arr.iter().map(cbor_to_json).collect()),
+        ciborium::Value::Map(map) => {
+            let mut obj = serde_json::Map::new();
+            for (k, v) in map {
+                let key = match k {
+                    ciborium::Value::Text(s) => s.clone(),
+                    _ => format!("{k:?}"),
+                };
+                obj.insert(key, cbor_to_json(v));
+            }
+            Value::Object(obj)
+        }
+        ciborium::Value::Tag(_, inner) => cbor_to_json(inner),
+        _ => Value::Null,
+    }
+}
+
+/// Keys whose values are Blob fields — base64 strings in JSON that must become
+/// CBOR byte strings (major type 2) in CBOR responses.
+const BLOB_FIELD_KEYS: &[&str] = &["Data"];
+
+/// Convert serde_json::Value to ciborium::Value for CBOR response serialization.
+/// Values under known Blob keys are decoded from base64 and emitted as CBOR byte strings.
+fn json_to_cbor_with_blob_bytes(val: &Value) -> ciborium::Value {
+    json_to_cbor_impl(val, false)
+}
+
+fn json_to_cbor_impl(val: &Value, as_bytes: bool) -> ciborium::Value {
+    match val {
+        Value::Null => ciborium::Value::Null,
+        Value::Bool(b) => ciborium::Value::Bool(*b),
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                ciborium::Value::Integer(i.into())
+            } else if let Some(f) = n.as_f64() {
+                ciborium::Value::Float(f)
+            } else {
+                ciborium::Value::Null
+            }
+        }
+        Value::String(s) => {
+            if as_bytes {
+                // Decode base64 and emit as CBOR byte string
+                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(s) {
+                    return ciborium::Value::Bytes(bytes);
+                }
+            }
+            ciborium::Value::Text(s.clone())
+        }
+        Value::Array(arr) => {
+            ciborium::Value::Array(arr.iter().map(|v| json_to_cbor_impl(v, false)).collect())
+        }
+        Value::Object(map) => ciborium::Value::Map(
+            map.iter()
+                .map(|(k, v)| {
+                    let is_blob = BLOB_FIELD_KEYS.contains(&k.as_str());
+                    (
+                        ciborium::Value::Text(k.clone()),
+                        json_to_cbor_impl(v, is_blob),
+                    )
+                })
+                .collect(),
+        ),
     }
 }
