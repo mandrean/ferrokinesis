@@ -1,0 +1,10 @@
+{
+  "operation": "GetRecords",
+  "scenario": "expired_iterator",
+  "http_status": 400,
+  "required_headers": ["x-amzn-RequestId", "x-amz-id-2", "Content-Type"],
+  "body": {
+    "__type": "ExpiredIteratorException",
+    "message": "Iterator expired."
+  }
+}

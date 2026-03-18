@@ -3,7 +3,6 @@ use crate::error::KinesisErrorResponse;
 use crate::sequence;
 use crate::shard_iterator;
 use crate::store::Store;
-use crate::types::{EpochSeconds, ResponseRecord};
 use crate::util::current_time_ms;
 use serde_json::{Value, json};
 
@@ -93,7 +92,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         .get_records_range_limited(&stream_name, &range_start, &range_end, limit)
         .await;
 
-    let mut items: Vec<ResponseRecord<'_>> = Vec::with_capacity(range_records.len());
+    let mut items: Vec<Value> = Vec::with_capacity(range_records.len());
     let mut last_seq_num: Option<&str> = None;
     let mut keys_to_delete = Vec::new();
 
@@ -105,12 +104,13 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
             continue;
         }
 
-        items.push(ResponseRecord {
-            partition_key: &record.partition_key,
-            data: &record.data,
-            approximate_arrival_timestamp: EpochSeconds(record.approximate_arrival_timestamp),
-            sequence_number: seq_num,
-        });
+        items.push(json!({
+            "ApproximateArrivalTimestamp": record.approximate_arrival_timestamp,
+            "Data": &record.data,
+            "EncryptionType": stream.encryption_type,
+            "PartitionKey": &record.partition_key,
+            "SequenceNumber": seq_num,
+        }));
 
         last_seq_num = Some(seq_num);
     }

@@ -100,6 +100,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         hash_keys.push(hash_key);
     }
 
+    let encryption_type = store.get_stream(&stream_name).await?.encryption_type;
     let allocations = store
         .allocate_sequences_batch(&stream_name, &hash_keys)
         .await?;
@@ -176,6 +177,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         "records put"
     );
     Ok(Some(json!({
+        "EncryptionType": encryption_type,
         "FailedRecordCount": failed_record_count,
         "Records": return_records,
     })))
