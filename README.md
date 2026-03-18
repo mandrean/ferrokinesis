@@ -239,6 +239,10 @@ cargo build --release
 cargo test
 ```
 
+## Benchmarking
+
+See [BENCHMARK.md](BENCHMARK.md) for details on running micro-benchmarks and load tests.
+
 ## Acknowledgements
 
 Inspired by [kinesalite](https://github.com/mhart/kinesalite) by Michael Hart.

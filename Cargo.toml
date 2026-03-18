@@ -9,6 +9,14 @@ license = "MIT"
 name = "ferrokinesis"
 path = "src/main.rs"
 
+[[bin]]
+name = "loadtest"
+path = "src/bin/loadtest.rs"
+required-features = ["loadtest"]
+
+[features]
+loadtest = ["dep:goose"]
+
 [dependencies]
 aes = "0.8"
 async-stream = "0.3"
@@ -20,6 +28,7 @@ bytes = "1"
 cbc = "0.1"
 ciborium = "0.2"
 clap = { version = "4", features = ["derive", "env"] }
+goose = { version = "0.18", optional = true }
 md-5 = "0.10"
 num-bigint = "0.4"
 num-traits = "0.2"
