@@ -3,7 +3,6 @@ mod common;
 use common::*;
 use ferrokinesis::store::StoreOptions;
 use reqwest::Method;
-use reqwest::header::{HeaderMap, HeaderValue};
 
 fn default_options() -> StoreOptions {
     StoreOptions {
@@ -12,25 +11,6 @@ fn default_options() -> StoreOptions {
         update_stream_ms: 0,
         shard_limit: 50,
     }
-}
-
-/// Build a minimal set of valid Kinesis request headers
-fn kinesis_headers() -> HeaderMap {
-    let mut headers = HeaderMap::new();
-    headers.insert("Content-Type", HeaderValue::from_static(AMZ_JSON));
-    headers.insert(
-        "X-Amz-Target",
-        HeaderValue::from_static("Kinesis_20131202.ListStreams"),
-    );
-    headers.insert(
-        "Authorization",
-        HeaderValue::from_static(
-            "AWS4-HMAC-SHA256 Credential=AKID/20150101/us-east-1/kinesis/aws4_request, \
-             SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=abcd1234",
-        ),
-    );
-    headers.insert("X-Amz-Date", HeaderValue::from_static("20150101T000000Z"));
-    headers
 }
 
 // --- Tests for the axum DefaultBodyLimit layer ---
@@ -42,7 +22,7 @@ async fn custom_limit_rejects_body_one_byte_over() {
 
     let body = vec![b'x'; limit + 1];
     let res = server
-        .raw_request(Method::POST, "/", kinesis_headers(), body)
+        .raw_request(Method::POST, "/", signed_headers(), body)
         .await;
 
     assert_eq!(res.status(), 413);
@@ -56,7 +36,7 @@ async fn custom_limit_allows_body_at_exact_limit() {
     // Body exactly at the limit — axum's DefaultBodyLimit should pass it through
     let body = vec![b'{'; limit];
     let res = server
-        .raw_request(Method::POST, "/", kinesis_headers(), body)
+        .raw_request(Method::POST, "/", signed_headers(), body)
         .await;
 
     assert_ne!(
@@ -72,7 +52,7 @@ async fn custom_limit_allows_small_valid_body() {
     let server = TestServer::with_body_limit(default_options(), limit).await;
 
     let res = server
-        .raw_request(Method::POST, "/", kinesis_headers(), b"{}".to_vec())
+        .raw_request(Method::POST, "/", signed_headers(), b"{}".to_vec())
         .await;
 
     assert_ne!(res.status(), 413);
@@ -85,7 +65,7 @@ async fn custom_limit_rejects_large_body_well_over_limit() {
 
     let body = vec![b'x'; limit * 10];
     let res = server
-        .raw_request(Method::POST, "/", kinesis_headers(), body)
+        .raw_request(Method::POST, "/", signed_headers(), body)
         .await;
 
     assert_eq!(res.status(), 413);
@@ -100,7 +80,7 @@ async fn default_7mb_limit_rejects_body_over_7mb() {
 
     let body = vec![b'x'; limit + 1];
     let res = server
-        .raw_request(Method::POST, "/", kinesis_headers(), body)
+        .raw_request(Method::POST, "/", signed_headers(), body)
         .await;
 
     assert_eq!(res.status(), 413);
@@ -112,7 +92,7 @@ async fn default_7mb_limit_allows_small_body() {
     let server = TestServer::with_body_limit(default_options(), limit).await;
 
     let res = server
-        .raw_request(Method::POST, "/", kinesis_headers(), b"{}".to_vec())
+        .raw_request(Method::POST, "/", signed_headers(), b"{}".to_vec())
         .await;
 
     assert_ne!(res.status(), 413);
@@ -128,7 +108,7 @@ async fn larger_limit_allows_body_rejected_by_smaller_limit() {
 
     let small_server = TestServer::with_body_limit(default_options(), 512).await;
     let res = small_server
-        .raw_request(Method::POST, "/", kinesis_headers(), body.clone())
+        .raw_request(Method::POST, "/", signed_headers(), body.clone())
         .await;
     assert_eq!(
         res.status(),
@@ -138,7 +118,7 @@ async fn larger_limit_allows_body_rejected_by_smaller_limit() {
 
     let large_server = TestServer::with_body_limit(default_options(), 1024).await;
     let res = large_server
-        .raw_request(Method::POST, "/", kinesis_headers(), body)
+        .raw_request(Method::POST, "/", signed_headers(), body)
         .await;
     assert_ne!(
         res.status(),
@@ -157,7 +137,7 @@ async fn limit_conversion_1mb_rejects_body_of_1mb_plus_1() {
 
     let body = vec![b'x'; limit + 1];
     let res = server
-        .raw_request(Method::POST, "/", kinesis_headers(), body)
+        .raw_request(Method::POST, "/", signed_headers(), body)
         .await;
 
     assert_eq!(res.status(), 413);
@@ -170,7 +150,7 @@ async fn limit_conversion_1mb_accepts_body_of_exactly_1mb() {
 
     let body = vec![b'x'; limit];
     let res = server
-        .raw_request(Method::POST, "/", kinesis_headers(), body)
+        .raw_request(Method::POST, "/", signed_headers(), body)
         .await;
 
     assert_ne!(res.status(), 413);
