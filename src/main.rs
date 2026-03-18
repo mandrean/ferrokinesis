@@ -203,5 +203,4 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
     println!("Listening at http://{addr}");
 
     axum::serve(listener, app).await.unwrap();
-    ExitCode::SUCCESS
 }

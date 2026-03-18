@@ -42,7 +42,7 @@ async fn health_ready_returns_200_ok() {
 #[tokio::test]
 async fn health_endpoints_do_not_require_auth() {
     let server = TestServer::new().await;
-    // All three should succeed without any auth headers
+    // Health probes from orchestrators (Docker, k8s) must not require credentials
     for path in ["/_health", "/_health/live", "/_health/ready"] {
         let res = server
             .raw_request(Method::GET, path, HeaderMap::new(), vec![])

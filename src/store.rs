@@ -5,7 +5,24 @@ use redb::backends::InMemoryBackend;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::fmt;
 use std::sync::Arc;
+
+/// Errors that can occur when probing store health.
+#[derive(Debug)]
+pub enum StoreHealthError {
+    ReadFailed(String),
+    TableOpenFailed(String),
+}
+
+impl fmt::Display for StoreHealthError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ReadFailed(e) => write!(f, "db read failed: {e}"),
+            Self::TableOpenFailed(e) => write!(f, "table open failed: {e}"),
+        }
+    }
+}
 
 const STREAMS: TableDefinition<&str, &[u8]> = TableDefinition::new("streams");
 const RECORDS: TableDefinition<&str, &[u8]> = TableDefinition::new("records");
@@ -534,13 +551,13 @@ impl Store {
     }
 
     /// Probe the database with a read transaction to verify it is healthy.
-    pub fn check_ready(&self) -> Result<(), String> {
+    pub fn check_ready(&self) -> Result<(), StoreHealthError> {
         let txn = self
             .db
             .begin_read()
-            .map_err(|e| format!("db read failed: {e}"))?;
+            .map_err(|e| StoreHealthError::ReadFailed(e.to_string()))?;
         txn.open_table(STREAMS)
-            .map_err(|e| format!("table open failed: {e}"))?;
+            .map_err(|e| StoreHealthError::TableOpenFailed(e.to_string()))?;
         Ok(())
     }
 }

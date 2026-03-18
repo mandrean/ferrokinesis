@@ -18,12 +18,12 @@ pub async fn health(State(store): State<Store>) -> Response {
             })),
         )
             .into_response(),
-        Err(detail) => (
+        Err(err) => (
             StatusCode::SERVICE_UNAVAILABLE,
             axum::Json(json!({
                 "status": "DOWN",
                 "components": {
-                    "store": { "status": "DOWN", "detail": detail }
+                    "store": { "status": "DOWN", "detail": err.to_string() }
                 }
             })),
         )
