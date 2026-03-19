@@ -91,8 +91,17 @@ impl TestServer {
 
     /// Make a signed Kinesis API request (JSON content type)
     pub async fn request(&self, target: &str, data: &Value) -> reqwest::Response {
+        self.signed_request_to(self.url(), target, data).await
+    }
+
+    async fn signed_request_to(
+        &self,
+        url: String,
+        target: &str,
+        data: &Value,
+    ) -> reqwest::Response {
         self.client
-            .post(self.url())
+            .post(url)
             .header("Content-Type", AMZ_JSON)
             .header("X-Amz-Target", format!("{VERSION}.{target}"))
             .header(
@@ -261,19 +270,7 @@ impl TestServer {
 
     /// Make a signed Kinesis API request over TLS
     pub async fn tls_request(&self, target: &str, data: &Value) -> reqwest::Response {
-        self.client
-            .post(self.tls_url())
-            .header("Content-Type", AMZ_JSON)
-            .header("X-Amz-Target", format!("{VERSION}.{target}"))
-            .header(
-                "Authorization",
-                "AWS4-HMAC-SHA256 Credential=AKID/20150101/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=abcd1234",
-            )
-            .header("X-Amz-Date", "20150101T000000Z")
-            .body(serde_json::to_vec(data).unwrap())
-            .send()
-            .await
-            .unwrap()
+        self.signed_request_to(self.tls_url(), target, data).await
     }
 }
 

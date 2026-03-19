@@ -158,6 +158,30 @@ fn run_generate_cert(args: &GenerateCertArgs) -> ExitCode {
         eprintln!("failed to write certificate: {e}");
         return ExitCode::FAILURE;
     }
+    // Write the private key with restrictive permissions (0600) on Unix.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let key_pem = cert.signing_key.serialize_pem();
+        let mut file = match std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&args.key_out)
+        {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("failed to write private key: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        if let Err(e) = file.write_all(key_pem.as_bytes()) {
+            eprintln!("failed to write private key: {e}");
+            return ExitCode::FAILURE;
+        }
+    }
+    #[cfg(not(unix))]
     if let Err(e) = std::fs::write(&args.key_out, cert.signing_key.serialize_pem()) {
         eprintln!("failed to write private key: {e}");
         return ExitCode::FAILURE;
@@ -239,6 +263,12 @@ fn run_health_check_tls(stream: TcpStream, path: &str, addr: &str) -> ExitCode {
     parse_health_response(BufReader::new(tls_stream))
 }
 
+/// A [`ServerCertVerifier`] that accepts any server certificate without validation.
+///
+/// This is intentionally insecure and is **only** used by the `health-check --tls`
+/// CLI subcommand, which connects to the local ferrokinesis server that typically
+/// presents a self-signed certificate. This verifier is never used in the server's
+/// own TLS stack.
 #[cfg(feature = "tls")]
 #[derive(Debug)]
 struct InsecureCertVerifier;
@@ -321,6 +351,24 @@ fn parse_health_response(reader: BufReader<impl std::io::Read>) -> ExitCode {
     }
 }
 
+#[cfg(feature = "tls")]
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut sigterm =
+            signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = sigterm.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await.ok();
+    }
+}
+
 #[tokio::main]
 async fn run_serve(args: ServeArgs) -> ExitCode {
     let file_cfg = args
@@ -382,23 +430,51 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
         let tls_key = args.tls_key.or(file_cfg.tls_key);
 
         if let (Some(cert), Some(key)) = (tls_cert, tls_key) {
-            let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert, &key)
-                .await
-                .unwrap_or_else(|e| {
-                    eprintln!("failed to load TLS cert/key: {e}");
-                    process::exit(1);
-                });
+            let tls_config =
+                match axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert, &key).await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("failed to load TLS cert/key: {e}");
+                        return ExitCode::FAILURE;
+                    }
+                };
 
             println!("Listening at https://{addr}");
-            if let Err(e) =
-                axum_server::bind_rustls(addr.parse::<std::net::SocketAddr>().unwrap(), tls_config)
-                    .serve(app.into_make_service())
-                    .await
-            {
-                eprintln!("server error: {e}");
-                return ExitCode::FAILURE;
+
+            let handle = axum_server::Handle::new();
+            let server_handle = handle.clone();
+
+            let server = tokio::spawn(async move {
+                axum_server::bind_rustls(
+                    addr.parse::<std::net::SocketAddr>()
+                        .expect("constructed addr always parses"),
+                    tls_config,
+                )
+                .handle(server_handle)
+                .serve(app.into_make_service())
+                .await
+            });
+
+            tokio::select! {
+                result = server => {
+                    match result {
+                        Ok(Ok(())) => return ExitCode::SUCCESS,
+                        Ok(Err(e)) => {
+                            eprintln!("server error: {e}");
+                            return ExitCode::FAILURE;
+                        }
+                        Err(e) => {
+                            eprintln!("server task panicked: {e}");
+                            return ExitCode::FAILURE;
+                        }
+                    }
+                }
+                _ = shutdown_signal() => {
+                    eprintln!("shutting down gracefully...");
+                    handle.graceful_shutdown(Some(Duration::from_secs(10)));
+                    return ExitCode::SUCCESS;
+                }
             }
-            return ExitCode::SUCCESS;
         }
     }
 
