@@ -8,7 +8,7 @@
 //   KINESIS_ENDPOINT=http://localhost:4567 cargo run
 
 use aws_sdk_kinesis::primitives::Blob;
-use aws_sdk_kinesis::types::ShardIteratorType;
+use aws_sdk_kinesis::types::{ShardIteratorType, StreamStatus};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -43,8 +43,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .stream_description()
             .unwrap()
             .stream_status()
-            .as_str();
-        if status == "ACTIVE" {
+            .clone();
+        if status == StreamStatus::Active {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -56,7 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .put_record()
         .stream_name(stream)
         .partition_key("pk1")
-        .data(Blob::new("hello world\n"))
+        .data(Blob::new("hello world"))
         .send()
         .await?;
     let shard_id = put.shard_id().to_string();
