@@ -454,12 +454,15 @@ pub fn check_validations(
             && let Some(s) = data.as_str()
         {
             let matched = {
-                let cache = REGEX_CACHE.read().unwrap();
+                let cache = REGEX_CACHE.read().unwrap_or_else(|e| e.into_inner());
                 if let Some(re) = cache.get(pattern.as_str()) {
                     re.is_match(s)
                 } else {
+                    // Benign race: another thread may have inserted this entry
+                    // between dropping the read lock and acquiring the write lock.
+                    // entry() deduplicates, so at worst we compile the regex twice.
                     drop(cache);
-                    let mut cache = REGEX_CACHE.write().unwrap();
+                    let mut cache = REGEX_CACHE.write().unwrap_or_else(|e| e.into_inner());
                     cache
                         .entry(pattern.clone())
                         .or_insert_with(|| {
