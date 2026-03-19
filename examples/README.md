@@ -11,6 +11,11 @@ Runnable examples showing how to use ferrokinesis with various AWS SDKs.
 
 2. The relevant SDK or runtime for the example you want to run.
 
+## Lockfiles
+
+`Cargo.lock`, `go.sum`, and `package-lock.json` are committed so that `cargo run`, `go run`,
+and `npm start` produce reproducible builds without a separate install step.
+
 ## Examples
 
 | Language | File | Description |
