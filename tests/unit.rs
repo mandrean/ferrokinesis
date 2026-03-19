@@ -35,7 +35,7 @@ async fn store_get_records_range_direct() {
         .put_record(
             "test-grr",
             "aabbccdd/seq001",
-            StoredRecord {
+            &StoredRecord {
                 partition_key: "pk".to_string(),
                 data: "AAAA".to_string(),
                 approximate_arrival_timestamp: 1.0,

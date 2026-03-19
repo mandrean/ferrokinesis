@@ -233,16 +233,21 @@ pub struct StoredRecord {
     pub approximate_arrival_timestamp: f64,
 }
 
-/// A record as returned to clients by `GetRecords` / `SubscribeToShard`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Borrowing variant of StoredRecord for zero-copy writes
+#[derive(Serialize)]
 #[serde(rename_all = "PascalCase")]
-pub struct OutputRecord {
-    /// Partition key used to assign the record to a shard.
-    pub partition_key: String,
-    /// Base64-encoded record payload.
-    pub data: String,
-    /// Unix timestamp (seconds) when the record arrived at the stream.
+pub struct StoredRecordRef<'a> {
+    pub partition_key: &'a str,
+    pub data: &'a str,
     pub approximate_arrival_timestamp: f64,
-    /// The sequence number of this record within its shard.
-    pub sequence_number: String,
+}
+
+/// Typed response record to avoid json!() intermediate allocations
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct ResponseRecord<'a> {
+    pub partition_key: &'a str,
+    pub data: &'a str,
+    pub approximate_arrival_timestamp: f64,
+    pub sequence_number: &'a str,
 }

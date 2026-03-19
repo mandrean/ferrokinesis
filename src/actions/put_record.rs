@@ -2,7 +2,7 @@ use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::sequence;
 use crate::store::Store;
-use crate::types::{StoredRecord, StreamStatus};
+use crate::types::{StoredRecordRef, StreamStatus};
 use crate::util::current_time_ms;
 use num_bigint::BigUint;
 use num_traits::{One, Zero};
@@ -129,13 +129,13 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         })
         .await?;
 
-    let record = StoredRecord {
-        partition_key: partition_key.to_string(),
-        data: record_data.to_string(),
+    let record = StoredRecordRef {
+        partition_key,
+        data: record_data,
         approximate_arrival_timestamp: now as f64 / 1000.0,
     };
 
-    store.put_record(&stream_name, &stream_key, record).await;
+    store.put_record(&stream_name, &stream_key, &record).await;
 
     Ok(Some(json!({
         "ShardId": shard_id,

@@ -3,6 +3,7 @@ use crate::error::KinesisErrorResponse;
 use crate::sequence;
 use crate::shard_iterator;
 use crate::store::Store;
+use crate::types::ResponseRecord;
 use crate::util::current_time_ms;
 use serde_json::{Value, json};
 
@@ -80,17 +81,19 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         ));
     }
 
-    let record_store = store.get_record_store(&stream_name).await;
     let cutoff_time = now - (stream.retention_period_hours as u64 * 60 * 60 * 1000);
 
     let range_start = format!("{}/{}", sequence::shard_ix_to_hex(shard_ix), seq_no);
     let range_end = sequence::shard_ix_to_hex(shard_ix + 1);
+    let range_records = store
+        .get_records_range_limited(&stream_name, &range_start, &range_end, limit)
+        .await;
 
-    let mut items: Vec<Value> = Vec::new();
+    let mut items: Vec<ResponseRecord<'_>> = Vec::with_capacity(limit);
     let mut last_seq_obj = None;
     let mut keys_to_delete = Vec::new();
 
-    for (key, record) in record_store.range(range_start..range_end).take(limit) {
+    for (key, record) in &range_records {
         let seq_num = key.split('/').nth(1).unwrap_or("");
         let record_seq_obj = match sequence::parse_sequence(seq_num) {
             Ok(obj) => obj,
@@ -103,12 +106,12 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
             continue;
         }
 
-        items.push(json!({
-            "PartitionKey": record.partition_key,
-            "Data": record.data,
-            "ApproximateArrivalTimestamp": record.approximate_arrival_timestamp,
-            "SequenceNumber": seq_num,
-        }));
+        items.push(ResponseRecord {
+            partition_key: &record.partition_key,
+            data: &record.data,
+            approximate_arrival_timestamp: record.approximate_arrival_timestamp,
+            sequence_number: seq_num,
+        });
 
         last_seq_obj = Some(record_seq_obj);
     }

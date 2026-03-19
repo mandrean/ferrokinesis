@@ -3,7 +3,7 @@ use crate::error::KinesisErrorResponse;
 use crate::event_stream;
 use crate::sequence;
 use crate::store::Store;
-use crate::types::{ShardIteratorType, StreamStatus};
+use crate::types::{ResponseRecord, ShardIteratorType, StreamStatus};
 use crate::util::current_time_ms;
 use axum::body::Body;
 use bytes::Bytes;
@@ -157,17 +157,12 @@ pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, Kines
                 .and_then(|v| v.as_f64())
                 .unwrap_or(0.0);
 
-            let record_store = store.get_record_store(&stream_name).await;
             let range_start = format!("{}/", sequence::shard_ix_to_hex(shard_ix));
             let range_end = sequence::shard_ix_to_hex(shard_ix + 1);
-
-            let mut found_seq = None;
-            for (key, record) in record_store.range(range_start..range_end) {
-                if record.approximate_arrival_timestamp >= ts {
-                    found_seq = key.split('/').nth(1).map(|s| s.to_string());
-                    break;
-                }
-            }
+            let found_seq = store
+                .find_first_record_at_timestamp(&stream_name, &range_start, &range_end, ts)
+                .await
+                .and_then(|(key, _)| key.split('/').nth(1).map(|s| s.to_string()));
             found_seq.unwrap_or_else(|| shard_seq.clone())
         }
     };
@@ -198,36 +193,39 @@ pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, Kines
                 Err(_) => break,
             };
 
-            let record_store = store.get_record_store(&stream_name).await;
             let cutoff_time = now - (stream_data.retention_period_hours as u64 * 60 * 60 * 1000);
             let range_start = format!("{}/{}", sequence::shard_ix_to_hex(shard_ix), current_seq);
             let range_end = sequence::shard_ix_to_hex(shard_ix + 1);
+            let range_records = store
+                .get_records_range_limited(&stream_name, &range_start, &range_end, 10000)
+                .await;
 
-            let mut records = Vec::new();
+            let mut records: Vec<ResponseRecord<'_>> = Vec::with_capacity(256);
             let mut last_seq_obj = None;
 
-            for (key, record) in record_store.range(range_start..range_end).take(10000) {
+            for (key, record) in &range_records {
                 let seq_num = match key.split('/').nth(1) {
-                    Some(s) => s.to_string(),
+                    Some(s) => s,
                     None => continue,
                 };
 
-                if let Ok(obj) = sequence::parse_sequence(&seq_num)
-                    && obj.seq_time.unwrap_or(0) < cutoff_time
-                {
+                let seq_obj = match sequence::parse_sequence(seq_num) {
+                    Ok(obj) => obj,
+                    Err(_) => continue,
+                };
+
+                if seq_obj.seq_time.unwrap_or(0) < cutoff_time {
                     continue;
                 }
 
-                records.push(json!({
-                    "Data": record.data,
-                    "PartitionKey": record.partition_key,
-                    "SequenceNumber": seq_num,
-                    "ApproximateArrivalTimestamp": record.approximate_arrival_timestamp,
-                }));
+                records.push(ResponseRecord {
+                    data: &record.data,
+                    partition_key: &record.partition_key,
+                    sequence_number: seq_num,
+                    approximate_arrival_timestamp: record.approximate_arrival_timestamp,
+                });
 
-                if let Ok(obj) = sequence::parse_sequence(&seq_num) {
-                    last_seq_obj = Some(obj);
-                }
+                last_seq_obj = Some(seq_obj);
             }
 
             // Compute next sequence and continuation

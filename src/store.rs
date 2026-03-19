@@ -11,6 +11,7 @@ use crate::error::KinesisErrorResponse;
 use crate::types::{Consumer, StoredRecord, Stream};
 use redb::backends::InMemoryBackend;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -392,16 +393,16 @@ impl Store {
                     .strip_prefix(&prefix)
                     .unwrap_or(&full_key)
                     .to_string();
-                let record: StoredRecord = serde_json::from_slice(v.value()).unwrap();
+                let record: StoredRecord = postcard::from_bytes(v.value()).unwrap();
                 (shard_key, record)
             })
             .collect()
     }
 
     /// Stores a single record under the given composite shard key.
-    pub async fn put_record(&self, stream_name: &str, key: &str, record: StoredRecord) {
+    pub async fn put_record(&self, stream_name: &str, key: &str, record: &impl Serialize) {
         let composite_key = record_key(stream_name, key);
-        let bytes = serde_json::to_vec(&record).unwrap();
+        let bytes = postcard::to_allocvec(record).unwrap();
         let write_txn = self.db.begin_write().unwrap();
         {
             let mut table = write_txn.open_table(RECORDS).unwrap();
@@ -413,13 +414,13 @@ impl Store {
     }
 
     /// Stores multiple records in a single write transaction.
-    pub async fn put_records_batch(&self, stream_name: &str, batch: Vec<(String, StoredRecord)>) {
+    pub async fn put_records_batch<R: Serialize>(&self, stream_name: &str, batch: &[(String, R)]) {
         let write_txn = self.db.begin_write().unwrap();
         {
             let mut table = write_txn.open_table(RECORDS).unwrap();
-            for (key, record) in &batch {
+            for (key, record) in batch {
                 let composite_key = record_key(stream_name, key);
-                let bytes = serde_json::to_vec(record).unwrap();
+                let bytes = postcard::to_allocvec(record).unwrap();
                 table
                     .insert(composite_key.as_str(), bytes.as_slice())
                     .unwrap();
@@ -528,10 +529,60 @@ impl Store {
                     .strip_prefix(&prefix)
                     .unwrap_or(&full_key)
                     .to_string();
-                let record: StoredRecord = serde_json::from_slice(v.value()).unwrap();
+                let record: StoredRecord = postcard::from_bytes(v.value()).unwrap();
                 (shard_key, record)
             })
             .collect()
+    }
+
+    /// Get records in a specific range for a stream, with a limit on the number returned
+    pub async fn get_records_range_limited(
+        &self,
+        stream_name: &str,
+        range_start: &str,
+        range_end: &str,
+        limit: usize,
+    ) -> Vec<(String, StoredRecord)> {
+        let read_txn = self.db.begin_read().unwrap();
+        let table = read_txn.open_table(RECORDS).unwrap();
+        let (start, end) = record_range(stream_name, range_start, range_end);
+        let prefix_len = stream_name.len() + 1; // stream_name + '\0'
+        table
+            .range(start.as_str()..end.as_str())
+            .unwrap()
+            .take(limit)
+            .map(|r| {
+                let (k, v) = r.unwrap();
+                let full_key = k.value().to_string();
+                let shard_key = full_key[prefix_len..].to_string();
+                let record: StoredRecord = postcard::from_bytes(v.value()).unwrap();
+                (shard_key, record)
+            })
+            .collect()
+    }
+
+    /// Find the first record at or after a given timestamp in a range
+    pub async fn find_first_record_at_timestamp(
+        &self,
+        stream_name: &str,
+        range_start: &str,
+        range_end: &str,
+        timestamp: f64,
+    ) -> Option<(String, StoredRecord)> {
+        let read_txn = self.db.begin_read().unwrap();
+        let table = read_txn.open_table(RECORDS).unwrap();
+        let (start, end) = record_range(stream_name, range_start, range_end);
+        let prefix_len = stream_name.len() + 1;
+        for r in table.range(start.as_str()..end.as_str()).unwrap() {
+            let (k, v) = r.unwrap();
+            let record: StoredRecord = postcard::from_bytes(v.value()).unwrap();
+            if record.approximate_arrival_timestamp >= timestamp {
+                let full_key = k.value().to_string();
+                let shard_key = full_key[prefix_len..].to_string();
+                return Some((shard_key, record));
+            }
+        }
+        None
     }
 
     // --- Consumer operations ---
