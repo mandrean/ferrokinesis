@@ -63,12 +63,16 @@ jobs:
             lang: java-kcl-v1
             dir: tests/conformance/java-kcl-v1
             run: mvn -B test
+          - name: Java KCL v2
+            lang: java-kcl-v2
+            dir: tests/conformance/java-kcl-v2
+            run: mvn -B test
     env:
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
       AWS_DEFAULT_REGION: us-east-1
       KINESIS_ENDPOINT: http://localhost:4567
-      # Used by java-kcl-v1 only; harmless for other matrix entries
+      # Used by java-kcl-v1 and java-kcl-v2; harmless for other matrix entries
       DYNAMODB_ENDPOINT: http://localhost:8000
     steps:
       - uses: actions/checkout@v4
@@ -90,7 +94,7 @@ jobs:
         run: bash tests/conformance/wait-for-server.sh
 
       - name: Start DynamoDB Local
-        if: matrix.lang == 'java-kcl-v1'
+        if: matrix.lang == 'java-kcl-v1' || matrix.lang == 'java-kcl-v2'
         run: |
           docker run -d --name dynamodb-local -p 8000:8000 amazon/dynamodb-local
           for i in $(seq 1 15); do
@@ -145,7 +149,7 @@ jobs:
         run: ${{ matrix.run }}
 
       - name: Stop DynamoDB Local
-        if: always() && matrix.lang == 'java-kcl-v1'
+        if: always() && (matrix.lang == 'java-kcl-v1' || matrix.lang == 'java-kcl-v2')
         run: docker rm -f dynamodb-local || true
 
       - name: Stop server

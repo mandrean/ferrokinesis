@@ -1,0 +1,294 @@
+package ferrokinesis.conformance;
+
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Order;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestMethodOrder;
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.core.SdkBytes;
+import software.amazon.awssdk.http.Protocol;
+import software.amazon.awssdk.http.nio.netty.NettyNioAsyncHttpClient;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.cloudwatch.CloudWatchAsyncClient;
+import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
+import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
+import software.amazon.awssdk.services.dynamodb.model.ScanRequest;
+import software.amazon.awssdk.services.dynamodb.model.ScanResponse;
+import software.amazon.awssdk.services.kinesis.KinesisAsyncClient;
+import software.amazon.awssdk.services.kinesis.model.CreateStreamRequest;
+import software.amazon.awssdk.services.kinesis.model.DeleteStreamRequest;
+import software.amazon.awssdk.services.kinesis.model.DescribeStreamSummaryRequest;
+import software.amazon.awssdk.services.kinesis.model.DescribeStreamSummaryResponse;
+import software.amazon.awssdk.services.kinesis.model.PutRecordRequest;
+import software.amazon.awssdk.services.kinesis.model.StreamStatus;
+import software.amazon.kinesis.common.ConfigsBuilder;
+import software.amazon.kinesis.coordinator.Scheduler;
+import software.amazon.kinesis.metrics.MetricsLevel;
+import software.amazon.kinesis.retrieval.fanout.FanOutConfig;
+
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
+
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
+public class KclV2IntegrationTest {
+
+    private static final String KINESIS_ENDPOINT =
+            System.getenv().getOrDefault("KINESIS_ENDPOINT", "http://localhost:4567");
+    private static final String DYNAMODB_ENDPOINT =
+            System.getenv().getOrDefault("DYNAMODB_ENDPOINT", "http://localhost:8000");
+    private static final String REGION = "us-east-1";
+    private static final String STREAM_NAME = "kcl-v2-integration";
+    private static final String APPLICATION_NAME = "kcl-v2-test-app";
+    private static final int SHARD_COUNT = 1;
+    private static final int RECORD_COUNT = 10;
+
+    private static final StaticCredentialsProvider CREDENTIALS =
+            StaticCredentialsProvider.create(AwsBasicCredentials.create("test", "test"));
+
+    // KinesisAsyncClient used by both KCL and test setup.
+    // CRITICAL: Force HTTP/1.1. Ferrokinesis runs plain HTTP/1.1 (Axum, no TLS).
+    // AWS SDK v2's Netty client defaults to HTTP/2 for Kinesis (especially SubscribeToShard).
+    // HTTP/2 requires TLS (ALPN) or h2c — Axum supports neither without TLS.
+    // Forcing HTTP/1.1 makes the Netty client use chunked transfer encoding for the
+    // SubscribeToShard event stream, which ferrokinesis supports correctly.
+    private static final KinesisAsyncClient kinesisAsyncClient = KinesisAsyncClient.builder()
+            .endpointOverride(URI.create(KINESIS_ENDPOINT))
+            .region(Region.of(REGION))
+            .credentialsProvider(CREDENTIALS)
+            .httpClient(NettyNioAsyncHttpClient.builder()
+                    .protocol(Protocol.HTTP1_1)
+                    .build())
+            .build();
+
+    // DynamoDbAsyncClient for KCL lease management. KCL 2.x requires an async client.
+    private static final DynamoDbAsyncClient dynamoAsyncClient = DynamoDbAsyncClient.builder()
+            .endpointOverride(URI.create(DYNAMODB_ENDPOINT))
+            .region(Region.of(REGION))
+            .credentialsProvider(CREDENTIALS)
+            .build();
+
+    // Sync DynamoDB client for lease table verification — avoids .join() boilerplate in assertions.
+    private static final DynamoDbClient dynamoSyncClient = DynamoDbClient.builder()
+            .endpointOverride(URI.create(DYNAMODB_ENDPOINT))
+            .region(Region.of(REGION))
+            .credentialsProvider(CREDENTIALS)
+            .build();
+
+    // CloudWatchAsyncClient required by ConfigsBuilder API even when MetricsLevel.NONE is set.
+    // Pointed at a non-existent local port; never actually called with MetricsLevel.NONE.
+    private static final CloudWatchAsyncClient cloudWatchClient = CloudWatchAsyncClient.builder()
+            .endpointOverride(URI.create("http://localhost:19999"))
+            .region(Region.of(REGION))
+            .credentialsProvider(CREDENTIALS)
+            .build();
+
+    private static Scheduler scheduler;
+    private static Thread schedulerThread;
+    private static boolean cleanedUp = false;
+
+    @Test
+    @Order(1)
+    void createStreamAndPutRecords() {
+        kinesisAsyncClient.createStream(CreateStreamRequest.builder()
+                .streamName(STREAM_NAME)
+                .shardCount(SHARD_COUNT)
+                .build()).join();
+
+        waitForStreamActive();
+
+        for (int i = 0; i < RECORD_COUNT; i++) {
+            kinesisAsyncClient.putRecord(PutRecordRequest.builder()
+                    .streamName(STREAM_NAME)
+                    .partitionKey("pk-" + i)
+                    .data(SdkBytes.fromUtf8String("kcl-v2-record-" + i))
+                    .build()).join();
+        }
+    }
+
+    @Test
+    @Order(2)
+    void runKclSchedulerAndVerify() throws Exception {
+        TestShardRecordProcessor.reset(RECORD_COUNT);
+
+        String workerId = "worker-" + UUID.randomUUID();
+
+        // ConfigsBuilder is the unified KCL 2.x configuration entry point.
+        ConfigsBuilder configsBuilder = new ConfigsBuilder(
+                STREAM_NAME,
+                APPLICATION_NAME,
+                kinesisAsyncClient,
+                dynamoAsyncClient,
+                cloudWatchClient,
+                workerId,
+                new TestShardRecordProcessorFactory()
+        );
+
+        // FanOutConfig drives the enhanced fan-out path. KCL 2.x will internally:
+        //   1. DescribeStreamSummary — get stream ARN and status
+        //   2. ListShards — enumerate shards
+        //   3. RegisterStreamConsumer — register the consumer (named APPLICATION_NAME)
+        //   4. DescribeStreamConsumer — poll until ACTIVE (ferrokinesis transitions in ~500ms)
+        //   5. SubscribeToShard — open an event stream per shard
+        FanOutConfig fanOutConfig = new FanOutConfig(kinesisAsyncClient)
+                .streamName(STREAM_NAME)
+                .applicationName(APPLICATION_NAME);
+
+        Scheduler localScheduler = new Scheduler(
+                configsBuilder.checkpointConfig(),
+                configsBuilder.coordinatorConfig(),
+                configsBuilder.leaseManagementConfig(),
+                configsBuilder.lifecycleConfig(),
+                configsBuilder.metricsConfig()
+                        .metricsLevel(MetricsLevel.NONE),
+                configsBuilder.processorConfig(),
+                configsBuilder.retrievalConfig()
+                        .retrievalSpecificConfig(fanOutConfig)
+        );
+
+        scheduler = localScheduler;
+
+        schedulerThread = new Thread(localScheduler);
+        schedulerThread.setDaemon(true);
+        schedulerThread.setName("kcl-v2-scheduler");
+        schedulerThread.start();
+
+        boolean allReceived = TestShardRecordProcessor.awaitRecords(120);
+        assertTrue(allReceived,
+                "KCL 2.x did not process all " + RECORD_COUNT + " records within 120 seconds");
+
+        assertTrue(TestShardRecordProcessor.wasInitializeCalled(),
+                "KCL 2.x never called initialize() — shard assignment may have failed");
+
+        List<software.amazon.kinesis.retrieval.KinesisClientRecord> records =
+                TestShardRecordProcessor.getRecords();
+        assertEquals(RECORD_COUNT, records.size(),
+                "Expected exactly " + RECORD_COUNT + " records, got " + records.size());
+
+        Set<String> payloads = new HashSet<>();
+        for (software.amazon.kinesis.retrieval.KinesisClientRecord r : records) {
+            payloads.add(StandardCharsets.UTF_8.decode(r.data().asByteBuffer()).toString());
+        }
+        for (int i = 0; i < RECORD_COUNT; i++) {
+            assertTrue(payloads.contains("kcl-v2-record-" + i),
+                    "Missing record payload: kcl-v2-record-" + i);
+        }
+
+        for (software.amazon.kinesis.retrieval.KinesisClientRecord r : records) {
+            assertNotNull(r.sequenceNumber(), "Record has null sequenceNumber");
+            assertFalse(r.sequenceNumber().isEmpty(), "Record has empty sequenceNumber");
+            assertNotNull(r.partitionKey(), "Record has null partitionKey");
+            assertNotNull(r.approximateArrivalTimestamp(),
+                    "Record has null approximateArrivalTimestamp");
+        }
+    }
+
+    @Test
+    @Order(3)
+    void verifyLeaseTable() {
+        // KCL 2.x uses applicationName as the DynamoDB table name (same as KCL 1.x).
+        // By the time this test runs the latch has fired, meaning processRecords was called
+        // and checkpoint() succeeded — so the table exists and is populated.
+        ScanResponse result = dynamoSyncClient.scan(ScanRequest.builder()
+                .tableName(APPLICATION_NAME)
+                .attributesToGet("leaseKey", "checkpoint", "leaseOwner")
+                .build());
+
+        assertFalse(result.items().isEmpty(),
+                "Lease table is empty — KCL 2.x did not create leases");
+
+        for (Map<String, AttributeValue> item : result.items()) {
+            AttributeValue checkpoint = item.get("checkpoint");
+            if (checkpoint != null && checkpoint.s() != null) {
+                String seq = checkpoint.s();
+                // Valid checkpoint values: sentinels or a non-empty sequence number.
+                if (!seq.equals("TRIM_HORIZON") && !seq.equals("LATEST") && !seq.equals("SHARD_END")) {
+                    assertFalse(seq.isEmpty(),
+                            "Lease has empty checkpoint sequence number for shard: " +
+                                    item.get("leaseKey").s());
+                }
+            }
+        }
+    }
+
+    @Test
+    @Order(4)
+    void cleanup() throws Exception {
+        if (scheduler != null) {
+            Future<Boolean> shutdownFuture = scheduler.startGracefulShutdown();
+            try {
+                shutdownFuture.get(30, TimeUnit.SECONDS);
+            } catch (TimeoutException e) {
+                System.err.println("[KCLv2] Graceful shutdown timed out after 30s");
+            } catch (Exception e) {
+                System.err.println("[KCLv2] Graceful shutdown failed: " + e.getMessage());
+            }
+        }
+        if (schedulerThread != null) {
+            schedulerThread.join(5000);
+        }
+        kinesisAsyncClient.deleteStream(DeleteStreamRequest.builder()
+                .streamName(STREAM_NAME)
+                .build()).join();
+        cleanedUp = true;
+    }
+
+    @AfterAll
+    static void safetyNetCleanup() {
+        if (cleanedUp) {
+            return;
+        }
+        if (scheduler != null) {
+            try {
+                Future<Boolean> f = scheduler.startGracefulShutdown();
+                f.get(10, TimeUnit.SECONDS);
+            } catch (Exception e) {
+                System.err.println("[KCLv2] Safety-net scheduler shutdown failed: " + e.getMessage());
+            }
+        }
+        if (schedulerThread != null) {
+            schedulerThread.interrupt();
+        }
+        try {
+            kinesisAsyncClient.deleteStream(DeleteStreamRequest.builder()
+                    .streamName(STREAM_NAME)
+                    .build()).join();
+        } catch (Exception e) {
+            System.err.println("[KCLv2] Safety-net stream delete failed: " + e.getMessage());
+        }
+    }
+
+    private void waitForStreamActive() {
+        for (int i = 0; i < 30; i++) {
+            DescribeStreamSummaryResponse resp = kinesisAsyncClient.describeStreamSummary(
+                    DescribeStreamSummaryRequest.builder()
+                            .streamName(STREAM_NAME)
+                            .build()).join();
+            if (resp.streamDescriptionSummary().streamStatus() == StreamStatus.ACTIVE) {
+                return;
+            }
+            try {
+                Thread.sleep(200);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        fail("Stream " + STREAM_NAME + " did not become ACTIVE within 6 seconds");
+    }
+}
