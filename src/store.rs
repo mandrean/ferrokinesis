@@ -179,8 +179,8 @@ impl Store {
             .collect();
 
         if aws_account_id.len() != 12 {
-            eprintln!(
-                "warning: AWS account ID has {} digits after stripping non-digits (expected 12)",
+            tracing::warn!(
+                "AWS account ID has {} digits after stripping non-digits (expected 12)",
                 aws_account_id.len()
             );
         }

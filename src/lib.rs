@@ -60,6 +60,7 @@ use axum::Router;
 use axum::middleware;
 use axum::routing::{any, get};
 use store::{Store, StoreOptions};
+use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 
 /// Creates an Axum [`Router`] and a [`store::Store`] ready to serve the Kinesis emulator.
 ///
@@ -94,7 +95,12 @@ pub fn create_app(options: StoreOptions) -> (Router, Store) {
         .route("/_health/ready", get(health::ready))
         .fallback(any(server::handler))
         .with_state(store.clone())
-        .layer(middleware::from_fn(server::kinesis_413_middleware));
+        .layer(middleware::from_fn(server::kinesis_413_middleware))
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(DefaultMakeSpan::new().level(tracing::Level::INFO))
+                .on_response(DefaultOnResponse::new().level(tracing::Level::INFO)),
+        );
 
     if options.retention_check_interval_secs > 0 {
         let reaper_store = store.clone();

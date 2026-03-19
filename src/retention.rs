@@ -23,7 +23,7 @@ pub async fn sweep_once(store: &Store) {
             .delete_expired_records(&name, stream.retention_period_hours)
             .await;
         if deleted > 0 {
-            eprintln!("retention: trimmed {deleted} expired record(s) from stream {name}");
+            tracing::debug!(stream = %name, deleted, "retention: trimmed expired records");
         }
     }
 }

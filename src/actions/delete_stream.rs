@@ -14,6 +14,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
             Ok(())
         })
         .await?;
+    tracing::info!(stream = stream_name, "stream deletion initiated");
 
     // Delete after delay
     let store_clone = store.clone();

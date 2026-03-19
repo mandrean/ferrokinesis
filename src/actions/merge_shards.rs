@@ -85,6 +85,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
             Ok(())
         })
         .await?;
+    tracing::info!(stream = stream_name, "shards merged");
 
     // Schedule transition
     let store_clone = store.clone();

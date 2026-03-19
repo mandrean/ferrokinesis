@@ -51,6 +51,11 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     };
 
     store.put_consumer(&consumer_arn, consumer.clone()).await;
+    tracing::info!(
+        stream = stream_arn,
+        consumer = consumer_name,
+        "consumer registered"
+    );
 
     // Transition to ACTIVE after a short delay
     let store_clone = store.clone();

@@ -75,6 +75,10 @@ pub struct FileConfig {
     pub retention_check_interval_secs: Option<u64>,
     /// Maximum request body size in megabytes. Defaults to `5`.
     pub max_request_body_mb: Option<u64>,
+    /// Log level (`off`, `error`, `warn`, `info`, `debug`, `trace`). Defaults to `"info"`.
+    pub log_level: Option<String>,
+    /// Enable per-request access logging. Defaults to `false`.
+    pub access_log: Option<bool>,
     /// Path to the TLS certificate file (PEM). Must be set together with `tls_key`.
     #[cfg(feature = "tls")]
     pub tls_cert: Option<PathBuf>,

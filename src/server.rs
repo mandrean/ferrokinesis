@@ -220,6 +220,8 @@ pub async fn handler(
         return send_kinesis_error(&response_headers, response_content_type, &err);
     }
 
+    let span = tracing::info_span!("kinesis", %operation, %request_id);
+
     // Auth checking
     let auth_header = headers.get("authorization").and_then(|v| v.to_str().ok());
     let query_string = uri.query().unwrap_or("");
@@ -358,14 +360,23 @@ pub async fn handler(
     // Execute action
     match actions::dispatch(&store, operation, data).await {
         Ok(Some(result)) => {
+            tracing::debug!(parent: &span, "ok");
             send_json_response(response_headers, response_content_type, &result, 200)
         }
         Ok(None) => {
+            tracing::debug!(parent: &span, "ok");
             response_headers.insert("Content-Type", response_content_type.parse().unwrap());
             response_headers.insert("Content-Length", "0".parse().unwrap());
             (StatusCode::OK, response_headers, "").into_response()
         }
-        Err(err) => send_kinesis_error(&response_headers, response_content_type, &err),
+        Err(ref err) if err.status_code >= 500 => {
+            tracing::error!(parent: &span, error_type = %err.body.error_type, "server error");
+            send_kinesis_error(&response_headers, response_content_type, err)
+        }
+        Err(ref err) => {
+            tracing::warn!(parent: &span, error_type = %err.body.error_type, "client error");
+            send_kinesis_error(&response_headers, response_content_type, err)
+        }
     }
 }
 

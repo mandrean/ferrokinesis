@@ -40,6 +40,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     let mut updated = consumer;
     updated.consumer_status = ConsumerStatus::Deleting;
     store.put_consumer(&resolved_arn, updated).await;
+    tracing::info!(consumer_arn = %resolved_arn, "consumer deregistered");
 
     // Delete after short delay
     let store_clone = store.clone();

@@ -84,6 +84,14 @@ struct ServeArgs {
     #[arg(long, env = "FERROKINESIS_RETENTION_CHECK_INTERVAL_SECS", value_parser = clap::value_parser!(u64).range(0..=86400))]
     retention_check_interval_secs: Option<u64>,
 
+    /// Log level (off, error, warn, info, debug, trace)
+    #[arg(long, env = "FERROKINESIS_LOG_LEVEL")]
+    log_level: Option<String>,
+
+    /// Enable per-request access logging
+    #[arg(long, env = "FERROKINESIS_ACCESS_LOG")]
+    access_log: Option<bool>,
+
     /// Path to TLS certificate PEM file (enables HTTPS)
     #[cfg(feature = "tls")]
     #[arg(long, env = "FERROKINESIS_TLS_CERT", requires = "tls_key")]
@@ -428,7 +436,29 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
 
     let defaults = StoreOptions::default();
     let port = resolve(args.port, file_cfg.port, || 4567);
-    let max_request_body_mb = resolve(args.max_request_body_mb, file_cfg.max_request_body_mb, || 7);
+    let max_request_body_mb =
+        resolve(args.max_request_body_mb, file_cfg.max_request_body_mb, || 7);
+    let log_level: String = resolve(args.log_level, file_cfg.log_level, || "info".into());
+    let access_log = resolve(args.access_log, file_cfg.access_log, || false);
+
+    // Initialize tracing subscriber.
+    // RUST_LOG takes precedence when set; otherwise use the resolved log_level.
+    let env_filter = if std::env::var("RUST_LOG").is_ok() {
+        tracing_subscriber::EnvFilter::from_default_env()
+    } else {
+        let mut filter = tracing_subscriber::EnvFilter::new(&log_level);
+        if access_log {
+            filter = filter.add_directive("tower_http::trace=info".parse().unwrap());
+        } else {
+            filter = filter.add_directive("tower_http::trace=off".parse().unwrap());
+        }
+        filter
+    };
+
+    tracing_subscriber::fmt()
+        .with_env_filter(env_filter)
+        .with_target(false)
+        .init();
 
     let options = StoreOptions {
         create_stream_ms: resolve(args.create_stream_ms, file_cfg.create_stream_ms, || {
@@ -479,12 +509,12 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
                 match axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert, &key).await {
                     Ok(c) => c,
                     Err(e) => {
-                        eprintln!("failed to load TLS cert/key: {e}");
+                        tracing::error!("failed to load TLS cert/key: {e}");
                         return ExitCode::FAILURE;
                     }
                 };
 
-            println!("Listening at https://{addr}");
+            tracing::info!("Listening at https://{addr}");
 
             let handle = axum_server::Handle::new();
             let server_handle = handle.clone();
@@ -505,17 +535,17 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
                     match result {
                         Ok(Ok(())) => return ExitCode::SUCCESS,
                         Ok(Err(e)) => {
-                            eprintln!("server error: {e}");
+                            tracing::error!("server error: {e}");
                             return ExitCode::FAILURE;
                         }
                         Err(e) => {
-                            eprintln!("server task panicked: {e}");
+                            tracing::error!("server task panicked: {e}");
                             return ExitCode::FAILURE;
                         }
                     }
                 }
                 _ = shutdown_signal() => {
-                    eprintln!("shutting down gracefully...");
+                    tracing::info!("shutting down gracefully...");
                     handle.graceful_shutdown(Some(Duration::from_secs(10)));
                     return ExitCode::SUCCESS;
                 }
@@ -524,13 +554,13 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
     }
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-    println!("Listening at http://{addr}");
+    tracing::info!("Listening at http://{addr}");
 
     if let Err(e) = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await
     {
-        eprintln!("server error: {e}");
+        tracing::error!("server error: {e}");
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
