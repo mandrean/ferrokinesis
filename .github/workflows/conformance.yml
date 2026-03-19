@@ -125,19 +125,15 @@ jobs:
           distribution: temurin
           java-version: "11"
           cache: maven
+          cache-dependency-path: ${{ matrix.dir }}/pom.xml
 
       - name: Setup Python
         if: matrix.lang == 'python'
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Cache pip
-        if: matrix.lang == 'python'
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: pip-conformance-${{ hashFiles('tests/conformance/python-boto3/requirements.txt') }}
+          cache: pip
+          cache-dependency-path: ${{ matrix.dir }}/requirements.txt
 
       - name: Install dependencies
         if: matrix.setup != ''
