@@ -74,13 +74,15 @@ pub fn parse_sequence(seq: &str) -> Result<SeqObj, SequenceError> {
 
     match version {
         2 => {
-            // v2 hex layout (total 47 hex digits after the leading '2'):
+            // v2 hex layout (total 47 hex digits, indices 0–46):
+            //   hex[0]      = '2' (leading digit, always; the number lives in [2^185, 3×2^184))
             //   hex[1..10]  = shard_create_time (seconds, 9 hex digits)
-            //   hex[10]     = last nibble of shard_ix (overlaps with shard_ix field)
+            //   hex[10]     = last nibble of shard_ix (duplicated from hex[45] for locality)
             //   hex[11..27] = seq_ix (16 hex digits, unsigned 64-bit)
             //   hex[27..29] = byte1 (2 hex digits, opaque AWS field)
             //   hex[29..38] = seq_time (seconds, 9 hex digits)
             //   hex[38..46] = shard_ix (8 hex digits, two's-complement 32-bit)
+            //   hex[46]     = '2' (trailing version nibble)
             let seq_ix_hex = &hex[11..27];
             let shard_ix_hex_raw = &hex[38..46];
 

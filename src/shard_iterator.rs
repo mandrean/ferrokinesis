@@ -88,8 +88,9 @@ pub fn decode_shard_iterator(
         .map_err(|_| ShardIteratorError::InvalidBase64)?;
 
     // 152 = 8 (header) + 144 (smallest PKCS7-padded ciphertext for the shortest valid
-    // plaintext). 280 = 8 + ceil((14+1+128+1+12+1+~64+1+36)/16)*16, reflecting the
-    // maximum stream name (128 chars) + shard ID + sequence number + nonce.
+    // plaintext). 280 = 8 + ceil((14+1+128+1+20+1+57+1+36)/16)*16, where 20 is the
+    // shard ID length ("shardId-000000000000") and 57 is the maximum decimal length of
+    // a v2 sequence number (47 hex digits ≈ log10(2^188) < 57).
     if buffer.len() < 152 || buffer.len() > 280 {
         return Err(ShardIteratorError::InvalidLength);
     }
