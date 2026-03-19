@@ -203,8 +203,7 @@ pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, Kines
                 .get_records_range_limited(&stream_name, &range_start, &range_end, SUBSCRIBE_EVENT_RECORD_LIMIT)
                 .await;
 
-            // Pre-allocate for typical batch size; grows if needed
-            let mut records: Vec<ResponseRecord<'_>> = Vec::with_capacity(256);
+            let mut records: Vec<ResponseRecord<'_>> = Vec::with_capacity(range_records.len());
             let mut last_seq_num: Option<&str> = None;
 
             for (key, record) in &range_records {

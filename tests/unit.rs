@@ -1,5 +1,5 @@
 use ferrokinesis::store::StoreOptions;
-use ferrokinesis::types::{ConsumerStatus, StreamStatus};
+use ferrokinesis::types::{ConsumerStatus, StoredRecord, StoredRecordRef, StreamStatus};
 
 #[test]
 fn stream_status_display_all_variants() {
@@ -88,4 +88,25 @@ fn error_client_error_none_message() {
     assert_eq!(err.status_code, 400);
     assert!(err.body.message.is_none());
     let _ = format!("{:?}", err);
+}
+
+/// Ensures `StoredRecordRef` (write path) and `StoredRecord` (read path)
+/// stay in sync for postcard's positional serialization.
+#[test]
+fn postcard_roundtrip_stored_record_ref_to_stored_record() {
+    let record_ref = StoredRecordRef {
+        partition_key: "pk-1",
+        data: "dGVzdCBkYXRh",
+        approximate_arrival_timestamp: 1742464000.123,
+    };
+
+    let bytes = postcard::to_allocvec(&record_ref).expect("serialize StoredRecordRef");
+    let record: StoredRecord = postcard::from_bytes(&bytes).expect("deserialize StoredRecord");
+
+    assert_eq!(record.partition_key, record_ref.partition_key);
+    assert_eq!(record.data, record_ref.data);
+    assert_eq!(
+        record.approximate_arrival_timestamp,
+        record_ref.approximate_arrival_timestamp
+    );
 }

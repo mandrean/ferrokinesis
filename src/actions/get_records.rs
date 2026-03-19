@@ -90,7 +90,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         .get_records_range_limited(&stream_name, &range_start, &range_end, limit)
         .await;
 
-    let mut items: Vec<ResponseRecord<'_>> = Vec::with_capacity(limit);
+    let mut items: Vec<ResponseRecord<'_>> = Vec::with_capacity(range_records.len());
     let mut last_seq_num: Option<&str> = None;
     let mut keys_to_delete = Vec::new();
 
