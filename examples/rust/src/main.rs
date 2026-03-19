@@ -8,7 +8,7 @@
 //   KINESIS_ENDPOINT=http://localhost:4567 cargo run
 
 use aws_sdk_kinesis::primitives::Blob;
-use aws_sdk_kinesis::types::ShardIteratorType;
+use aws_sdk_kinesis::types::{ShardIteratorType, StreamStatus};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -39,12 +39,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .stream_name(stream)
             .send()
             .await?;
-        let status = desc
-            .stream_description()
-            .unwrap()
-            .stream_status()
-            .as_str();
-        if status == "ACTIVE" {
+        let status = desc.stream_description().unwrap().stream_status().clone();
+        if status == StreamStatus::Active {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
