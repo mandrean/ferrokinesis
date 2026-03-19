@@ -176,6 +176,8 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                     },
                     sequence_number_range: SequenceNumberRange {
                         starting_sequence_number: sequence::stringify_sequence(&sequence::SeqObj {
+                            // Same as the lower child: 1 second ahead so this child's
+                            // sequences sort after the parent's closing sequence number.
                             shard_create_time: now + 1000,
                             shard_ix: new_ix2,
                             seq_ix: None,
