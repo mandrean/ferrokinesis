@@ -1,3 +1,10 @@
+//! Health check endpoints for the Kinesis emulator.
+//!
+//! Three endpoints are registered by [`crate::create_app`]:
+//! - `GET /_health` — aggregated status with component breakdown ([`health`])
+//! - `GET /_health/live` — liveness probe, always 200 if the server is up ([`live`])
+//! - `GET /_health/ready` — readiness probe, checks store connectivity ([`ready`])
+
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};

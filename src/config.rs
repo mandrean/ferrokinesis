@@ -1,3 +1,8 @@
+//! TOML configuration file loading for ferrokinesis.
+//!
+//! [`FileConfig`] mirrors the TOML configuration file structure. Use [`load_config`]
+//! to parse a config file path into a validated [`FileConfig`].
+
 use serde::Deserialize;
 use std::path::Path;
 #[cfg(feature = "tls")]
@@ -6,38 +11,86 @@ use std::path::PathBuf;
 /// Errors that can occur when loading a configuration file.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
+    /// The config file could not be read from disk.
     #[error("failed to read config file {path}: {source}")]
     Read {
+        /// Path to the config file.
         path: String,
+        /// Underlying I/O error.
         source: std::io::Error,
     },
+    /// The config file contents could not be parsed as TOML.
     #[error("failed to parse config file {path}: {source}")]
     Parse {
+        /// Path to the config file.
         path: String,
+        /// Underlying TOML parse error.
         source: toml::de::Error,
     },
+    /// A config value failed semantic validation (e.g. an out-of-range TTL).
     #[error("invalid value in config file {path}: {message}")]
-    Validation { path: String, message: String },
+    Validation {
+        /// Path to the config file.
+        path: String,
+        /// Human-readable description of the constraint violation.
+        message: String,
+    },
 }
 
+/// TOML configuration file for ferrokinesis.
+///
+/// All fields are optional; omitted fields fall back to the defaults defined
+/// in [`crate::store::StoreOptions::default`].
+///
+/// ## Example `ferrokinesis.toml`
+///
+/// ```toml
+/// port = 4567
+/// account_id = "000000000000"
+/// region = "us-east-1"
+/// shard_limit = 50
+/// iterator_ttl_seconds = 300
+/// ```
 #[derive(Deserialize, Default)]
 pub struct FileConfig {
+    /// TCP port to listen on. Defaults to `4567`.
     pub port: Option<u16>,
+    /// Simulated AWS account ID (12 digits). Defaults to `"000000000000"`.
     pub account_id: Option<String>,
+    /// Simulated AWS region (e.g. `"us-east-1"`). Defaults to `"us-east-1"`.
     pub region: Option<String>,
+    /// Per-account shard limit. Defaults to `10`.
     pub shard_limit: Option<u32>,
+    /// Simulated delay for stream creation, in milliseconds. Defaults to `500`.
     pub create_stream_ms: Option<u64>,
+    /// Simulated delay for stream deletion, in milliseconds. Defaults to `500`.
     pub delete_stream_ms: Option<u64>,
+    /// Simulated delay for stream updates, in milliseconds. Defaults to `500`.
     pub update_stream_ms: Option<u64>,
+    /// Shard iterator TTL in seconds. Must be between `1` and `86400`. Defaults to `300`.
     pub iterator_ttl_seconds: Option<u64>,
+    /// Background retention-reaper check interval in seconds.
+    /// Set to `0` (the default) to disable the reaper entirely.
+    /// Must be between `0` and `86400`.
     pub retention_check_interval_secs: Option<u64>,
+    /// Maximum request body size in megabytes. Defaults to `5`.
     pub max_request_body_mb: Option<u64>,
+    /// Path to the TLS certificate file (PEM). Must be set together with `tls_key`.
     #[cfg(feature = "tls")]
     pub tls_cert: Option<PathBuf>,
+    /// Path to the TLS private key file (PEM). Must be set together with `tls_cert`.
     #[cfg(feature = "tls")]
     pub tls_key: Option<PathBuf>,
 }
 
+/// Parse and validate a TOML configuration file.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::Read`] if the file cannot be read from disk,
+/// [`ConfigError::Parse`] if the file is not valid TOML, or
+/// [`ConfigError::Validation`] if a value violates a semantic constraint
+/// (e.g. `iterator_ttl_seconds` outside `1..=86400`).
 pub fn load_config(path: &Path) -> Result<FileConfig, ConfigError> {
     let content = std::fs::read_to_string(path).map_err(|e| ConfigError::Read {
         path: path.display().to_string(),

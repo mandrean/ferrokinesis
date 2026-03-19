@@ -1,3 +1,14 @@
+//! Axum HTTP handler implementing the Kinesis wire protocol.
+//!
+//! [`handler`] is the Axum fallback handler that accepts all `POST /` requests.
+//! It parses the `X-Amz-Target` header to determine the operation, negotiates
+//! content type between JSON (`application/x-amz-json-1.1`) and CBOR
+//! (`application/x-amz-cbor-1.1`), runs the validation pipeline, and routes
+//! to [`crate::actions::dispatch`].
+//!
+//! [`kinesis_413_middleware`] intercepts bare 413 responses from Axum's body-limit
+//! layer and rewraps them as Kinesis-shaped `SerializationException` errors.
+
 use crate::actions::{self, Operation};
 use crate::constants;
 use crate::error::KinesisErrorResponse;
@@ -13,6 +24,22 @@ use base64::Engine;
 use serde::Serialize;
 use serde_json::{Value, json};
 
+/// Axum fallback handler implementing the Kinesis wire protocol.
+///
+/// Accepts all `POST /` requests and processes them as Kinesis API calls.
+/// Parses `X-Amz-Target` to determine the operation, negotiates content type
+/// (JSON vs CBOR), validates the request body, and dispatches to the appropriate
+/// action handler via [`crate::actions::dispatch`].
+///
+/// `SubscribeToShard` is handled separately via `execute_streaming` to support
+/// HTTP/2 event-stream responses.
+///
+/// # Errors
+///
+/// - HTTP 400 — client errors (invalid arguments, serialization exceptions, etc.)
+/// - HTTP 403 — missing or malformed auth headers
+/// - HTTP 404 — unknown operation or service
+/// - HTTP 500 — internal server errors
 pub async fn handler(
     method: Method,
     uri: Uri,
@@ -464,7 +491,7 @@ fn send_xml_error_code(mut headers: HeaderMap, error_type: &str, status_code: u1
         .into_response()
 }
 
-/// Middleware that intercepts bare 413 responses (from axum's `DefaultBodyLimit`)
+/// Middleware that intercepts bare 413 responses from Axum's `DefaultBodyLimit`
 /// and replaces them with Kinesis-shaped `SerializationException` error bodies.
 pub async fn kinesis_413_middleware(request: Request, next: Next) -> Response {
     let content_type = request
