@@ -12,25 +12,16 @@
         <maven.compiler.source>11</maven.compiler.source>
         <maven.compiler.target>11</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <!-- Must be compatible with amazon-kinesis-client 1.15.2 (uses AWS SDK v1 internally) -->
-        <aws.sdk.version>1.12.780</aws.sdk.version>
     </properties>
 
     <dependencies>
+        <!-- KCL 1.15.2 transitively provides aws-java-sdk-kinesis and aws-java-sdk-dynamodb
+             at a compatible version; do NOT pin them separately or version skew causes
+             NoSuchFieldError (e.g. ACCOUNT_ID_ENDPOINT_MODE). -->
         <dependency>
             <groupId>com.amazonaws</groupId>
             <artifactId>amazon-kinesis-client</artifactId>
             <version>1.15.2</version>
-        </dependency>
-        <dependency>
-            <groupId>com.amazonaws</groupId>
-            <artifactId>aws-java-sdk-kinesis</artifactId>
-            <version>${aws.sdk.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>com.amazonaws</groupId>
-            <artifactId>aws-java-sdk-dynamodb</artifactId>
-            <version>${aws.sdk.version}</version>
         </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>

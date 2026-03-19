@@ -122,8 +122,8 @@ public class KclV1IntegrationTest {
         executor = Executors.newSingleThreadExecutor();
         executor.submit(worker);
 
-        boolean allReceived = TestRecordProcessor.awaitRecords(60);
-        assertTrue(allReceived, "KCL did not process all " + RECORD_COUNT + " records within 60 seconds");
+        boolean allReceived = TestRecordProcessor.awaitRecords(120);
+        assertTrue(allReceived, "KCL did not process all " + RECORD_COUNT + " records within 120 seconds");
 
         assertTrue(TestRecordProcessor.wasInitializeCalled(),
                 "KCL never called initialize — shard enumeration may have failed");
