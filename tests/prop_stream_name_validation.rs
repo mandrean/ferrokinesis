@@ -1,3 +1,5 @@
+// Case count rationale: 100 cases — CreateStream calls are cheap but involve
+// server round-trips, so moderate count balances coverage and speed.
 mod common;
 use common::*;
 

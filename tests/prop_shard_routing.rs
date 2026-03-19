@@ -1,3 +1,5 @@
+// Case count rationale: 100 cases — each test creates streams and does PutRecord calls,
+// so moderate count balances coverage against server round-trip cost.
 mod common;
 use common::*;
 

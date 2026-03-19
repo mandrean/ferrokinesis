@@ -1,3 +1,5 @@
+// Case count rationale: 50 cases — each iteration does paired JSON + CBOR requests,
+// doubling the server round-trips compared to single-format tests.
 mod common;
 use common::*;
 

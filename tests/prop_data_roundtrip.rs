@@ -1,3 +1,5 @@
+// Case count rationale: 50 cases — each iteration does PutRecord + GetRecords with
+// shard iterator setup, making these the most expensive tests per case.
 mod common;
 use common::*;
 

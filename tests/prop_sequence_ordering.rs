@@ -1,3 +1,5 @@
+// Case count rationale: 50 cases — each iteration does multiple PutRecord/PutRecords
+// calls plus GetRecords, so lower count keeps total runtime reasonable.
 mod common;
 use common::*;
 

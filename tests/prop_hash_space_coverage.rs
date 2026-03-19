@@ -1,3 +1,8 @@
+// Case count rationale: 256 cases for pure hash/math tests — no server round-trip,
+// so they're cheap (~ms each). Higher counts give better coverage of the input space.
+//
+// If the property test suite grows beyond ~5s, consider gating behind a `proptest`
+// Cargo feature so CI can control when to run them.
 mod common;
 
 use ferrokinesis::sequence::partition_key_to_hash_key;

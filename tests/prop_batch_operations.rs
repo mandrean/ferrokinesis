@@ -1,3 +1,5 @@
+// Case count rationale: 50 cases — batch PutRecords with variable-size payloads
+// involve multiple server round-trips per case.
 mod common;
 use common::*;
 
