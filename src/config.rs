@@ -1,5 +1,7 @@
 use serde::Deserialize;
 use std::path::Path;
+#[cfg(feature = "tls")]
+use std::path::PathBuf;
 
 /// Errors that can occur when loading a configuration file.
 #[derive(Debug, thiserror::Error)]
@@ -30,6 +32,10 @@ pub struct FileConfig {
     pub iterator_ttl_seconds: Option<u64>,
     pub retention_check_interval_secs: Option<u64>,
     pub max_request_body_mb: Option<u64>,
+    #[cfg(feature = "tls")]
+    pub tls_cert: Option<PathBuf>,
+    #[cfg(feature = "tls")]
+    pub tls_key: Option<PathBuf>,
 }
 
 pub fn load_config(path: &Path) -> Result<FileConfig, ConfigError> {
@@ -56,6 +62,16 @@ pub fn load_config(path: &Path) -> Result<FileConfig, ConfigError> {
             path: path.display().to_string(),
             message: format!("retention_check_interval_secs must be between 0 and 86400, got {v}"),
         });
+    }
+    #[cfg(feature = "tls")]
+    match (&config.tls_cert, &config.tls_key) {
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(ConfigError::Validation {
+                path: path.display().to_string(),
+                message: "tls_cert and tls_key must both be set or both be omitted".into(),
+            });
+        }
+        _ => {}
     }
     Ok(config)
 }

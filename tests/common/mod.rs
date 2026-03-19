@@ -92,8 +92,17 @@ impl TestServer {
 
     /// Make a signed Kinesis API request (JSON content type)
     pub async fn request(&self, target: &str, data: &Value) -> reqwest::Response {
+        self.signed_request_to(self.url(), target, data).await
+    }
+
+    async fn signed_request_to(
+        &self,
+        url: String,
+        target: &str,
+        data: &Value,
+    ) -> reqwest::Response {
         self.client
-            .post(self.url())
+            .post(url)
             .header("Content-Type", AMZ_JSON)
             .header("X-Amz-Target", format!("{VERSION}.{target}"))
             .header(
@@ -269,6 +278,70 @@ impl TestServer {
             .await;
         assert_eq!(res.status(), 200);
         res.json().await.unwrap()
+    }
+}
+
+#[cfg(feature = "tls")]
+impl TestServer {
+    /// Create a test server with TLS using a self-signed certificate
+    pub async fn new_tls() -> Self {
+        let options = StoreOptions {
+            create_stream_ms: 0,
+            delete_stream_ms: 0,
+            update_stream_ms: 0,
+            shard_limit: 50,
+            ..Default::default()
+        };
+        let (app, store) = ferrokinesis::create_app(options);
+
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into(), "127.0.0.1".into()])
+            .expect("failed to generate self-signed cert");
+
+        let cert_pem = cert.cert.pem();
+        let key_pem = cert.signing_key.serialize_pem();
+
+        let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem(
+            cert_pem.into_bytes(),
+            key_pem.into_bytes(),
+        )
+        .await
+        .expect("failed to build RustlsConfig");
+
+        let handle = axum_server::Handle::new();
+        let handle_clone = handle.clone();
+
+        tokio::spawn(async move {
+            axum_server::bind_rustls("127.0.0.1:0".parse().unwrap(), tls_config)
+                .handle(handle_clone)
+                .serve(app.into_make_service())
+                .await
+                .unwrap();
+        });
+
+        let addr = tokio::time::timeout(tokio::time::Duration::from_secs(5), handle.listening())
+            .await
+            .expect("timed out waiting for TLS server to start — server may have panicked")
+            .unwrap();
+
+        let client = reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .unwrap();
+
+        TestServer {
+            addr,
+            client,
+            store,
+        }
+    }
+
+    pub fn tls_url(&self) -> String {
+        format!("https://{}", self.addr)
+    }
+
+    /// Make a signed Kinesis API request over TLS
+    pub async fn tls_request(&self, target: &str, data: &Value) -> reqwest::Response {
+        self.signed_request_to(self.tls_url(), target, data).await
     }
 }
 
