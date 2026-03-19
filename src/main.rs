@@ -3,7 +3,7 @@ use clap::{Args, Parser, Subcommand};
 use ferrokinesis::config::load_config;
 use ferrokinesis::store::StoreOptions;
 use std::io::{BufRead, BufReader, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
 use std::process;
 use std::process::ExitCode;
@@ -102,6 +102,10 @@ fn resolve<T>(cli: Option<T>, file: Option<T>, default: T) -> T {
 
 #[derive(Args, Debug)]
 struct HealthCheckArgs {
+    /// Host of the server to check (used for TCP connect and TLS SNI)
+    #[arg(long, default_value = "localhost")]
+    host: String,
+
     /// Port of the server to check
     #[arg(long, default_value_t = 4567)]
     port: u16,
@@ -193,12 +197,22 @@ fn run_generate_cert(args: &GenerateCertArgs) -> ExitCode {
 }
 
 fn run_health_check(args: &HealthCheckArgs) -> ExitCode {
-    let addr = format!("127.0.0.1:{}", args.port);
+    let addr = format!("{}:{}", args.host, args.port);
 
-    let stream = match TcpStream::connect_timeout(
-        &addr.parse().expect("invalid address"),
-        Duration::from_secs(3),
-    ) {
+    let socket_addr = match addr.to_socket_addrs().and_then(|mut a| {
+        a.next().ok_or(std::io::Error::new(
+            std::io::ErrorKind::AddrNotAvailable,
+            "no addresses found",
+        ))
+    }) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("health check failed: could not resolve {addr}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let stream = match TcpStream::connect_timeout(&socket_addr, Duration::from_secs(3)) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("health check failed: connect error: {e}");
@@ -213,7 +227,7 @@ fn run_health_check(args: &HealthCheckArgs) -> ExitCode {
 
     #[cfg(feature = "tls")]
     if args.tls {
-        return run_health_check_tls(stream, &args.path, &addr);
+        return run_health_check_tls(stream, &args.path, &addr, &args.host);
     }
 
     run_health_check_plain(stream, &args.path, &addr)
@@ -235,7 +249,7 @@ fn run_health_check_plain(stream: TcpStream, path: &str, addr: &str) -> ExitCode
 }
 
 #[cfg(feature = "tls")]
-fn run_health_check_tls(stream: TcpStream, path: &str, addr: &str) -> ExitCode {
+fn run_health_check_tls(stream: TcpStream, path: &str, addr: &str, host: &str) -> ExitCode {
     use std::sync::Arc;
 
     // Build a rustls config that accepts any certificate (for local/self-signed testing)
@@ -244,7 +258,7 @@ fn run_health_check_tls(stream: TcpStream, path: &str, addr: &str) -> ExitCode {
         .with_custom_certificate_verifier(Arc::new(InsecureCertVerifier))
         .with_no_client_auth();
 
-    let server_name = rustls::pki_types::ServerName::try_from("localhost")
+    let server_name = rustls::pki_types::ServerName::try_from(host)
         .expect("invalid server name")
         .to_owned();
     let conn = rustls::ClientConnection::new(Arc::new(config), server_name)
