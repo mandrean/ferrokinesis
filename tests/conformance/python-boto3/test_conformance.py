@@ -288,14 +288,18 @@ def test_stream_consumers(client):
     )
     consumer_arn = reg["Consumer"]["ConsumerARN"]
 
-    # 4. DescribeStreamConsumer — verify ConsumerName and ConsumerStatus
-    time.sleep(0.5)
-    consumer_desc = client.describe_stream_consumer(ConsumerARN=consumer_arn)
+    # 4. DescribeStreamConsumer — poll until ACTIVE
+    consumer_desc = None
+    for _ in range(30):
+        consumer_desc = client.describe_stream_consumer(ConsumerARN=consumer_arn)
+        if consumer_desc["ConsumerDescription"]["ConsumerStatus"] == "ACTIVE":
+            break
+        time.sleep(0.2)
+    assert consumer_desc["ConsumerDescription"]["ConsumerStatus"] == "ACTIVE"
     assert (
         consumer_desc["ConsumerDescription"]["ConsumerName"]
         == "python-test-consumer"
     )
-    assert consumer_desc["ConsumerDescription"]["ConsumerStatus"] == "ACTIVE"
 
     # 5. ListStreamConsumers — verify consumer in list
     consumers = client.list_stream_consumers(StreamARN=arn)

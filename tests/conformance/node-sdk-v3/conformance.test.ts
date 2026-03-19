@@ -469,14 +469,20 @@ describe("Stream consumers", () => {
   });
 
   it("DescribeStreamConsumer", async () => {
-    await new Promise((r) => setTimeout(r, 500));
-    const resp = await client.send(
-      new DescribeStreamConsumerCommand({
-        StreamARN: streamArn,
-        ConsumerName: "node-consumer-1",
-      })
-    );
-    expect(resp.ConsumerDescription?.ConsumerName).toBe("node-consumer-1");
+    // Poll until consumer is ACTIVE (up to 30 * 200ms = 6s)
+    let resp;
+    for (let i = 0; i < 30; i++) {
+      resp = await client.send(
+        new DescribeStreamConsumerCommand({
+          StreamARN: streamArn,
+          ConsumerName: "node-consumer-1",
+        })
+      );
+      if (resp.ConsumerDescription?.ConsumerStatus === "ACTIVE") break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    expect(resp!.ConsumerDescription?.ConsumerStatus).toBe("ACTIVE");
+    expect(resp!.ConsumerDescription?.ConsumerName).toBe("node-consumer-1");
   });
 
   it("ListStreamConsumers", async () => {

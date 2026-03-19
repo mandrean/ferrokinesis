@@ -588,8 +588,8 @@ func TestShardManagement(t *testing.T) {
 			t.Fatalf("ListShards: %v", err)
 		}
 		// After split (4 shards: 0-closed, 1-open, 2-open, 3-open) then merge of 2+3 => 5 total
-		if len(out.Shards) < 4 {
-			t.Errorf("Shards after merge = %d, want >= 4", len(out.Shards))
+		if len(out.Shards) < 5 {
+			t.Errorf("Shards after merge = %d, want >= 5", len(out.Shards))
 		}
 	})
 
