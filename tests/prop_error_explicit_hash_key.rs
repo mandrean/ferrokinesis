@@ -8,6 +8,26 @@ use num_traits::One;
 use proptest::prelude::*;
 use serde_json::json;
 
+/// Strategy generating ExplicitHashKey values in [2^128, 10^39-1].
+///
+/// These pass the regex validation `0|([1-9]\d{0,38})` but fail the handler's
+/// range check. Covers both the near-2^128 boundary and the near-ceiling region.
+fn out_of_range_ehk_strategy() -> impl Strategy<Value = String> {
+    prop_oneof![
+        // Near 2^128 boundary
+        (0u64..=10_000_000_000).prop_map(|offset| {
+            let base = BigUint::one() << 128;
+            let val: BigUint = base + BigUint::from(offset);
+            val.to_string()
+        }),
+        // Near 10^39 - 1 ceiling (max value passing regex)
+        (0u64..=10_000_000_000).prop_map(|offset| {
+            let ceiling: BigUint = BigUint::from(10u64).pow(39) - BigUint::one();
+            (ceiling - BigUint::from(offset)).to_string()
+        }),
+    ]
+}
+
 /// P24: ExplicitHashKey >= 2^128 returns InvalidArgumentException (PutRecord).
 ///
 /// Values in [2^128, 10^39-1] pass the regex validation `0|([1-9]\d{0,38})` but
@@ -22,23 +42,8 @@ fn prop_explicit_hash_key_out_of_range_put_record() {
 
     let mut runner = prop_runner(50);
 
-    // Generate values in [2^128, 10^39-1] from two regions
-    let strategy = prop_oneof![
-        // Near 2^128 boundary
-        (0u64..=10_000_000_000).prop_map(|offset| {
-            let base = BigUint::one() << 128;
-            let val: BigUint = base + BigUint::from(offset);
-            val.to_string()
-        }),
-        // Near 10^39 - 1 ceiling (max value passing regex)
-        (0u64..=10_000_000_000).prop_map(|offset| {
-            let ceiling: BigUint = BigUint::from(10u64).pow(39) - BigUint::one();
-            (ceiling - BigUint::from(offset)).to_string()
-        }),
-    ];
-
     runner
-        .run(&strategy, |ehk| {
+        .run(&out_of_range_ehk_strategy(), |ehk| {
             let (status, body) = rt.block_on(async {
                 let res = server
                     .request(
@@ -84,23 +89,8 @@ fn prop_explicit_hash_key_out_of_range_put_records() {
 
     let mut runner = prop_runner(50);
 
-    // Generate values in [2^128, 10^39-1] from two regions
-    let strategy = prop_oneof![
-        // Near 2^128 boundary
-        (0u64..=10_000_000_000).prop_map(|offset| {
-            let base = BigUint::one() << 128;
-            let val: BigUint = base + BigUint::from(offset);
-            val.to_string()
-        }),
-        // Near 10^39 - 1 ceiling (max value passing regex)
-        (0u64..=10_000_000_000).prop_map(|offset| {
-            let ceiling: BigUint = BigUint::from(10u64).pow(39) - BigUint::one();
-            (ceiling - BigUint::from(offset)).to_string()
-        }),
-    ];
-
     runner
-        .run(&strategy, |ehk| {
+        .run(&out_of_range_ehk_strategy(), |ehk| {
             let (status, body) = rt.block_on(async {
                 let res = server
                     .request(
