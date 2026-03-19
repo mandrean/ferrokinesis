@@ -10,7 +10,7 @@
 #
 # Usage:
 #   ./quickstart-tls.sh
-#   ENDPOINT_URL=https://localhost:5000 ./quickstart-tls.sh
+#   ENDPOINT_URL=https://localhost:4567 ./quickstart-tls.sh
 set -euo pipefail
 
 ENDPOINT_URL="${ENDPOINT_URL:-https://localhost:4567}"

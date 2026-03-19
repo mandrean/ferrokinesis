@@ -6,7 +6,7 @@
 //
 // Usage:
 //   mvn compile exec:java -Dexec.mainClass=example.Quickstart
-//   KINESIS_ENDPOINT=http://localhost:5000 mvn compile exec:java -Dexec.mainClass=example.Quickstart
+//   KINESIS_ENDPOINT=http://localhost:4567 mvn compile exec:java -Dexec.mainClass=example.Quickstart
 
 package example;
 
@@ -26,7 +26,7 @@ public class Quickstart {
         String endpoint = System.getenv().getOrDefault("KINESIS_ENDPOINT", "http://localhost:4567");
         String stream = "java-example";
 
-        // Disable CBOR
+        // Disable CBOR — ferrokinesis speaks JSON, not CBOR
         System.setProperty("aws.cborEnabled", "false");
 
         KinesisClient client = KinesisClient.builder()

@@ -9,7 +9,7 @@
 //
 // Usage:
 //   node quickstart-tls.mjs
-//   KINESIS_ENDPOINT=https://localhost:5000 node quickstart-tls.mjs
+//   KINESIS_ENDPOINT=https://localhost:4567 node quickstart-tls.mjs
 
 import {
   KinesisClient,

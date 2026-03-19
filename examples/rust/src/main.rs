@@ -5,7 +5,7 @@
 //
 // Usage:
 //   cargo run
-//   KINESIS_ENDPOINT=http://localhost:5000 cargo run
+//   KINESIS_ENDPOINT=http://localhost:4567 cargo run
 
 use aws_sdk_kinesis::primitives::Blob;
 use aws_sdk_kinesis::types::ShardIteratorType;
@@ -33,7 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     // Wait for stream to become ACTIVE
-    loop {
+    for _ in 0..30 {
         let desc = client
             .describe_stream()
             .stream_name(stream)

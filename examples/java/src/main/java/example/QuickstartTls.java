@@ -9,7 +9,7 @@
 //
 // Usage:
 //   mvn compile exec:java -Dexec.mainClass=example.QuickstartTls
-//   KINESIS_ENDPOINT=https://localhost:5000 mvn compile exec:java -Dexec.mainClass=example.QuickstartTls
+//   KINESIS_ENDPOINT=https://localhost:4567 mvn compile exec:java -Dexec.mainClass=example.QuickstartTls
 
 package example;
 
@@ -31,7 +31,7 @@ public class QuickstartTls {
         String endpoint = System.getenv().getOrDefault("KINESIS_ENDPOINT", "https://localhost:4567");
         String stream = "java-example-tls";
 
-        // Disable CBOR
+        // Disable CBOR — ferrokinesis speaks JSON, not CBOR
         System.setProperty("aws.cborEnabled", "false");
 
         // Trust all certificates (for self-signed certs)

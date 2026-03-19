@@ -7,7 +7,7 @@ Prerequisites:
 
 Usage:
     python quickstart.py
-    KINESIS_ENDPOINT=http://localhost:5000 python quickstart.py
+    KINESIS_ENDPOINT=http://localhost:4567 python quickstart.py
 """
 import os
 import time

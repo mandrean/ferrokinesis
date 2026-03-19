@@ -6,7 +6,7 @@
 //
 // Usage:
 //   go run quickstart.go
-//   KINESIS_ENDPOINT=http://localhost:5000 go run quickstart.go
+//   KINESIS_ENDPOINT=http://localhost:4567 go run quickstart.go
 
 package main
 

@@ -10,7 +10,7 @@ Prerequisites:
 
 Usage:
     python quickstart_tls.py
-    KINESIS_ENDPOINT=https://localhost:5000 python quickstart_tls.py
+    KINESIS_ENDPOINT=https://localhost:4567 python quickstart_tls.py
 """
 import os
 import time

@@ -7,7 +7,7 @@
 #
 # Usage:
 #   ./quickstart.sh
-#   ENDPOINT_URL=http://localhost:5000 ./quickstart.sh
+#   ENDPOINT_URL=http://localhost:4567 ./quickstart.sh
 set -euo pipefail
 
 ENDPOINT_URL="${ENDPOINT_URL:-http://localhost:4567}"

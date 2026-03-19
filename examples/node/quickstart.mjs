@@ -6,7 +6,7 @@
 //
 // Usage:
 //   node quickstart.mjs
-//   KINESIS_ENDPOINT=http://localhost:5000 node quickstart.mjs
+//   KINESIS_ENDPOINT=http://localhost:4567 node quickstart.mjs
 
 import {
   KinesisClient,
@@ -17,7 +17,6 @@ import {
   GetRecordsCommand,
   DeleteStreamCommand,
 } from "@aws-sdk/client-kinesis";
-import { NodeHttpHandler } from "@smithy/node-http-handler";
 
 const ENDPOINT = process.env.KINESIS_ENDPOINT || "http://localhost:4567";
 const STREAM = "node-example";
@@ -26,7 +25,6 @@ const client = new KinesisClient({
   endpoint: ENDPOINT,
   region: "us-east-1",
   credentials: { accessKeyId: "test", secretAccessKey: "test" },
-  requestHandler: new NodeHttpHandler(),
 });
 
 async function waitForActive(streamName) {

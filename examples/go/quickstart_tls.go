@@ -9,7 +9,7 @@
 //
 // Usage:
 //   go run quickstart_tls.go
-//   KINESIS_ENDPOINT=https://localhost:5000 go run quickstart_tls.go
+//   KINESIS_ENDPOINT=https://localhost:4567 go run quickstart_tls.go
 
 package main
 
