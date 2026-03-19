@@ -66,92 +66,18 @@ aws kinesis create-stream \
     --endpoint-url http://localhost:4567 \
     --region us-east-1
 
-# Publish a record to the stream
+# Publish a record
 aws kinesis put-record \
     --stream-name example-stream \
     --partition-key pk1 \
-    --data $(echo "hello world" | base64) \
+    --data $(echo -n "hello world" | base64) \
     --endpoint-url http://localhost:4567 \
     --region us-east-1
-
-# Read all records across all shards:
-aws kinesis list-shards \
-    --stream-name example-stream \
-    --endpoint-url http://localhost:4567 \
-    --region us-east-1 \
-  | jq -r '.Shards[].ShardId' \
-  | while read shard; do
-      iter=$(aws kinesis get-shard-iterator \
-        --stream-name example-stream --shard-id "$shard" \
-        --shard-iterator-type TRIM_HORIZON \
-        --endpoint-url http://localhost:4567 \
-        --region us-east-1 \
-        | jq -r '.ShardIterator')
-      aws kinesis get-records \
-        --shard-iterator "$iter" \
-        --endpoint-url http://localhost:4567 \
-        --region us-east-1
-    done \
-  | jq -s '[.[].Records[] | {SequenceNumber, Data, DataDecoded: (.Data | @base64d), PartitionKey}]'
 ```
 
-Outputs:
-```json
-[
-  {
-    "SequenceNumber": "49672753465885973963712545055001942108658846086845169682",
-    "Data": "aGVsbG8gd29ybGQK",
-    "DataDecoded": "hello world\n",
-    "PartitionKey": "pk1"
-  }
-]
-```
+See the full example with get-records and cleanup: [`examples/aws-cli/quickstart.sh`](examples/aws-cli/quickstart.sh)
 
-Example using AWS SDK for Rust:
-
-```rust
-let config = aws_config::defaults(BehaviorVersion::latest())
-    .endpoint_url("http://localhost:4567")
-    .load()
-    .await;
-let client = aws_sdk_kinesis::Client::new(&config);
-
-// Create a stream with 2 shards
-client.create_stream()
-    .stream_name("example-stream")
-    .shard_count(2)
-    .send().await?;
-
-// Publish a record
-client.put_record()
-    .stream_name("example-stream")
-    .partition_key("pk1")
-    .data(Blob::new("hello world\n"))
-    .send().await?;
-
-// Read all records across all shards
-let shards = client.list_shards()
-    .stream_name("example-stream")
-    .send().await?;
-
-for shard in shards.shards() {
-    let iter = client.get_shard_iterator()
-        .stream_name("example-stream")
-        .shard_id(shard.shard_id())
-        .shard_iterator_type(ShardIteratorType::TrimHorizon)
-        .send().await?;
-
-    let resp = client.get_records()
-        .shard_iterator(iter.shard_iterator().unwrap())
-        .send().await?;
-
-    for record in resp.records() {
-        let data = std::str::from_utf8(record.data().as_ref()).unwrap();
-        println!("{}: {}", record.partition_key(), data);
-    }
-}
-// => pk1: hello world
-```
+More examples using [Rust](examples/rust/src/main.rs), [Python](examples/python/quickstart.py), [Node.js](examples/node/quickstart.mjs), [Go](examples/go/quickstart.go), and [Java](examples/java/src/main/java/example/Quickstart.java) are available in the [`examples/`](examples/) directory.
 
 ## Usage
 
@@ -257,77 +183,17 @@ ferrokinesis --tls-cert cert.pem --tls-key key.pem
 # Listening at https://0.0.0.0:4567
 ```
 
-### Connecting with AWS CLI
+### Connecting with SDK clients
 
-```sh
-aws kinesis list-streams \
-    --endpoint-url https://localhost:4567 \
-    --no-verify-ssl \
-    --region us-east-1
-```
+Runnable TLS examples for each SDK are in the [`examples/`](examples/) directory:
 
-### Connecting with AWS SDK for Python (boto3)
-
-```python
-import boto3
-
-client = boto3.client('kinesis',
-    endpoint_url='https://localhost:4567',
-    verify=False,            # or verify='/path/to/cert.pem'
-    region_name='us-east-1',
-)
-```
-
-### Connecting with AWS SDK for Node.js (v3)
-
-```js
-import { KinesisClient } from "@aws-sdk/client-kinesis";
-import { NodeHttpHandler } from "@smithy/node-http-handler";
-import https from "https";
-
-const client = new KinesisClient({
-  endpoint: "https://localhost:4567",
-  region: "us-east-1",
-  requestHandler: new NodeHttpHandler({
-    httpsAgent: new https.Agent({ rejectUnauthorized: false }),
-  }),
-});
-```
-
-### Connecting with AWS SDK for Go (v2)
-
-```go
-import (
-    "crypto/tls"
-    "net/http"
-    "github.com/aws/aws-sdk-go-v2/config"
-    "github.com/aws/aws-sdk-go-v2/service/kinesis"
-)
-
-cfg, _ := config.LoadDefaultConfig(ctx,
-    config.WithHTTPClient(&http.Client{
-        Transport: &http.Transport{
-            TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-        },
-    }),
-)
-client := kinesis.NewFromConfig(cfg, func(o *kinesis.Options) {
-    o.BaseEndpoint = aws.String("https://localhost:4567")
-})
-```
-
-### Connecting with AWS SDK for Java (v2)
-
-```java
-import software.amazon.awssdk.services.kinesis.KinesisClient;
-import java.net.URI;
-
-KinesisClient client = KinesisClient.builder()
-    .endpointOverride(URI.create("https://localhost:4567"))
-    .region(Region.US_EAST_1)
-    // For self-signed certs, configure a custom TrustManager
-    .build();
-```
+| SDK | Example |
+|-----|---------|
+| AWS CLI | [`examples/aws-cli/quickstart-tls.sh`](examples/aws-cli/quickstart-tls.sh) |
+| Python (boto3) | [`examples/python/quickstart_tls.py`](examples/python/quickstart_tls.py) |
+| Node.js (v3) | [`examples/node/quickstart-tls.mjs`](examples/node/quickstart-tls.mjs) |
+| Go (v2) | [`examples/go/quickstart_tls.go`](examples/go/quickstart_tls.go) |
+| Java (v2) | [`examples/java/src/main/java/example/QuickstartTls.java`](examples/java/src/main/java/example/QuickstartTls.java) |
 
 ## Building
 
