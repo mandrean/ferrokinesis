@@ -4,7 +4,7 @@ use common::*;
 use ferrokinesis::store::{Store, StoreOptions};
 use serde_json::{Value, json};
 
-const ACCOUNT: &str = "0000-0000-0000";
+const ACCOUNT: &str = "000000000000";
 const REGION: &str = "us-east-1";
 
 fn stream_arn(name: &str) -> String {
@@ -283,7 +283,7 @@ async fn update_max_record_size_unknown_arn() {
         .request(
             "UpdateMaxRecordSize",
             &json!({
-                "StreamARN": "arn:aws:kinesis:us-east-1:0000-0000-0000:stream/nonexistent",
+                "StreamARN": "arn:aws:kinesis:us-east-1:000000000000:stream/nonexistent",
                 "MaxRecordSizeInKiB": 1024,
             }),
         )
@@ -481,7 +481,7 @@ async fn update_warm_throughput_arn_without_slash() {
         .await;
     assert_eq!(res.status(), 400);
     let body: Value = res.json().await.unwrap();
-    assert_eq!(body["__type"], "ResourceNotFoundException");
+    assert_eq!(body["__type"], "ValidationException");
 }
 
 #[tokio::test]
@@ -652,5 +652,5 @@ async fn update_max_record_size_arn_without_slash() {
         .await;
     assert_eq!(res.status(), 400);
     let body: Value = res.json().await.unwrap();
-    assert_eq!(body["__type"], "ResourceNotFoundException");
+    assert_eq!(body["__type"], "ValidationException");
 }

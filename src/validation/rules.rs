@@ -321,9 +321,30 @@ pub fn decrease_stream_retention_period() -> Vec<(&'static str, FieldDef)> {
     ]
 }
 
-// TODO: add ARN format regex (e.g. `arn:aws:kinesis:.+:\d{12}:stream/.+`)
 fn stream_arn_field() -> FieldDef {
-    FieldDef::new(FieldType::String).len_gte(1).len_lte(2048)
+    // Pattern from AWS Kinesis API Reference
+    FieldDef::new(FieldType::String)
+        .regex("arn:aws.*:kinesis:.*:\\d{12}:stream/\\S+")
+        .len_gte(1)
+        .len_lte(2048)
+}
+
+fn resource_arn_field() -> FieldDef {
+    // Pattern from AWS Kinesis API Reference — `.*stream/` is intentionally permissive
+    // to accept both stream ARNs and consumer ARNs (which contain a longer path after `stream/`)
+    FieldDef::new(FieldType::String)
+        .regex("arn:aws.*:kinesis:.*:\\d{12}:.*stream/\\S+")
+        .len_gte(1)
+        .len_lte(2048)
+}
+
+fn consumer_arn_field() -> FieldDef {
+    // Pattern from AWS Kinesis API Reference — the `(arn)` capture group is verbatim from the
+    // spec; it's a no-op for validation since we only call `is_match()`
+    FieldDef::new(FieldType::String)
+        .regex("(arn):aws.*:kinesis:.*:\\d{12}:.*stream/[a-zA-Z0-9_.-]+/consumer/[a-zA-Z0-9_.-]+:[0-9]+")
+        .len_gte(1)
+        .len_lte(2048)
 }
 
 fn consumer_name_field() -> FieldDef {
@@ -402,10 +423,7 @@ pub fn register_stream_consumer() -> Vec<(&'static str, FieldDef)> {
 
 pub fn deregister_stream_consumer() -> Vec<(&'static str, FieldDef)> {
     vec![
-        (
-            "ConsumerARN",
-            FieldDef::new(FieldType::String).len_gte(1).len_lte(2048),
-        ),
+        ("ConsumerARN", consumer_arn_field()),
         ("ConsumerName", consumer_name_field()),
         ("StreamARN", stream_arn_field()),
     ]
@@ -474,21 +492,21 @@ pub fn update_stream_mode() -> Vec<(&'static str, FieldDef)> {
 pub fn put_resource_policy() -> Vec<(&'static str, FieldDef)> {
     vec![
         ("Policy", FieldDef::new(FieldType::String).not_null()),
-        ("ResourceARN", stream_arn_field().not_null()),
+        ("ResourceARN", resource_arn_field().not_null()),
     ]
 }
 
 pub fn get_resource_policy() -> Vec<(&'static str, FieldDef)> {
-    vec![("ResourceARN", stream_arn_field().not_null())]
+    vec![("ResourceARN", resource_arn_field().not_null())]
 }
 
 pub fn delete_resource_policy() -> Vec<(&'static str, FieldDef)> {
-    vec![("ResourceARN", stream_arn_field().not_null())]
+    vec![("ResourceARN", resource_arn_field().not_null())]
 }
 
 pub fn tag_resource() -> Vec<(&'static str, FieldDef)> {
     vec![
-        ("ResourceARN", stream_arn_field().not_null()),
+        ("ResourceARN", resource_arn_field().not_null()),
         (
             "Tags",
             FieldDef::new(FieldType::Map {
@@ -505,7 +523,7 @@ pub fn tag_resource() -> Vec<(&'static str, FieldDef)> {
 
 pub fn untag_resource() -> Vec<(&'static str, FieldDef)> {
     vec![
-        ("ResourceARN", stream_arn_field().not_null()),
+        ("ResourceARN", resource_arn_field().not_null()),
         (
             "TagKeys",
             FieldDef::new(FieldType::List {
@@ -520,18 +538,12 @@ pub fn untag_resource() -> Vec<(&'static str, FieldDef)> {
 }
 
 pub fn list_tags_for_resource() -> Vec<(&'static str, FieldDef)> {
-    vec![("ResourceARN", stream_arn_field().not_null())]
+    vec![("ResourceARN", resource_arn_field().not_null())]
 }
 
 pub fn subscribe_to_shard() -> Vec<(&'static str, FieldDef)> {
     vec![
-        (
-            "ConsumerARN",
-            FieldDef::new(FieldType::String)
-                .not_null()
-                .len_gte(1)
-                .len_lte(2048),
-        ),
+        ("ConsumerARN", consumer_arn_field().not_null()),
         (
             "ShardId",
             FieldDef::new(FieldType::String)

@@ -2,6 +2,11 @@ pub mod rules;
 
 use crate::error::KinesisErrorResponse;
 use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::{LazyLock, RwLock};
+
+static REGEX_CACHE: LazyLock<RwLock<HashMap<String, regex::Regex>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
 
 pub fn to_lower_first(s: &str) -> String {
     let mut chars = s.chars();
@@ -448,10 +453,29 @@ pub fn check_validations(
         if let Some(ref pattern) = field_def.regex
             && let Some(s) = data.as_str()
         {
-            let full_pattern = format!("^{pattern}$");
-            let re = regex::Regex::new(&full_pattern).unwrap();
+            let matched = {
+                let cache = REGEX_CACHE.read().unwrap_or_else(|e| e.into_inner());
+                if let Some(re) = cache.get(pattern.as_str()) {
+                    re.is_match(s)
+                } else {
+                    // Benign race: another thread may have inserted this entry
+                    // between dropping the read lock and acquiring the write lock.
+                    // entry() deduplicates, so at worst we compile the regex twice.
+                    drop(cache);
+                    let mut cache = REGEX_CACHE.write().unwrap_or_else(|e| e.into_inner());
+                    cache
+                        .entry(pattern.clone())
+                        .or_insert_with(|| {
+                            let anchored = format!("^{pattern}$");
+                            regex::Regex::new(&anchored).unwrap_or_else(|e| {
+                                panic!("invalid regex pattern '{pattern}': {e}")
+                            })
+                        })
+                        .is_match(s)
+                }
+            };
             validate(
-                re.is_match(s),
+                matched,
                 &format!("Member must satisfy regular expression pattern: {pattern}"),
                 data,
                 &field_def.field_type,

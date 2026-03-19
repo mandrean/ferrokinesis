@@ -259,7 +259,7 @@ async fn structure_field_string_is_type_error() {
         .request(
             "UpdateStreamMode",
             &json!({
-                "StreamARN": "arn:aws:kinesis:us-east-1:0000-0000-0000:stream/te-struct-str",
+                "StreamARN": "arn:aws:kinesis:us-east-1:000000000000:stream/te-struct-str",
                 "StreamModeDetails": "not-a-struct",
             }),
         )
@@ -275,7 +275,7 @@ async fn structure_field_number_is_type_error() {
         .request(
             "UpdateStreamMode",
             &json!({
-                "StreamARN": "arn:aws:kinesis:us-east-1:0000-0000-0000:stream/te-struct-num",
+                "StreamARN": "arn:aws:kinesis:us-east-1:000000000000:stream/te-struct-num",
                 "StreamModeDetails": 42,
             }),
         )
@@ -291,7 +291,7 @@ async fn structure_field_array_is_type_error() {
         .request(
             "UpdateStreamMode",
             &json!({
-                "StreamARN": "arn:aws:kinesis:us-east-1:0000-0000-0000:stream/te-struct-arr",
+                "StreamARN": "arn:aws:kinesis:us-east-1:000000000000:stream/te-struct-arr",
                 "StreamModeDetails": ["ON_DEMAND"],
             }),
         )

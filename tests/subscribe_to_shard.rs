@@ -5,7 +5,7 @@ use ferrokinesis::store::{Store, StoreOptions};
 use ferrokinesis::types::{Consumer, ConsumerStatus};
 use serde_json::{Value, json};
 
-const ACCOUNT: &str = "0000-0000-0000";
+const ACCOUNT: &str = "000000000000";
 const REGION: &str = "us-east-1";
 
 fn stream_arn(name: &str) -> String {
@@ -474,7 +474,7 @@ async fn subscribe_unknown_position_type_direct() {
     .unwrap();
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
-    let arn = format!("arn:aws:kinesis:us-east-1:0000-0000-0000:stream/{stream_name}");
+    let arn = format!("arn:aws:kinesis:us-east-1:000000000000:stream/{stream_name}");
     let consumer_arn = format!("{arn}/consumer/c:1700000000");
     store
         .put_consumer(
