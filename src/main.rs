@@ -197,12 +197,29 @@ fn run_generate_cert(args: &GenerateCertArgs) -> ExitCode {
 }
 
 fn run_health_check(args: &HealthCheckArgs) -> ExitCode {
-    let addr = format!("{}:{}", args.host, args.port);
+    use std::net::ToSocketAddrs;
 
-    let stream = match TcpStream::connect_timeout(
-        &addr.parse().expect("invalid address"),
-        Duration::from_secs(3),
-    ) {
+    let sock_addr = match (args.host.as_str(), args.port).to_socket_addrs() {
+        Ok(mut addrs) => match addrs.next() {
+            Some(a) => a,
+            None => {
+                eprintln!(
+                    "health check failed: could not resolve host {:?}",
+                    args.host
+                );
+                return ExitCode::FAILURE;
+            }
+        },
+        Err(e) => {
+            eprintln!(
+                "health check failed: could not resolve host {:?}: {e}",
+                args.host
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let stream = match TcpStream::connect_timeout(&sock_addr, Duration::from_secs(3)) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("health check failed: connect error: {e}");
@@ -215,16 +232,27 @@ fn run_health_check(args: &HealthCheckArgs) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    let host_header = format_host_header(&args.host, args.port);
+
     #[cfg(feature = "tls")]
     if args.tls {
-        return run_health_check_tls(stream, &args.path, &addr);
+        return run_health_check_tls(stream, &args.path, &host_header, &args.host);
     }
 
-    run_health_check_plain(stream, &args.path, &addr)
+    run_health_check_plain(stream, &args.path, &host_header)
 }
 
-fn run_health_check_plain(stream: TcpStream, path: &str, addr: &str) -> ExitCode {
-    let request = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+fn format_host_header(host: &str, port: u16) -> String {
+    if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
+fn run_health_check_plain(stream: TcpStream, path: &str, host_header: &str) -> ExitCode {
+    let request =
+        format!("GET {path} HTTP/1.1\r\nHost: {host_header}\r\nConnection: close\r\n\r\n");
 
     let mut writer = stream.try_clone().expect("failed to clone TcpStream");
     if let Err(e) = writer
@@ -239,7 +267,7 @@ fn run_health_check_plain(stream: TcpStream, path: &str, addr: &str) -> ExitCode
 }
 
 #[cfg(feature = "tls")]
-fn run_health_check_tls(stream: TcpStream, path: &str, addr: &str) -> ExitCode {
+fn run_health_check_tls(stream: TcpStream, path: &str, host_header: &str, host: &str) -> ExitCode {
     use std::sync::Arc;
 
     // Build a rustls config that accepts any certificate (for local/self-signed testing)
@@ -248,14 +276,19 @@ fn run_health_check_tls(stream: TcpStream, path: &str, addr: &str) -> ExitCode {
         .with_custom_certificate_verifier(Arc::new(InsecureCertVerifier))
         .with_no_client_auth();
 
-    let server_name = rustls::pki_types::ServerName::try_from("localhost")
-        .expect("invalid server name")
-        .to_owned();
+    let server_name = match rustls::pki_types::ServerName::try_from(host.to_owned()) {
+        Ok(name) => name,
+        Err(e) => {
+            eprintln!("health check failed: invalid server name {host:?}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     let conn = rustls::ClientConnection::new(Arc::new(config), server_name)
         .expect("failed to create TLS connection");
     let mut tls_stream = rustls::StreamOwned::new(conn, stream);
 
-    let request = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+    let request =
+        format!("GET {path} HTTP/1.1\r\nHost: {host_header}\r\nConnection: close\r\n\r\n");
     if let Err(e) = tls_stream
         .write_all(request.as_bytes())
         .and_then(|()| tls_stream.flush())
