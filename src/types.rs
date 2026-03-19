@@ -221,7 +221,11 @@ pub struct SequenceNumberRange {
 /// A record as stored internally in the emulator.
 ///
 /// Does not include the sequence number (the key is stored separately in the
-/// record store). Clients receive [`OutputRecord`] which includes the sequence number.
+/// record store). Clients receive [`ResponseRecord`] which includes the sequence number.
+///
+/// INVARIANT: Field order and types must exactly match [`StoredRecordRef`].
+/// `postcard` serializes by position, not name — a mismatch silently corrupts data.
+/// See `postcard_roundtrip_stored_record_ref_to_stored_record` test in `tests/unit.rs`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct StoredRecord {
@@ -233,16 +237,35 @@ pub struct StoredRecord {
     pub approximate_arrival_timestamp: f64,
 }
 
-/// A record as returned to clients by `GetRecords` / `SubscribeToShard`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-pub struct OutputRecord {
+/// Borrowing variant of [`StoredRecord`] for zero-copy writes.
+///
+/// INVARIANT: Field order and types must exactly match [`StoredRecord`].
+/// `postcard` serializes by position, not name — a mismatch silently corrupts data.
+/// See `postcard_roundtrip_stored_record_ref_to_stored_record` test in `tests/unit.rs`.
+#[derive(Serialize)]
+pub struct StoredRecordRef<'a> {
     /// Partition key used to assign the record to a shard.
-    pub partition_key: String,
+    pub partition_key: &'a str,
     /// Base64-encoded record payload.
-    pub data: String,
+    pub data: &'a str,
+    /// Unix timestamp (seconds) when the record arrived at the stream.
+    pub approximate_arrival_timestamp: f64,
+}
+
+/// A record as returned to clients by [`GetRecords`](crate::actions::get_records)
+/// and [`SubscribeToShard`](crate::actions::subscribe_to_shard).
+///
+/// Borrows from the underlying [`StoredRecord`] to avoid intermediate
+/// `serde_json::Value` allocations.
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct ResponseRecord<'a> {
+    /// Partition key used to assign the record to a shard.
+    pub partition_key: &'a str,
+    /// Base64-encoded record payload.
+    pub data: &'a str,
     /// Unix timestamp (seconds) when the record arrived at the stream.
     pub approximate_arrival_timestamp: f64,
     /// The sequence number of this record within its shard.
-    pub sequence_number: String,
+    pub sequence_number: &'a str,
 }

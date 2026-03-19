@@ -183,17 +183,12 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                     ));
                 }
 
-                let record_store = store.get_record_store(stream_name).await;
                 let range_start = format!("{}/", sequence::shard_ix_to_hex(shard_ix));
                 let range_end = sequence::shard_ix_to_hex(shard_ix + 1);
-
-                let mut found_seq = None;
-                for (key, record) in record_store.range(range_start..range_end) {
-                    if record.approximate_arrival_timestamp >= ts {
-                        found_seq = key.split('/').nth(1).map(|s| s.to_string());
-                        break;
-                    }
-                }
+                let found_seq = store
+                    .find_first_record_at_timestamp(stream_name, &range_start, &range_end, ts)
+                    .await
+                    .and_then(|(key, _)| key.split('/').nth(1).map(|s| s.to_string()));
 
                 let seq = found_seq.unwrap_or_else(|| shard_seq.clone());
                 let result = shard_iterator::create_shard_iterator(stream_name, &shard_id, &seq);

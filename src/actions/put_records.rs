@@ -2,7 +2,7 @@ use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::sequence;
 use crate::store::Store;
-use crate::types::{StoredRecord, StreamStatus};
+use crate::types::{StoredRecordRef, StreamStatus};
 use crate::util::current_time_ms;
 use num_bigint::BigUint;
 use num_traits::{One, Zero};
@@ -126,7 +126,8 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                 seq_pieces.push(piece);
             }
 
-            let mut batch_ops: Vec<Option<(String, StoredRecord)>> = vec![None; records.len()];
+            let mut batch_ops: Vec<Option<(String, StoredRecordRef<'_>)>> =
+                (0..records.len()).map(|_| None).collect();
             let mut return_records: Vec<Value> = vec![json!(null); records.len()];
 
             for shard_ix in 0..stream.shards.len() as i64 {
@@ -179,9 +180,9 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
 
                     batch_ops[i] = Some((
                         stream_key,
-                        StoredRecord {
-                            partition_key: partition_key.to_string(),
-                            data: record_data.to_string(),
+                        StoredRecordRef {
+                            partition_key,
+                            data: record_data,
                             approximate_arrival_timestamp: now as f64 / 1000.0,
                         },
                     ));
@@ -193,12 +194,13 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                 }
             }
 
-            let batch: Vec<(String, StoredRecord)> = batch_ops.into_iter().flatten().collect();
+            let batch: Vec<(String, StoredRecordRef<'_>)> =
+                batch_ops.into_iter().flatten().collect();
             Ok((return_records, batch))
         })
         .await?;
 
-    store.put_records_batch(&stream_name, batch).await;
+    store.put_records_batch(&stream_name, &batch).await;
 
     Ok(Some(json!({
         "FailedRecordCount": 0,

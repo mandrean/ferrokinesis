@@ -3,6 +3,7 @@ use crate::error::KinesisErrorResponse;
 use crate::sequence;
 use crate::shard_iterator;
 use crate::store::Store;
+use crate::types::ResponseRecord;
 use crate::util::current_time_ms;
 use serde_json::{Value, json};
 
@@ -80,40 +81,38 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         ));
     }
 
-    let record_store = store.get_record_store(&stream_name).await;
     let cutoff_time = now - (stream.retention_period_hours as u64 * 60 * 60 * 1000);
+    let cutoff_timestamp = cutoff_time as f64 / 1000.0;
 
     // Record keys are ordered as "{shard_hex}/{seq_num}". Scanning the half-open
     // range [hex(shard_ix), hex(shard_ix+1)) captures exactly the records for this
     // shard in sequence order without a full-table scan or per-record shard check.
     let range_start = format!("{}/{}", sequence::shard_ix_to_hex(shard_ix), seq_no);
     let range_end = sequence::shard_ix_to_hex(shard_ix + 1);
+    let range_records = store
+        .get_records_range_limited(&stream_name, &range_start, &range_end, limit)
+        .await;
 
-    let mut items: Vec<Value> = Vec::new();
-    let mut last_seq_obj = None;
+    let mut items: Vec<ResponseRecord<'_>> = Vec::with_capacity(range_records.len());
+    let mut last_seq_num: Option<&str> = None;
     let mut keys_to_delete = Vec::new();
 
-    for (key, record) in record_store.range(range_start..range_end).take(limit) {
+    for (key, record) in &range_records {
         let seq_num = key.split('/').nth(1).unwrap_or("");
-        let record_seq_obj = match sequence::parse_sequence(seq_num) {
-            Ok(obj) => obj,
-            Err(_) => continue,
-        };
 
-        let too_old = record_seq_obj.seq_time.unwrap_or(0) < cutoff_time;
-        if too_old {
+        if record.approximate_arrival_timestamp < cutoff_timestamp {
             keys_to_delete.push(key.clone());
             continue;
         }
 
-        items.push(json!({
-            "PartitionKey": record.partition_key,
-            "Data": record.data,
-            "ApproximateArrivalTimestamp": record.approximate_arrival_timestamp,
-            "SequenceNumber": seq_num,
-        }));
+        items.push(ResponseRecord {
+            partition_key: &record.partition_key,
+            data: &record.data,
+            approximate_arrival_timestamp: record.approximate_arrival_timestamp,
+            sequence_number: seq_num,
+        });
 
-        last_seq_obj = Some(record_seq_obj);
+        last_seq_num = Some(seq_num);
     }
 
     // If the iterator's embedded seq_time is in the future (e.g. a LATEST iterator
@@ -126,10 +125,9 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         now
     };
 
-    let next_seq = if let Some(ref last) = last_seq_obj {
-        sequence::increment_sequence(last, None)
-    } else {
-        sequence::increment_sequence(&seq_obj, Some(default_time))
+    let next_seq = match last_seq_num.and_then(|s| sequence::parse_sequence(s).ok()) {
+        Some(ref last) => sequence::increment_sequence(last, None),
+        None => sequence::increment_sequence(&seq_obj, Some(default_time)),
     };
 
     let mut next_shard_iterator = Some(shard_iterator::create_shard_iterator(
