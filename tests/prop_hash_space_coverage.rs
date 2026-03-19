@@ -25,56 +25,46 @@ fn compute_shard_ranges(shard_count: u32) -> Vec<(BigUint, BigUint)> {
 
 /// P1: For any shard count in [1, 200], hash ranges partition [0, 2^128-1]
 /// with no gaps, no overlaps, and every shard is non-degenerate.
+/// This is exhaustive (not sampling-based), so a plain loop is used.
 #[test]
 fn prop_hash_space_fully_partitioned() {
     let pow_128 = BigUint::one() << 128;
     let max_hash = &pow_128 - BigUint::one();
 
-    let mut runner = TestRunner::new(Config {
-        cases: 200,
-        ..Config::default()
-    });
+    for shard_count in 1..=200u32 {
+        let ranges = compute_shard_ranges(shard_count);
 
-    runner
-        .run(&(1u32..=200), |shard_count| {
-            let ranges = compute_shard_ranges(shard_count);
+        // First shard starts at 0
+        assert_eq!(&ranges[0].0, &BigUint::ZERO);
 
-            // First shard starts at 0
-            prop_assert_eq!(&ranges[0].0, &BigUint::ZERO);
+        // Last shard ends at 2^128 - 1
+        assert_eq!(&ranges[ranges.len() - 1].1, &max_hash);
 
-            // Last shard ends at 2^128 - 1
-            prop_assert_eq!(&ranges[ranges.len() - 1].1, &max_hash);
+        // Every shard is non-degenerate (start <= end)
+        for (i, (start, end)) in ranges.iter().enumerate() {
+            assert!(
+                start <= end,
+                "shard_count={shard_count}: shard {i} is degenerate: start={start} > end={end}",
+            );
+        }
 
-            // Every shard is non-degenerate (start <= end)
-            for (i, (start, end)) in ranges.iter().enumerate() {
-                prop_assert!(
-                    start <= end,
-                    "shard {} is degenerate: start={} > end={}",
-                    i,
-                    start,
-                    end
-                );
-            }
-
-            // Adjacent shards are contiguous: end[i] + 1 == start[i+1]
-            for i in 0..ranges.len() - 1 {
-                let expected_next_start = &ranges[i].1 + BigUint::one();
-                prop_assert_eq!(
-                    &ranges[i + 1].0,
-                    &expected_next_start,
-                    "gap or overlap between shard {} and {}: end[{}]={}, start[{}]={}",
-                    i,
-                    i + 1,
-                    i,
-                    ranges[i].1,
-                    i + 1,
-                    ranges[i + 1].0,
-                );
-            }
-
-            Ok(())
-        })
-        .unwrap();
+        // Adjacent shards are contiguous: end[i] + 1 == start[i+1]
+        for i in 0..ranges.len() - 1 {
+            let expected_next_start = &ranges[i].1 + BigUint::one();
+            assert_eq!(
+                &ranges[i + 1].0,
+                &expected_next_start,
+                "shard_count={}: gap or overlap between shard {} and {}: end[{}]={}, start[{}]={}",
+                shard_count,
+                i,
+                i + 1,
+                i,
+                ranges[i].1,
+                i + 1,
+                ranges[i + 1].0,
+            );
+        }
+    }
 }
 
 /// P2: MD5 hash of any partition key is within [0, 2^128).

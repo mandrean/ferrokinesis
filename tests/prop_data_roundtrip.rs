@@ -13,6 +13,8 @@ fn prop_data_roundtrip_integrity() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let server = rt.block_on(TestServer::new());
 
+    // Single shard with fixed partition key so we can retrieve records via a known
+    // shard iterator. Cross-shard routing is tested in prop_shard_routing.rs.
     let stream_name = "prop-data-rt";
     rt.block_on(server.create_stream(stream_name, 1));
 

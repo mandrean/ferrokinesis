@@ -5,13 +5,6 @@ use num_bigint::BigUint;
 use proptest::prelude::*;
 use proptest::test_runner::{Config, TestRunner};
 use serde_json::json;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-fn unique_stream_name() -> String {
-    format!("prop-batch-{}", COUNTER.fetch_add(1, Ordering::Relaxed))
-}
 
 /// P13: PutRecords response count equals request count, with zero failures.
 /// P14: Every response record has a valid ShardId and SequenceNumber.
@@ -20,7 +13,7 @@ fn prop_batch_response_count_and_fields() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let server = rt.block_on(TestServer::new());
 
-    let stream_name = unique_stream_name();
+    let stream_name = unique_stream_name("prop-batch");
     rt.block_on(server.create_stream(&stream_name, 4));
 
     let mut runner = TestRunner::new(Config {
@@ -100,7 +93,7 @@ fn prop_batch_explicit_hash_key_routing() {
     let server = rt.block_on(TestServer::new());
 
     let shard_count = 4u32;
-    let stream_name = unique_stream_name();
+    let stream_name = unique_stream_name("prop-batch");
     rt.block_on(server.create_stream(&stream_name, shard_count));
 
     // Get shard hash ranges

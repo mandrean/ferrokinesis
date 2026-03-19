@@ -5,13 +5,6 @@ use ferrokinesis::store::StoreOptions;
 use proptest::prelude::*;
 use proptest::test_runner::{Config, TestRunner};
 use serde_json::json;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-fn unique_suffix() -> String {
-    format!("{}", COUNTER.fetch_add(1, Ordering::Relaxed))
-}
 
 /// P4: Valid stream names (matching [a-zA-Z0-9_.-]{1,128}) are accepted.
 #[test]
@@ -32,10 +25,10 @@ fn prop_valid_stream_names_accepted() {
 
     runner
         .run(&"[a-zA-Z0-9_.\\-]{1,50}", |name_prefix| {
-            let stream_name = format!("{}-{}", name_prefix, unique_suffix());
+            let stream_name = unique_stream_name(&name_prefix);
             // Truncate to 128 chars max
             let stream_name = if stream_name.len() > 128 {
-                stream_name[..128].to_string()
+                stream_name.chars().take(128).collect::<String>()
             } else {
                 stream_name
             };
@@ -79,6 +72,11 @@ fn prop_invalid_stream_names_rejected() {
         "[a-zA-Z0-9_.\\-]{129,200}",
         // Contains characters outside [a-zA-Z0-9_.-]
         "[a-zA-Z0-9_.\\-]{0,10}[!@#$%^&*()+=\\[\\]{}|;:',<>?/~`][a-zA-Z0-9_.\\-]{0,10}",
+        // Whitespace characters
+        "[a-zA-Z0-9_.\\-]{1,10}[\\t\\n\\r ][a-zA-Z0-9_.\\-]{1,10}",
+        // Control characters and null bytes
+        Just("test\x00stream".to_string()),
+        Just("test\tstream".to_string()),
     ];
 
     runner

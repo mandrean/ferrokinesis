@@ -6,13 +6,6 @@ use num_bigint::BigUint;
 use proptest::prelude::*;
 use proptest::test_runner::{Config, TestRunner};
 use serde_json::json;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-fn unique_stream_name(prefix: &str) -> String {
-    format!("{}-{}", prefix, COUNTER.fetch_add(1, Ordering::Relaxed))
-}
 
 /// Extract the numeric shard index from a shard ID like "shardId-000000000042"
 fn shard_index(shard_id: &str) -> u64 {

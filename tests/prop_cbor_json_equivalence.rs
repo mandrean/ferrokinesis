@@ -5,13 +5,6 @@ use ferrokinesis::store::StoreOptions;
 use proptest::prelude::*;
 use proptest::test_runner::{Config, TestRunner};
 use serde_json::json;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-fn unique_stream_name() -> String {
-    format!("prop-cbor-{}", COUNTER.fetch_add(1, Ordering::Relaxed))
-}
 
 /// Volatile keys that differ between separate JSON and CBOR requests
 /// (because each is a distinct write producing a different sequence number).
@@ -23,7 +16,7 @@ fn prop_put_record_cbor_json_equivalent() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let server = rt.block_on(TestServer::new());
 
-    let stream_name = unique_stream_name();
+    let stream_name = unique_stream_name("prop-cbor");
     rt.block_on(server.create_stream(&stream_name, 4));
 
     let mut runner = TestRunner::new(Config {
@@ -83,9 +76,9 @@ fn prop_describe_stream_cbor_json_equivalent() {
 
     runner
         .run(&"[a-zA-Z0-9_.\\-]{1,50}", |name_prefix| {
-            let stream_name = format!("{}-{}", name_prefix, unique_stream_name());
+            let stream_name = format!("{}-{}", name_prefix, unique_stream_name("prop-cbor"));
             let stream_name = if stream_name.len() > 128 {
-                stream_name[..128].to_string()
+                stream_name.chars().take(128).collect::<String>()
             } else {
                 stream_name
             };
@@ -112,7 +105,7 @@ fn prop_put_records_cbor_json_equivalent() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let server = rt.block_on(TestServer::new());
 
-    let stream_name = unique_stream_name();
+    let stream_name = unique_stream_name("prop-cbor");
     rt.block_on(server.create_stream(&stream_name, 4));
 
     let mut runner = TestRunner::new(Config {

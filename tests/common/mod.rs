@@ -6,7 +6,20 @@ use reqwest::Client;
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde_json::{Value, json};
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::net::TcpListener;
+
+static PROP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Generate a unique stream name for property tests. Each call returns a distinct
+/// name, safe to use across concurrent test functions.
+pub fn unique_stream_name(prefix: &str) -> String {
+    format!(
+        "{}-{}",
+        prefix,
+        PROP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
+}
 
 pub const AMZ_JSON: &str = "application/x-amz-json-1.1";
 pub const AMZ_CBOR: &str = "application/x-amz-cbor-1.1";
