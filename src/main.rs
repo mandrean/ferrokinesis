@@ -382,38 +382,47 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
         })
         .unwrap_or_default();
 
+    let defaults = StoreOptions::default();
     let port = resolve(args.port, file_cfg.port, 4567);
-    let create_stream_ms = resolve(args.create_stream_ms, file_cfg.create_stream_ms, 500);
-    let delete_stream_ms = resolve(args.delete_stream_ms, file_cfg.delete_stream_ms, 500);
-    let update_stream_ms = resolve(args.update_stream_ms, file_cfg.update_stream_ms, 500);
-    let shard_limit = resolve(args.shard_limit, file_cfg.shard_limit, 10);
-    let iterator_ttl_seconds = resolve(
-        args.iterator_ttl_seconds,
-        file_cfg.iterator_ttl_seconds,
-        300,
-    );
     let max_request_body_mb = resolve(args.max_request_body_mb, file_cfg.max_request_body_mb, 7);
-    let retention_check_interval_secs = resolve(
-        args.retention_check_interval_secs,
-        file_cfg.retention_check_interval_secs,
-        0,
-    );
-    let aws_account_id = resolve(args.account_id, file_cfg.account_id, "000000000000".into());
-    let aws_region = resolve(
-        args.region.or(args.default_region),
-        file_cfg.region,
-        "us-east-1".into(),
-    );
 
     let options = StoreOptions {
-        create_stream_ms,
-        delete_stream_ms,
-        update_stream_ms,
-        shard_limit,
-        iterator_ttl_seconds,
-        retention_check_interval_secs,
-        aws_account_id,
-        aws_region,
+        create_stream_ms: resolve(
+            args.create_stream_ms,
+            file_cfg.create_stream_ms,
+            defaults.create_stream_ms,
+        ),
+        delete_stream_ms: resolve(
+            args.delete_stream_ms,
+            file_cfg.delete_stream_ms,
+            defaults.delete_stream_ms,
+        ),
+        update_stream_ms: resolve(
+            args.update_stream_ms,
+            file_cfg.update_stream_ms,
+            defaults.update_stream_ms,
+        ),
+        shard_limit: resolve(args.shard_limit, file_cfg.shard_limit, defaults.shard_limit),
+        iterator_ttl_seconds: resolve(
+            args.iterator_ttl_seconds,
+            file_cfg.iterator_ttl_seconds,
+            defaults.iterator_ttl_seconds,
+        ),
+        retention_check_interval_secs: resolve(
+            args.retention_check_interval_secs,
+            file_cfg.retention_check_interval_secs,
+            defaults.retention_check_interval_secs,
+        ),
+        aws_account_id: resolve(
+            args.account_id,
+            file_cfg.account_id,
+            defaults.aws_account_id,
+        ),
+        aws_region: resolve(
+            args.region.or(args.default_region),
+            file_cfg.region,
+            defaults.aws_region,
+        ),
     };
 
     let max_bytes: usize = (max_request_body_mb * 1024 * 1024)
