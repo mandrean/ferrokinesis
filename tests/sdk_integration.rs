@@ -34,7 +34,7 @@ async fn sdk_stream_lifecycle() {
         .await
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Describe stream
     let desc = client
@@ -105,7 +105,18 @@ async fn sdk_batch_put_records() {
         .await
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Get shard ID from describe_stream
+    let desc = client
+        .describe_stream()
+        .stream_name("sdk-batch")
+        .send()
+        .await
+        .unwrap();
+    let shard_id = desc.stream_description().unwrap().shards()[0]
+        .shard_id()
+        .to_string();
 
     // Batch put 5 records
     let entries: Vec<PutRecordsRequestEntry> = (0..5)
@@ -133,7 +144,7 @@ async fn sdk_batch_put_records() {
     let iter = client
         .get_shard_iterator()
         .stream_name("sdk-batch")
-        .shard_id("shardId-000000000000")
+        .shard_id(&shard_id)
         .shard_iterator_type(ShardIteratorType::TrimHorizon)
         .send()
         .await
@@ -161,7 +172,7 @@ async fn sdk_consumers() {
         .await
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Get stream ARN
     let desc = client
@@ -183,7 +194,7 @@ async fn sdk_consumers() {
     let consumer = reg.consumer().unwrap();
     assert_eq!(consumer.consumer_name(), "my-consumer");
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
     // List consumers
     let list = client
@@ -217,7 +228,7 @@ async fn sdk_tagging() {
         .await
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Add tags
     client
@@ -281,7 +292,9 @@ async fn sdk_subscribe_to_shard_delivers_records() {
         .send()
         .await
         .unwrap();
-    let stream_arn = desc.stream_description().unwrap().stream_arn().to_string();
+    let stream_desc = desc.stream_description().unwrap();
+    let stream_arn = stream_desc.stream_arn().to_string();
+    let shard_id = stream_desc.shards()[0].shard_id().to_string();
 
     // Put 3 records
     for i in 0..3 {
@@ -296,30 +309,22 @@ async fn sdk_subscribe_to_shard_delivers_records() {
     }
 
     // Register consumer and wait for ACTIVE
-    client
+    let reg = client
         .register_stream_consumer()
         .stream_arn(&stream_arn)
         .consumer_name("sub-consumer")
         .send()
         .await
         .unwrap();
+    let consumer_arn = reg.consumer().unwrap().consumer_arn().to_string();
 
     tokio::time::sleep(Duration::from_millis(600)).await;
-
-    // Get consumer ARN
-    let consumers = client
-        .list_stream_consumers()
-        .stream_arn(&stream_arn)
-        .send()
-        .await
-        .unwrap();
-    let consumer_arn = consumers.consumers()[0].consumer_arn().to_string();
 
     // Subscribe with TRIM_HORIZON
     let mut resp = client
         .subscribe_to_shard()
         .consumer_arn(&consumer_arn)
-        .shard_id("shardId-000000000000")
+        .shard_id(&shard_id)
         .starting_position(
             StartingPosition::builder()
                 .r#type(ShardIteratorType::TrimHorizon)
@@ -386,31 +391,26 @@ async fn sdk_subscribe_to_shard_concurrent_puts() {
         .send()
         .await
         .unwrap();
-    let stream_arn = desc.stream_description().unwrap().stream_arn().to_string();
+    let stream_desc = desc.stream_description().unwrap();
+    let stream_arn = stream_desc.stream_arn().to_string();
+    let shard_id = stream_desc.shards()[0].shard_id().to_string();
 
-    client
+    let reg = client
         .register_stream_consumer()
         .stream_arn(&stream_arn)
         .consumer_name("concurrent-consumer")
         .send()
         .await
         .unwrap();
+    let consumer_arn = reg.consumer().unwrap().consumer_arn().to_string();
 
     tokio::time::sleep(Duration::from_millis(600)).await;
-
-    let consumers = client
-        .list_stream_consumers()
-        .stream_arn(&stream_arn)
-        .send()
-        .await
-        .unwrap();
-    let consumer_arn = consumers.consumers()[0].consumer_arn().to_string();
 
     // Subscribe with LATEST
     let mut resp = client
         .subscribe_to_shard()
         .consumer_arn(&consumer_arn)
-        .shard_id("shardId-000000000000")
+        .shard_id(&shard_id)
         .starting_position(
             StartingPosition::builder()
                 .r#type(ShardIteratorType::Latest)
