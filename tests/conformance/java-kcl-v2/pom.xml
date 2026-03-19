@@ -27,7 +27,8 @@
             <artifactId>amazon-kinesis-client</artifactId>
             <version>2.6.0</version>
         </dependency>
-        <!-- Silence "No SLF4J providers found" warnings from KCL internals. -->
+        <!-- Suppress all KCL SLF4J output (intentional — keeps CI logs clean).
+             Swap for slf4j-simple when debugging KCL issues locally. -->
         <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-nop</artifactId>

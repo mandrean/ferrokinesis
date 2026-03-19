@@ -57,6 +57,8 @@ public class KclV2IntegrationTest {
     private static final String STREAM_NAME = "kcl-v2-integration";
     private static final String APPLICATION_NAME = "kcl-v2-test-app";
     private static final int SHARD_COUNT = 1;
+    // TODO: add a multi-shard variant covering parallel SubscribeToShard streams and the
+    //       at-most-5-enhanced-fan-out-consumers-per-shard constraint.
     private static final int RECORD_COUNT = 10;
 
     private static final StaticCredentialsProvider CREDENTIALS =
@@ -156,6 +158,8 @@ public class KclV2IntegrationTest {
                 configsBuilder.leaseManagementConfig(),
                 configsBuilder.lifecycleConfig(),
                 configsBuilder.metricsConfig()
+                        // MetricsLevel.NONE: no CloudWatch emulator. Raise to SUMMARY if ferrokinesis
+                        // gains a CloudWatch-compatible endpoint.
                         .metricsLevel(MetricsLevel.NONE),
                 configsBuilder.processorConfig(),
                 configsBuilder.retrievalConfig()
@@ -169,6 +173,9 @@ public class KclV2IntegrationTest {
         schedulerThread.setName("kcl-v2-scheduler");
         schedulerThread.start();
 
+        // awaitRecords(120) is the catch-all backstop for all KCL-internal polling:
+        // DescribeStreamConsumer (until ACTIVE), SubscribeToShard event delivery, and the
+        // processRecords() → checkpoint() chain. If any step hangs, the latch times out here.
         boolean allReceived = TestShardRecordProcessor.awaitRecords(120);
         assertTrue(allReceived,
                 "KCL 2.x did not process all " + RECORD_COUNT + " records within 120 seconds");
@@ -242,7 +249,9 @@ public class KclV2IntegrationTest {
             }
         }
         if (schedulerThread != null) {
-            schedulerThread.join(30_000);
+            schedulerThread.join(10_000);
+            assertFalse(schedulerThread.isAlive(),
+                    "Scheduler thread still alive 10 s after graceful shutdown — possible hang");
         }
         kinesisAsyncClient.deleteStream(DeleteStreamRequest.builder()
                 .streamName(STREAM_NAME)
