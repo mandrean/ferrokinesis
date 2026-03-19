@@ -134,7 +134,8 @@ def test_tagging(client):
 
     # 11. ListTagsForResource — verify "version" tag
     tags_resp = client.list_tags_for_resource(ResourceARN=arn)
-    assert "version" in tags_resp["Tags"]
+    tag_keys = [t["Key"] for t in tags_resp["Tags"]]
+    assert "version" in tag_keys
 
     # 12. UntagResource
     client.untag_resource(ResourceARN=arn, TagKeys=["version"])
@@ -201,6 +202,7 @@ def test_stream_config(client):
     )
 
     # 11. DescribeStream — verify StreamMode == ON_DEMAND
+    wait_for_active(client, stream_name)
     desc = client.describe_stream(StreamName=stream_name)
     assert (
         desc["StreamDescription"]["StreamModeDetails"]["StreamMode"] == "ON_DEMAND"
