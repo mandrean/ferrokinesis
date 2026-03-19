@@ -181,6 +181,18 @@ impl TestServer {
             .unwrap()
     }
 
+    /// Poll until stream status is ACTIVE (or panic after timeout).
+    pub async fn wait_for_stream_active(&self, name: &str) {
+        for _ in 0..20 {
+            let desc = self.describe_stream(name).await;
+            if desc["StreamDescription"]["StreamStatus"].as_str() == Some("ACTIVE") {
+                return;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+        panic!("stream {name} did not become ACTIVE within timeout");
+    }
+
     /// Helper: create a stream and wait for it to become active
     pub async fn create_stream(&self, name: &str, shard_count: u32) {
         let res = self
@@ -191,9 +203,7 @@ impl TestServer {
             .await;
         assert_eq!(res.status(), 200, "Failed to create stream {name}");
 
-        // With create_stream_ms=0, should be immediately active
-        // but give a small buffer for the tokio task to run
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        self.wait_for_stream_active(name).await;
     }
 
     /// Helper: describe a stream
