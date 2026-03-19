@@ -2,12 +2,11 @@ pub mod rules;
 
 use crate::error::KinesisErrorResponse;
 use serde_json::Value;
-use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::{LazyLock, RwLock};
 
-thread_local! {
-    static REGEX_CACHE: RefCell<HashMap<String, regex::Regex>> = RefCell::new(HashMap::new());
-}
+static REGEX_CACHE: LazyLock<RwLock<HashMap<String, regex::Regex>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
 
 pub fn to_lower_first(s: &str) -> String {
     let mut chars = s.chars();
@@ -454,16 +453,24 @@ pub fn check_validations(
         if let Some(ref pattern) = field_def.regex
             && let Some(s) = data.as_str()
         {
-            let matched = REGEX_CACHE.with(|cache| {
-                let mut cache = cache.borrow_mut();
-                if !cache.contains_key(pattern.as_str()) {
-                    let anchored = format!("^{pattern}$");
-                    let re = regex::Regex::new(&anchored)
-                        .unwrap_or_else(|e| panic!("invalid regex pattern '{pattern}': {e}"));
-                    cache.insert(pattern.clone(), re);
+            let matched = {
+                let cache = REGEX_CACHE.read().unwrap();
+                if let Some(re) = cache.get(pattern.as_str()) {
+                    re.is_match(s)
+                } else {
+                    drop(cache);
+                    let mut cache = REGEX_CACHE.write().unwrap();
+                    cache
+                        .entry(pattern.clone())
+                        .or_insert_with(|| {
+                            let anchored = format!("^{pattern}$");
+                            regex::Regex::new(&anchored).unwrap_or_else(|e| {
+                                panic!("invalid regex pattern '{pattern}': {e}")
+                            })
+                        })
+                        .is_match(s)
                 }
-                cache[pattern.as_str()].is_match(s)
-            });
+            };
             validate(
                 matched,
                 &format!("Member must satisfy regular expression pattern: {pattern}"),
