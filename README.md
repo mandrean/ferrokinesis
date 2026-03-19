@@ -14,7 +14,14 @@ A local AWS Kinesis mock server for testing, written in Rust.
 - Uses [redb](https://github.com/cberner/redb) for in-memory storage (ACID, zero-copy reads)
 - Implements all 39 Kinesis Data Streams API operations
 - Supports both JSON and CBOR content types
-- 125+ integration tests
+- Health check endpoints (`/_health`, `/_health/ready`, `/_health/live`) for Docker/K8s
+- TOML configuration file support (`--config`)
+- Configurable AWS account ID, region, shard iterator TTL, and request body size limit
+- Retention period enforcement with configurable TTL-based record trimming
+- Graceful shutdown
+- TLS support with built-in certificate generation
+- 500+ tests (integration, property-based, unit) with multi-language SDK conformance tests (Go, Python, Node.js, Java v1/v2, KCL)
+- Criterion benchmarks with CI regression gate (>10% threshold)
 
 ## Installation
 
@@ -156,18 +163,62 @@ for shard in shards.shards() {
 ## Usage
 
 ```
-ferrokinesis --help
+$ ferrokinesis --help
 
 A local AWS Kinesis mock server for testing
 
+Usage: ferrokinesis [OPTIONS]
+       ferrokinesis <COMMAND>
+
+Commands:
+  serve         Start the mock Kinesis server (default when no subcommand is given)
+  health-check  Run a health check against a running server (for Docker HEALTHCHECK)
+  help          Print this message or the help of the given subcommand(s)
+
 Options:
-  -p, --port <PORT>                      Port to listen on [default: 4567]
-      --create-stream-ms <MS>            Time streams stay in CREATING state [default: 500]
-      --delete-stream-ms <MS>            Time streams stay in DELETING state [default: 500]
-      --update-stream-ms <MS>            Time streams stay in UPDATING state [default: 500]
-      --shard-limit <LIMIT>              Shard limit for error reporting [default: 10]
-  -h, --help                             Print help
-  -V, --version                          Print version
+      --config <CONFIG>
+          Path to a TOML configuration file [env: FERROKINESIS_CONFIG=]
+      --port <PORT>
+          The port to listen on [env: FERROKINESIS_PORT=]
+      --account-id <ACCOUNT_ID>
+          AWS account ID used in ARN generation (12-digit numeric) [env: AWS_ACCOUNT_ID=]
+      --region <REGION>
+          AWS region used in ARN generation and responses [env: AWS_REGION=]
+      --create-stream-ms <CREATE_STREAM_MS>
+          Amount of time streams stay in CREATING state (ms) [env: FERROKINESIS_CREATE_STREAM_MS=]
+      --delete-stream-ms <DELETE_STREAM_MS>
+          Amount of time streams stay in DELETING state (ms) [env: FERROKINESIS_DELETE_STREAM_MS=]
+      --update-stream-ms <UPDATE_STREAM_MS>
+          Amount of time streams stay in UPDATING state (ms) [env: FERROKINESIS_UPDATE_STREAM_MS=]
+      --shard-limit <SHARD_LIMIT>
+          Shard limit for error reporting [env: FERROKINESIS_SHARD_LIMIT=]
+      --iterator-ttl-seconds <ITERATOR_TTL_SECONDS>
+          Shard iterator time-to-live in seconds (minimum: 1, maximum: 86400)
+          [env: FERROKINESIS_ITERATOR_TTL_SECONDS=]
+      --max-request-body-mb <MAX_REQUEST_BODY_MB>
+          Maximum request body size in megabytes (minimum: 1, maximum: 4096)
+          [env: FERROKINESIS_MAX_REQUEST_BODY_MB=]
+      --retention-check-interval-secs <RETENTION_CHECK_INTERVAL_SECS>
+          Retention reaper interval in seconds (0 = disabled, maximum: 86400)
+          [env: FERROKINESIS_RETENTION_CHECK_INTERVAL_SECS=]
+  -h, --help
+          Print help
+```
+
+## Health Check Endpoints
+
+Three endpoints are available for container orchestration and monitoring:
+
+| Endpoint | Purpose | Response |
+|----------|---------|----------|
+| `GET /_health` | Aggregated health with component breakdown | `{"status":"UP","components":{"store":{"status":"UP"}}}` |
+| `GET /_health/live` | Liveness probe — always 200 if the server is running | `OK` |
+| `GET /_health/ready` | Readiness probe — checks store connectivity | `OK` or `503 Service Unavailable` |
+
+The built-in `health-check` subcommand can be used for Docker `HEALTHCHECK`:
+
+```dockerfile
+HEALTHCHECK CMD ["ferrokinesis", "health-check"]
 ```
 
 ## API & Test Coverage
