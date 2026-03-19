@@ -439,7 +439,7 @@ async fn split_at_midpoint(server: &TestServer, name: &str) -> (String, Vec<Valu
         )
         .await;
     assert_eq!(res.status(), 200);
-    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    server.wait_for_stream_active(name).await;
 
     let desc = server.describe_stream(name).await;
     let shards = desc["StreamDescription"]["Shards"]
@@ -509,7 +509,7 @@ async fn split_shard_asymmetric_hash_ranges() {
         )
         .await;
     assert_eq!(res.status(), 200);
-    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    server.wait_for_stream_active(name).await;
 
     let desc = server.describe_stream(name).await;
     let shards = desc["StreamDescription"]["Shards"].as_array().unwrap();
@@ -565,7 +565,7 @@ async fn merge_shards_partial_range_with_lineage() {
         )
         .await;
     assert_eq!(res.status(), 200);
-    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    server.wait_for_stream_active(name).await;
 
     let desc = server.describe_stream(name).await;
     let shards = desc["StreamDescription"]["Shards"].as_array().unwrap();
@@ -684,7 +684,7 @@ async fn merge_shards_ending_sequence_numbers_valid() {
         )
         .await;
     assert_eq!(res.status(), 200);
-    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    server.wait_for_stream_active(name).await;
 
     let desc = server.describe_stream(name).await;
     let shards = desc["StreamDescription"]["Shards"].as_array().unwrap();
@@ -774,7 +774,7 @@ async fn put_record_routes_to_merged_shard_after_merge() {
         )
         .await;
     assert_eq!(res.status(), 200);
-    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    server.wait_for_stream_active(name).await;
 
     let desc = server.describe_stream(name).await;
     let shards = desc["StreamDescription"]["Shards"].as_array().unwrap();
@@ -1139,7 +1139,7 @@ async fn split_child_shard_creates_third_generation() {
         )
         .await;
     assert_eq!(res.status(), 200);
-    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    server.wait_for_stream_active(name).await;
 
     let desc = server.describe_stream(name).await;
     let shards = desc["StreamDescription"]["Shards"].as_array().unwrap();
@@ -1193,17 +1193,17 @@ async fn split_child_shard_creates_third_generation() {
     // Verify record routing to grandchildren
     let gc1_id = shards[3]["ShardId"].as_str().unwrap();
     let gc2_id = shards[4]["ShardId"].as_str().unwrap();
+    let child2_start_str = child2_start.to_string();
+    let child2_mid_str = child2_mid.to_string();
 
-    let r1 =
-        put_record_with_hash_key(&server, name, "dGVzdA==", "pk1", &child2_start.to_string()).await;
+    let r1 = put_record_with_hash_key(&server, name, "dGVzdA==", "pk1", &child2_start_str).await;
     assert_eq!(
         r1["ShardId"].as_str().unwrap(),
         gc1_id,
         "hash key at child2_start should route to grandchild 1"
     );
 
-    let r2 =
-        put_record_with_hash_key(&server, name, "dGVzdA==", "pk2", &child2_mid.to_string()).await;
+    let r2 = put_record_with_hash_key(&server, name, "dGVzdA==", "pk2", &child2_mid_str).await;
     assert_eq!(
         r2["ShardId"].as_str().unwrap(),
         gc2_id,
@@ -1249,7 +1249,7 @@ async fn merged_child_shard_serves_records_from_both_parents() {
         )
         .await;
     assert_eq!(res.status(), 200);
-    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    server.wait_for_stream_active(name).await;
 
     // Put a record to the merged child
     put_record_with_hash_key(&server, name, "bWVyZ2Vk", "pk2", "0").await;
