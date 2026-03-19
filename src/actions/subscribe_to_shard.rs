@@ -14,6 +14,8 @@ use serde_json::{Value, json};
 const MAX_SUBSCRIPTION_MS: u64 = 300_000;
 /// Poll interval for new records
 const POLL_INTERVAL_MS: u64 = 200;
+/// Maximum number of records per SubscribeToShard event
+const SUBSCRIBE_EVENT_RECORD_LIMIT: usize = 10_000;
 
 /// Execute SubscribeToShard. Returns a streaming Body instead of JSON.
 pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, KinesisErrorResponse> {
@@ -197,9 +199,10 @@ pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, Kines
             let range_start = format!("{}/{}", sequence::shard_ix_to_hex(shard_ix), current_seq);
             let range_end = sequence::shard_ix_to_hex(shard_ix + 1);
             let range_records = store
-                .get_records_range_limited(&stream_name, &range_start, &range_end, 10000)
+                .get_records_range_limited(&stream_name, &range_start, &range_end, SUBSCRIBE_EVENT_RECORD_LIMIT)
                 .await;
 
+            // Pre-allocate for typical batch size; grows if needed
             let mut records: Vec<ResponseRecord<'_>> = Vec::with_capacity(256);
             let mut last_seq_obj = None;
 

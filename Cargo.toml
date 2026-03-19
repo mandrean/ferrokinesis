@@ -34,7 +34,7 @@ goose = { version = "0.18", optional = true }
 md-5 = "0.10"
 num-bigint = "0.4"
 num-traits = "0.2"
-postcard = { version = "1", features = ["alloc"] }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
 rand = "0.9"
 rcgen = { version = "0.14", optional = true }
 redb = "3.1"

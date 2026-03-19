@@ -377,22 +377,23 @@ impl Store {
     ///
     /// The map key is `"{shard_hex}/{seq_num}"` (the composite key with the
     /// stream-name prefix stripped).
+    ///
+    /// Used by integration tests only — production code uses
+    /// [`get_records_range_limited`](Self::get_records_range_limited) or
+    /// [`find_first_record_at_timestamp`](Self::find_first_record_at_timestamp).
     pub async fn get_record_store(&self, stream_name: &str) -> BTreeMap<String, StoredRecord> {
         let read_txn = self.db.begin_read().unwrap();
         let table = read_txn.open_table(RECORDS).unwrap();
         let prefix = format!("{stream_name}\0");
         let prefix_end = format!("{stream_name}\x01");
+        let prefix_len = stream_name.len() + 1;
         table
             .range(prefix.as_str()..prefix_end.as_str())
             .unwrap()
             .map(|r| {
                 let (k, v) = r.unwrap();
                 let full_key = k.value().to_string();
-                // Strip the stream_name\0 prefix to get the shard_hex/seq_num key
-                let shard_key = full_key
-                    .strip_prefix(&prefix)
-                    .unwrap_or(&full_key)
-                    .to_string();
+                let shard_key = full_key[prefix_len..].to_string();
                 let record: StoredRecord = postcard::from_bytes(v.value()).unwrap();
                 (shard_key, record)
             })
@@ -400,7 +401,7 @@ impl Store {
     }
 
     /// Stores a single record under the given composite shard key.
-    pub async fn put_record(&self, stream_name: &str, key: &str, record: &impl Serialize) {
+    pub async fn put_record<R: Serialize>(&self, stream_name: &str, key: &str, record: &R) {
         let composite_key = record_key(stream_name, key);
         let bytes = postcard::to_allocvec(record).unwrap();
         let write_txn = self.db.begin_write().unwrap();
@@ -437,6 +438,7 @@ impl Store {
 
         let prefix = format!("{stream_name}\0");
         let prefix_end = format!("{stream_name}\x01");
+        let prefix_len = stream_name.len() + 1;
 
         let keys_to_delete: Vec<String> = {
             let read_txn = self.db.begin_read().unwrap();
@@ -447,7 +449,7 @@ impl Store {
                 .filter_map(|r| {
                     let (k, _) = r.unwrap();
                     let full_key = k.value().to_string();
-                    let shard_key = full_key.strip_prefix(&prefix)?;
+                    let shard_key = &full_key[prefix_len..];
                     let seq_num = shard_key.split('/').nth(1)?;
                     let seq_obj = crate::sequence::parse_sequence(seq_num).ok()?;
                     if seq_obj.seq_time.unwrap_or(0) < cutoff_time {
@@ -509,6 +511,10 @@ impl Store {
     ///
     /// Both `range_start` and `range_end` are shard keys of the form
     /// `"{shard_hex}/{seq_num}"`.
+    ///
+    /// Used by integration tests only — production code uses
+    /// [`get_records_range_limited`](Self::get_records_range_limited) or
+    /// [`find_first_record_at_timestamp`](Self::find_first_record_at_timestamp).
     pub async fn get_records_range(
         &self,
         stream_name: &str,
@@ -518,17 +524,14 @@ impl Store {
         let read_txn = self.db.begin_read().unwrap();
         let table = read_txn.open_table(RECORDS).unwrap();
         let (start, end) = record_range(stream_name, range_start, range_end);
+        let prefix_len = stream_name.len() + 1;
         table
             .range(start.as_str()..end.as_str())
             .unwrap()
             .map(|r| {
                 let (k, v) = r.unwrap();
                 let full_key = k.value().to_string();
-                let prefix = format!("{stream_name}\0");
-                let shard_key = full_key
-                    .strip_prefix(&prefix)
-                    .unwrap_or(&full_key)
-                    .to_string();
+                let shard_key = full_key[prefix_len..].to_string();
                 let record: StoredRecord = postcard::from_bytes(v.value()).unwrap();
                 (shard_key, record)
             })
