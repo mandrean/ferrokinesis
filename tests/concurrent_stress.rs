@@ -329,8 +329,17 @@ async fn stream_lifecycle_mutations() {
                     "CreateStream got HTTP {status}"
                 );
 
-                // Wait for ACTIVE
-                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                // Wait for ACTIVE before deleting
+                if status == 200 {
+                    let _ = server
+                        .wait_for_stream_status(
+                            name,
+                            "ACTIVE",
+                            tokio::time::Duration::from_millis(10),
+                            100,
+                        )
+                        .await;
+                }
 
                 let res = server
                     .request("DeleteStream", &json!({"StreamName": &name}))
@@ -341,7 +350,12 @@ async fn stream_lifecycle_mutations() {
                     "DeleteStream got HTTP {status}"
                 );
 
-                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                // Wait for deletion to complete
+                if status == 200 {
+                    let _ = server
+                        .wait_for_stream_deleted(name, tokio::time::Duration::from_millis(10), 100)
+                        .await;
+                }
             }
         });
     }
@@ -482,6 +496,8 @@ async fn consumer_registration_contention() {
 
 #[tokio::test]
 async fn shard_iterator_during_split() {
+    const RECORDS_PER_SHARD: usize = 20;
+
     let server = Arc::new(TestServer::with_options(stress_options()).await);
     let stream = "conc-split-iter";
     server.create_stream(stream, 4).await;
@@ -493,7 +509,7 @@ async fn shard_iterator_during_split() {
     // Put 20 records into each shard via ExplicitHashKey
     for (shard_idx, shard) in shards.iter().enumerate() {
         let start_key = shard["HashKeyRange"]["StartingHashKey"].as_str().unwrap();
-        for i in 0..20 {
+        for i in 0..RECORDS_PER_SHARD {
             let res = server
                 .request(
                     "PutRecord",
@@ -551,10 +567,16 @@ async fn shard_iterator_during_split() {
                     None => break, // Shard closed
                 }
 
+                // Deterministic exit once all pre-seeded records are read
+                if records_read >= RECORDS_PER_SHARD {
+                    break;
+                }
+
+                // Safety net: abort if too many consecutive empty responses
                 if recs.is_empty() {
                     loops += 1;
                     if loops > 10 {
-                        break; // No more records coming
+                        break;
                     }
                 } else {
                     loops = 0;
@@ -616,20 +638,20 @@ async fn shard_iterator_during_split() {
         }
     }
 
-    // Non-split shards (1, 2, 3) should have read their 20 records
+    // Non-split shards (1, 2, 3) should have read their records
     for shard_idx in 1..4u32 {
         let count = shard_reads.get(&shard_idx).copied().unwrap_or(0);
         assert_eq!(
-            count, 20,
-            "shard {shard_idx}: expected 20 records, got {count}"
+            count, RECORDS_PER_SHARD,
+            "shard {shard_idx}: expected {RECORDS_PER_SHARD} records, got {count}"
         );
     }
 
-    // Shard 0 (split) should have read its 20 records
+    // Shard 0 (split) should have read its records
     let shard0_count = shard_reads.get(&0).copied().unwrap_or(0);
     assert_eq!(
-        shard0_count, 20,
-        "shard 0 (split): expected 20 records, got {shard0_count}"
+        shard0_count, RECORDS_PER_SHARD,
+        "shard 0 (split): expected {RECORDS_PER_SHARD} records, got {shard0_count}"
     );
 }
 

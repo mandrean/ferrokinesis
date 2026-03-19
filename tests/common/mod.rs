@@ -224,6 +224,53 @@ impl TestServer {
         res.json().await.unwrap()
     }
 
+    /// Poll `DescribeStream` until `StreamStatus` matches `target`, or until
+    /// `max_attempts` is reached. Returns `Ok(body)` on match, `Err` on timeout.
+    pub async fn wait_for_stream_status(
+        &self,
+        name: &str,
+        target: &str,
+        interval: tokio::time::Duration,
+        max_attempts: u32,
+    ) -> Result<Value, String> {
+        for _ in 0..max_attempts {
+            let res = self
+                .request("DescribeStream", &json!({"StreamName": name}))
+                .await;
+            if res.status() == 200 {
+                let body: Value = res.json().await.unwrap();
+                if body["StreamDescription"]["StreamStatus"].as_str() == Some(target) {
+                    return Ok(body);
+                }
+            }
+            tokio::time::sleep(interval).await;
+        }
+        Err(format!(
+            "stream {name:?} did not reach status {target:?} after {max_attempts} attempts"
+        ))
+    }
+
+    /// Poll until `DescribeStream` returns non-200 (stream fully deleted).
+    pub async fn wait_for_stream_deleted(
+        &self,
+        name: &str,
+        interval: tokio::time::Duration,
+        max_attempts: u32,
+    ) -> Result<(), String> {
+        for _ in 0..max_attempts {
+            let res = self
+                .request("DescribeStream", &json!({"StreamName": name}))
+                .await;
+            if res.status() != 200 {
+                return Ok(());
+            }
+            tokio::time::sleep(interval).await;
+        }
+        Err(format!(
+            "stream {name:?} was not fully deleted after {max_attempts} attempts"
+        ))
+    }
+
     /// Helper: put a record and return the response
     pub async fn put_record(&self, stream: &str, data: &str, partition_key: &str) -> Value {
         let res = self
