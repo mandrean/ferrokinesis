@@ -454,13 +454,15 @@ pub fn check_validations(
         if let Some(ref pattern) = field_def.regex
             && let Some(s) = data.as_str()
         {
-            let full_pattern = format!("^{pattern}$");
             let matched = REGEX_CACHE.with(|cache| {
                 let mut cache = cache.borrow_mut();
-                let re = cache
-                    .entry(full_pattern)
-                    .or_insert_with_key(|p| regex::Regex::new(p).unwrap());
-                re.is_match(s)
+                if !cache.contains_key(pattern.as_str()) {
+                    let anchored = format!("^{pattern}$");
+                    let re = regex::Regex::new(&anchored)
+                        .unwrap_or_else(|e| panic!("invalid regex pattern '{pattern}': {e}"));
+                    cache.insert(pattern.clone(), re);
+                }
+                cache[pattern.as_str()].is_match(s)
             });
             validate(
                 matched,
