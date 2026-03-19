@@ -291,7 +291,7 @@ impl Store {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// # use ferrokinesis::store::{Store, StoreOptions};
+    /// # use ferrokinesis::store::Store;
     /// # async fn example(store: &Store) -> Result<(), ferrokinesis::error::KinesisErrorResponse> {
     /// store.update_stream("my-stream", |stream| {
     ///     stream.retention_period_hours = 48;
