@@ -72,6 +72,25 @@ async fn health_check_localhost_hostname() {
 }
 
 #[tokio::test]
+async fn health_check_ipv6_loopback() {
+    let server = TestServer::new().await;
+    let port = server.addr.port();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_ferrokinesis"))
+        .args(["health-check", "--host", "::1", "--port", &port.to_string()])
+        .output()
+        .await
+        .expect("failed to run ferrokinesis");
+
+    // The test server binds IPv4 only, so ::1 may not connect — just verify no panic.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("panicked"),
+        "health-check with --host ::1 should not panic, stderr: {stderr}"
+    );
+}
+
+#[tokio::test]
 async fn health_check_invalid_host_no_panic() {
     let output = Command::new(env!("CARGO_BIN_EXE_ferrokinesis"))
         .args([

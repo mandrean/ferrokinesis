@@ -103,20 +103,24 @@ fn resolve<T>(cli: Option<T>, file: Option<T>, default: T) -> T {
 #[derive(Args, Debug)]
 struct HealthCheckArgs {
     /// Host of the server to check
-    #[arg(long, default_value = "127.0.0.1")]
+    #[arg(long, env = "FERROKINESIS_HEALTH_HOST", default_value = "127.0.0.1")]
     host: String,
 
     /// Port of the server to check
-    #[arg(long, default_value_t = 4567)]
+    #[arg(long, env = "FERROKINESIS_HEALTH_PORT", default_value_t = 4567)]
     port: u16,
 
     /// Path to probe
-    #[arg(long, default_value = "/_health/ready")]
+    #[arg(
+        long,
+        env = "FERROKINESIS_HEALTH_PATH",
+        default_value = "/_health/ready"
+    )]
     path: String,
 
     /// Use TLS when connecting (accepts self-signed certificates)
     #[cfg(feature = "tls")]
-    #[arg(long)]
+    #[arg(long, env = "FERROKINESIS_HEALTH_TLS")]
     tls: bool,
 }
 
@@ -243,6 +247,10 @@ fn run_health_check(args: &HealthCheckArgs) -> ExitCode {
 }
 
 fn format_host_header(host: &str, port: u16) -> String {
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
     if host.contains(':') {
         format!("[{host}]:{port}")
     } else {
