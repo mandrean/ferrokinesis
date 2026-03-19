@@ -196,6 +196,7 @@ pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, Kines
             };
 
             let cutoff_time = now - (stream_data.retention_period_hours as u64 * 60 * 60 * 1000);
+            let cutoff_timestamp = cutoff_time as f64 / 1000.0;
             let range_start = format!("{}/{}", sequence::shard_ix_to_hex(shard_ix), current_seq);
             let range_end = sequence::shard_ix_to_hex(shard_ix + 1);
             let range_records = store
@@ -204,7 +205,7 @@ pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, Kines
 
             // Pre-allocate for typical batch size; grows if needed
             let mut records: Vec<ResponseRecord<'_>> = Vec::with_capacity(256);
-            let mut last_seq_obj = None;
+            let mut last_seq_num: Option<&str> = None;
 
             for (key, record) in &range_records {
                 let seq_num = match key.split('/').nth(1) {
@@ -212,12 +213,7 @@ pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, Kines
                     None => continue,
                 };
 
-                let seq_obj = match sequence::parse_sequence(seq_num) {
-                    Ok(obj) => obj,
-                    Err(_) => continue,
-                };
-
-                if seq_obj.seq_time.unwrap_or(0) < cutoff_time {
+                if record.approximate_arrival_timestamp < cutoff_timestamp {
                     continue;
                 }
 
@@ -228,14 +224,13 @@ pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, Kines
                     approximate_arrival_timestamp: record.approximate_arrival_timestamp,
                 });
 
-                last_seq_obj = Some(seq_obj);
+                last_seq_num = Some(seq_num);
             }
 
             // Compute next sequence and continuation
-            let continuation_seq = if let Some(ref last) = last_seq_obj {
-                sequence::increment_sequence(last, None)
-            } else {
-                current_seq.clone()
+            let continuation_seq = match last_seq_num.and_then(|s| sequence::parse_sequence(s).ok()) {
+                Some(ref last) => sequence::increment_sequence(last, None),
+                None => current_seq.clone(),
             };
 
             // Check for child shards (shard was split/merged)

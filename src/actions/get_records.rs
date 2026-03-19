@@ -82,6 +82,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     }
 
     let cutoff_time = now - (stream.retention_period_hours as u64 * 60 * 60 * 1000);
+    let cutoff_timestamp = cutoff_time as f64 / 1000.0;
 
     let range_start = format!("{}/{}", sequence::shard_ix_to_hex(shard_ix), seq_no);
     let range_end = sequence::shard_ix_to_hex(shard_ix + 1);
@@ -90,18 +91,13 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         .await;
 
     let mut items: Vec<ResponseRecord<'_>> = Vec::with_capacity(limit);
-    let mut last_seq_obj = None;
+    let mut last_seq_num: Option<&str> = None;
     let mut keys_to_delete = Vec::new();
 
     for (key, record) in &range_records {
         let seq_num = key.split('/').nth(1).unwrap_or("");
-        let record_seq_obj = match sequence::parse_sequence(seq_num) {
-            Ok(obj) => obj,
-            Err(_) => continue,
-        };
 
-        let too_old = record_seq_obj.seq_time.unwrap_or(0) < cutoff_time;
-        if too_old {
+        if record.approximate_arrival_timestamp < cutoff_timestamp {
             keys_to_delete.push(key.clone());
             continue;
         }
@@ -113,7 +109,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
             sequence_number: seq_num,
         });
 
-        last_seq_obj = Some(record_seq_obj);
+        last_seq_num = Some(seq_num);
     }
 
     let default_time = if seq_obj.seq_time.unwrap_or(0) > now {
@@ -122,10 +118,9 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         now
     };
 
-    let next_seq = if let Some(ref last) = last_seq_obj {
-        sequence::increment_sequence(last, None)
-    } else {
-        sequence::increment_sequence(&seq_obj, Some(default_time))
+    let next_seq = match last_seq_num.and_then(|s| sequence::parse_sequence(s).ok()) {
+        Some(ref last) => sequence::increment_sequence(last, None),
+        None => sequence::increment_sequence(&seq_obj, Some(default_time)),
     };
 
     let mut next_shard_iterator = Some(shard_iterator::create_shard_iterator(
