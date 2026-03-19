@@ -129,13 +129,12 @@ def test_tagging(client):
     # 10. TagResource
     client.tag_resource(
         ResourceARN=arn,
-        Tags=[{"Key": "version", "Value": "1"}],
+        Tags={"version": "1"},
     )
 
     # 11. ListTagsForResource — verify "version" tag
     tags_resp = client.list_tags_for_resource(ResourceARN=arn)
-    tag_keys = [t["Key"] for t in tags_resp["Tags"]]
-    assert "version" in tag_keys
+    assert "version" in tags_resp["Tags"]
 
     # 12. UntagResource
     client.untag_resource(ResourceARN=arn, TagKeys=["version"])
