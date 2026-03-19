@@ -9,6 +9,10 @@ use num_traits::One;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+// Backdate the shard creation timestamp by 2 seconds (kinesalite compatibility).
+// This guarantees shard_create_time < now when the first record is written, so
+// seq_ix is initialised to 0 rather than the special-case 1 used when a record
+// arrives in the exact same millisecond as the shard's creation.
 const SEQ_ADJUST_MS: u64 = 2000;
 
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {

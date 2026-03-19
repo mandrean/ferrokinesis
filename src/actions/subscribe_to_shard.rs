@@ -118,6 +118,8 @@ pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, Kines
     let start_seq = match iterator_type {
         ShardIteratorType::TrimHorizon => shard_seq.clone(),
         ShardIteratorType::Latest => {
+            // Use the same seq_ix / 5 bucket as put_record so LATEST starts at the
+            // current write frontier.
             let seq_ix = stream
                 .seq_ix
                 .get(shard_ix as usize / 5)

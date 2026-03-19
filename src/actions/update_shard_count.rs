@@ -55,6 +55,10 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         let _ = store_clone
             .update_stream(&stream_name_owned, |stream| {
                 let now = current_time_ms();
+                // Use the maximum possible seq_ix (0x7fffffffffffffff) for the closing
+                // sequence number. This ensures no future record written to this shard
+                // could ever produce a sequence number that compares as ≥ the ending
+                // sequence, making the shard-closed invariant unconditionally safe.
                 let max_seq_ix = BigUint::from_str_radix("7fffffffffffffff", 16)
                     .unwrap_or_else(|_| BigUint::zero());
 
@@ -105,6 +109,8 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
 
                     stream.shards.push(Shard {
                         shard_id: sequence::shard_id_name(new_ix),
+                        // UpdateShardCount is a full reshard, not a split/merge; new shards have
+                        // no parent lineage relationship with the old shards.
                         parent_shard_id: None,
                         adjacent_parent_shard_id: None,
                         hash_key_range: HashKeyRange {
@@ -114,6 +120,10 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                         sequence_number_range: SequenceNumberRange {
                             starting_sequence_number: sequence::stringify_sequence(
                                 &sequence::SeqObj {
+                                    // Child's create_time is 1 second ahead of the parent's closing
+                                    // timestamp so child sequence numbers always sort lexically after
+                                    // the parent's last sequence (the token format encodes create_time
+                                    // in hex[1..10], so a higher create_time produces a larger number).
                                     shard_create_time: now + 1000,
                                     shard_ix: new_ix,
                                     seq_ix: None,
