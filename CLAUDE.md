@@ -6,6 +6,8 @@ A local AWS Kinesis emulator written in Rust (edition 2024). Aims to exactly mat
 
 HTTP POST → `src/server.rs` parses `X-Amz-Target` header → `Operation` enum → deserialize JSON/CBOR body → `check_types()` validates field types → `check_validations()` validates constraints → `dispatch()` routes to `src/actions/*.rs::execute()` → `Store` (redb) → JSON/CBOR response.
 
+**Exception:** `SubscribeToShard` bypasses `dispatch()` and uses `execute_streaming()` for HTTP/2 event-stream responses.
+
 ## Action handler contract
 
 All 39 handlers follow the same signature and pattern:
@@ -83,8 +85,8 @@ cargo cov-html                      # alias: llvm-cov --open (HTML report)
 
 ## Do-not-touch zones
 
-- **`src/sequence.rs`** (324 LOC) — bigint sequence number logic ported from kinesalite. Modify with extreme care.
-- **`src/shard_iterator.rs`** (114 LOC) — AES-256-CBC encrypted iterator tokens with hardcoded keys matching kinesalite.
+- **`src/sequence.rs`** — bigint sequence number logic ported from kinesalite. Modify with extreme care.
+- **`src/shard_iterator.rs`** — AES-256-CBC encrypted iterator tokens with hardcoded keys matching kinesalite.
 
 ## Conformance tests
 
