@@ -62,6 +62,7 @@ ciborium = "0.2"
 criterion = { version = "0.5", features = ["async_tokio"] }
 num-bigint = "0.4"
 reqwest = { version = "0.12", features = ["json"] }
+tempfile = "3.27.0"
 
 [[bench]]
 name = "kinesis_api"

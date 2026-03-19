@@ -250,7 +250,10 @@ impl TestServer {
                 .unwrap();
         });
 
-        let addr = handle.listening().await.unwrap();
+        let addr = tokio::time::timeout(tokio::time::Duration::from_secs(5), handle.listening())
+            .await
+            .expect("timed out waiting for TLS server to start — server may have panicked")
+            .unwrap();
 
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
