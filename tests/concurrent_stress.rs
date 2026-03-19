@@ -2,11 +2,29 @@ mod common;
 
 use common::*;
 use ferrokinesis::store::StoreOptions;
+use num_bigint::BigUint;
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Barrier;
 use tokio::task::JoinSet;
+
+// ---------------------------------------------------------------------------
+// Task result types for JoinSet discrimination
+// ---------------------------------------------------------------------------
+
+enum TaskResult {
+    Writer(u64),
+    Reader(u64),
+}
+
+enum MixedResult {
+    PutRecord(u32),
+    PutRecords(u32),
+    GetRecords(u32),
+    Consumer(u32),
+    Splitter,
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -22,17 +40,8 @@ fn stress_options() -> StoreOptions {
     }
 }
 
-fn stress_options_with_delays() -> StoreOptions {
-    StoreOptions {
-        create_stream_ms: 10,
-        delete_stream_ms: 10,
-        update_stream_ms: 10,
-        shard_limit: 200,
-        ..Default::default()
-    }
-}
-
-/// Count total records across all shards by paginating with GetRecords.
+/// Count total records across original shards (0..shard_count) by paginating with GetRecords.
+/// Does NOT follow child shards created by splits — only use on unsplit streams.
 async fn count_all_records(server: &TestServer, stream: &str, shard_count: u32) -> usize {
     let mut total = 0;
     for i in 0..shard_count {
@@ -155,6 +164,13 @@ async fn read_write_interleaving() {
             .await;
     }
 
+    // Extract shard ID dynamically
+    let desc = server.describe_stream(stream).await;
+    let shard_id = desc["StreamDescription"]["Shards"].as_array().unwrap()[0]["ShardId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
     let barrier = Arc::new(Barrier::new(NUM_WRITERS + NUM_READERS + 1));
     let mut join_set = JoinSet::new();
 
@@ -179,7 +195,7 @@ async fn read_write_interleaving() {
                 assert_eq!(res.status().as_u16(), 200);
                 success_count += 1;
             }
-            success_count
+            TaskResult::Writer(success_count)
         });
     }
 
@@ -187,11 +203,12 @@ async fn read_write_interleaving() {
     for reader_id in 0..NUM_READERS {
         let server = server.clone();
         let barrier = barrier.clone();
+        let shard_id = shard_id.clone();
         join_set.spawn(async move {
             barrier.wait().await;
             let mut reads = 0u64;
             let mut iter = server
-                .get_shard_iterator(stream, "shardId-000000000000", "TRIM_HORIZON")
+                .get_shard_iterator(stream, &shard_id, "TRIM_HORIZON")
                 .await;
             let mut prev_seq = String::new();
             let mut loops = 0;
@@ -201,12 +218,17 @@ async fn read_write_interleaving() {
                 let result = server.get_records(&iter).await;
                 let records = result["Records"].as_array().unwrap();
 
-                // Verify ordering within each batch
+                // Verify ordering within each batch (numeric comparison —
+                // sequence numbers are non-zero-padded decimal strings)
                 for r in records {
                     let seq = r["SequenceNumber"].as_str().unwrap();
                     if !prev_seq.is_empty() {
+                        let seq_num: BigUint =
+                            seq.parse().expect("sequence number should be numeric");
+                        let prev_num: BigUint =
+                            prev_seq.parse().expect("prev sequence number should be numeric");
                         assert!(
-                            seq > prev_seq.as_str(),
+                            seq_num > prev_num,
                             "reader {reader_id}: sequence numbers not monotonic: {prev_seq} >= {seq}"
                         );
                     }
@@ -226,29 +248,30 @@ async fn read_write_interleaving() {
                 }
                 loops += 1;
             }
-            reads
+            TaskResult::Reader(reads)
         });
     }
 
     barrier.wait().await;
 
-    // Collect results — verify no panics
+    // Collect results
     let mut total_writes = 0u64;
     let mut total_reads = 0u64;
     while let Some(result) = join_set.join_next().await {
-        let count = result.expect("task panicked");
-        // Writers return their write count, readers return their read count.
-        // We can't distinguish them here but both must not panic.
-        if count <= WRITES_PER_TASK as u64 {
-            total_writes += count;
-        } else {
-            total_reads += count;
+        match result.expect("task panicked") {
+            TaskResult::Writer(count) => total_writes += count,
+            TaskResult::Reader(count) => total_reads += count,
         }
     }
 
-    // All writes succeeded
+    // All writes must have succeeded
     let expected_writes = (NUM_WRITERS * WRITES_PER_TASK) as u64;
-    assert!(total_writes >= expected_writes || total_reads > 0);
+    assert_eq!(
+        total_writes, expected_writes,
+        "expected {expected_writes} successful writes, got {total_writes}"
+    );
+    // Readers must have read at least some records (seeds + concurrent writes)
+    assert!(total_reads > 0, "readers read zero records");
 
     // Verify final record count
     let total = count_all_records(&server, stream, 1).await;
@@ -265,7 +288,16 @@ async fn stream_lifecycle_mutations() {
     const NUM_ACCESSORS: usize = 10;
     const ITERATIONS: usize = 3;
 
-    let server = Arc::new(TestServer::with_options(stress_options_with_delays()).await);
+    let server = Arc::new(
+        TestServer::with_options(StoreOptions {
+            create_stream_ms: 10,
+            delete_stream_ms: 10,
+            update_stream_ms: 10,
+            shard_limit: 200,
+            ..Default::default()
+        })
+        .await,
+    );
 
     // Pre-compute all stream names
     let stream_names: Vec<String> = (0..NUM_LIFECYCLE)
@@ -280,10 +312,11 @@ async fn stream_lifecycle_mutations() {
     for task_id in 0..NUM_LIFECYCLE {
         let server = server.clone();
         let barrier = barrier.clone();
+        let names = stream_names.clone();
         join_set.spawn(async move {
             barrier.wait().await;
             for iter in 0..ITERATIONS {
-                let name = format!("conc-lifecycle-{task_id}-{iter}");
+                let name = &names[task_id * ITERATIONS + iter];
                 let res = server
                     .request(
                         "CreateStream",
@@ -527,7 +560,7 @@ async fn shard_iterator_during_split() {
                     loops = 0;
                 }
             }
-            (shard_idx, records_read)
+            Some((shard_idx, records_read))
         });
     }
 
@@ -535,6 +568,7 @@ async fn shard_iterator_during_split() {
     {
         let server = server.clone();
         let barrier = barrier.clone();
+        let shard0_id = shards[0]["ShardId"].as_str().unwrap().to_string();
         let shard0_start = shards[0]["HashKeyRange"]["StartingHashKey"]
             .as_str()
             .unwrap()
@@ -560,7 +594,7 @@ async fn shard_iterator_during_split() {
                     "SplitShard",
                     &json!({
                         "StreamName": stream,
-                        "ShardToSplit": "shardId-000000000000",
+                        "ShardToSplit": &shard0_id,
                         "NewStartingHashKey": mid_str,
                     }),
                 )
@@ -569,7 +603,7 @@ async fn shard_iterator_during_split() {
 
             // Wait for split to complete
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            (u32::MAX, 0usize) // Sentinel for splitter task
+            None
         });
     }
 
@@ -577,8 +611,7 @@ async fn shard_iterator_during_split() {
 
     let mut shard_reads = std::collections::HashMap::new();
     while let Some(result) = join_set.join_next().await {
-        let (shard_idx, count) = result.expect("task panicked");
-        if shard_idx != u32::MAX {
+        if let Some((shard_idx, count)) = result.expect("task panicked") {
             shard_reads.insert(shard_idx, count);
         }
     }
@@ -688,7 +721,7 @@ async fn put_records_batch_contention() {
 #[tokio::test]
 async fn mixed_workload_stress() {
     let result =
-        tokio::time::timeout(tokio::time::Duration::from_secs(30), mixed_workload_inner()).await;
+        tokio::time::timeout(tokio::time::Duration::from_secs(15), mixed_workload_inner()).await;
 
     assert!(result.is_ok(), "mixed workload test timed out (deadlock?)");
 }
@@ -713,6 +746,22 @@ async fn mixed_workload_inner() {
             .await;
     }
 
+    // Extract shard info dynamically for readers and splitter
+    let desc = server.describe_stream(stream).await;
+    let shards = desc["StreamDescription"]["Shards"].as_array().unwrap();
+    let shard0_id = shards[0]["ShardId"].as_str().unwrap().to_string();
+    let start: num_bigint::BigUint = shards[0]["HashKeyRange"]["StartingHashKey"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let end: num_bigint::BigUint = shards[0]["HashKeyRange"]["EndingHashKey"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let split_mid = ((&start + &end) / 2u32).to_string();
+
     let barrier = Arc::new(Barrier::new(TOTAL_TASKS + 1));
     let mut join_set = JoinSet::new();
 
@@ -722,6 +771,7 @@ async fn mixed_workload_inner() {
         let barrier = barrier.clone();
         join_set.spawn(async move {
             barrier.wait().await;
+            let mut successes = 0u32;
             for i in 0..20 {
                 let (status, _) = {
                     let res = server
@@ -740,7 +790,11 @@ async fn mixed_workload_inner() {
                     status == 200 || status == 400,
                     "PutRecord got HTTP {status}"
                 );
+                if status == 200 {
+                    successes += 1;
+                }
             }
+            MixedResult::PutRecord(successes)
         });
     }
 
@@ -774,6 +828,7 @@ async fn mixed_workload_inner() {
                 status == 200 || status == 400,
                 "PutRecords got HTTP {status}"
             );
+            MixedResult::PutRecords(u32::from(status == 200))
         });
     }
 
@@ -781,10 +836,11 @@ async fn mixed_workload_inner() {
     for _reader_id in 0..NUM_READERS {
         let server = server.clone();
         let barrier = barrier.clone();
+        let shard0_id = shard0_id.clone();
         join_set.spawn(async move {
             barrier.wait().await;
             let iter = server
-                .get_shard_iterator(stream, "shardId-000000000000", "TRIM_HORIZON")
+                .get_shard_iterator(stream, &shard0_id, "TRIM_HORIZON")
                 .await;
             let (status, result) = {
                 let res = server
@@ -803,6 +859,7 @@ async fn mixed_workload_inner() {
                     assert!(r["PartitionKey"].as_str().is_some());
                 }
             }
+            MixedResult::GetRecords(u32::from(status == 200))
         });
     }
 
@@ -813,6 +870,7 @@ async fn mixed_workload_inner() {
         let arn = stream_arn.clone();
         join_set.spawn(async move {
             barrier.wait().await;
+            let mut successes = 0u32;
             for i in 0..3 {
                 let name = format!("mixed-consumer-{task_id}-{i}");
                 let (status, _) = {
@@ -831,7 +889,11 @@ async fn mixed_workload_inner() {
                     status == 200 || status == 400,
                     "RegisterStreamConsumer got HTTP {status}"
                 );
+                if status == 200 {
+                    successes += 1;
+                }
             }
+            MixedResult::Consumer(successes)
         });
     }
 
@@ -839,22 +901,7 @@ async fn mixed_workload_inner() {
     {
         let server = server.clone();
         let barrier = barrier.clone();
-
-        // Get shard 0's hash range for the split
-        let desc = server.describe_stream(stream).await;
-        let shards = desc["StreamDescription"]["Shards"].as_array().unwrap();
-        let start: num_bigint::BigUint = shards[0]["HashKeyRange"]["StartingHashKey"]
-            .as_str()
-            .unwrap()
-            .parse()
-            .unwrap();
-        let end: num_bigint::BigUint = shards[0]["HashKeyRange"]["EndingHashKey"]
-            .as_str()
-            .unwrap()
-            .parse()
-            .unwrap();
-        let mid = (&start + &end) / 2u32;
-        let mid_str = mid.to_string();
+        let shard0_id = shard0_id.clone();
 
         join_set.spawn(async move {
             barrier.wait().await;
@@ -867,8 +914,8 @@ async fn mixed_workload_inner() {
                         "SplitShard",
                         &json!({
                             "StreamName": stream,
-                            "ShardToSplit": "shardId-000000000000",
-                            "NewStartingHashKey": mid_str,
+                            "ShardToSplit": &shard0_id,
+                            "NewStartingHashKey": split_mid,
                         }),
                     )
                     .await;
@@ -879,15 +926,41 @@ async fn mixed_workload_inner() {
                 status == 200 || status == 400,
                 "SplitShard got HTTP {status}"
             );
+            MixedResult::Splitter
         });
     }
 
     barrier.wait().await;
 
-    // Wait for all tasks to complete — any panic is caught here
+    // Collect and validate results
+    let mut put_record_successes = 0u32;
+    let mut put_records_successes = 0u32;
+    let mut get_records_successes = 0u32;
+    let mut consumer_successes = 0u32;
     while let Some(result) = join_set.join_next().await {
-        result.expect("task panicked");
+        match result.expect("task panicked") {
+            MixedResult::PutRecord(s) => put_record_successes += s,
+            MixedResult::PutRecords(s) => put_records_successes += s,
+            MixedResult::GetRecords(s) => get_records_successes += s,
+            MixedResult::Consumer(s) => consumer_successes += s,
+            MixedResult::Splitter => {}
+        }
     }
+
+    // PutRecord: 5 tasks x 20 ops; most should succeed
+    assert!(
+        put_record_successes >= (NUM_PUT_RECORD as u32 * 20) / 2,
+        "too few PutRecord successes: {put_record_successes}"
+    );
+    // PutRecords: at least one batch should succeed
+    assert!(put_records_successes > 0, "no PutRecords batches succeeded");
+    // GetRecords: at least one reader should succeed
+    assert!(get_records_successes > 0, "no GetRecords calls succeeded");
+    // Consumers: at least some registrations should succeed
+    assert!(
+        consumer_successes > 0,
+        "no consumer registrations succeeded"
+    );
 
     // Verify server is still responsive
     let res = server
