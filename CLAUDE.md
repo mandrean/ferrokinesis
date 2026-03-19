@@ -4,7 +4,7 @@ A local AWS Kinesis emulator written in Rust (edition 2024). Aims to exactly mat
 
 ## Architecture
 
-HTTP POST → `src/server.rs` parses `X-Amz-Target` header → `Operation` enum → `check_types()` validates field types → `check_validations()` validates constraints → `dispatch()` routes to `src/actions/*.rs::execute()` → `Store` (redb) → JSON/CBOR response.
+HTTP POST → `src/server.rs` parses `X-Amz-Target` header → `Operation` enum → deserialize JSON/CBOR body → `check_types()` validates field types → `check_validations()` validates constraints → `dispatch()` routes to `src/actions/*.rs::execute()` → `Store` (redb) → JSON/CBOR response.
 
 ## Action handler contract
 
@@ -22,7 +22,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
 
 ## Adding a new operation (four-site checklist)
 
-The compiler enforces exhaustive matches — **never use wildcard `_` arms**:
+The compiler enforces exhaustive matches — **never use wildcard `_` arms in `Operation` match blocks**:
 
 1. `Operation` enum variant in `src/actions/mod.rs`
 2. `FromStr` mapping in `src/actions/mod.rs`
@@ -61,7 +61,8 @@ async fn test_name() {
     server.create_stream("name", 3).await;
     let resp = server.request("Kinesis_20131202.DescribeStream", &json!({...})).await;
     assert_eq!(resp.status(), 200);
-    let body = decode_body(resp).await;
+    let (status, body) = decode_body(resp).await;
+    assert_eq!(status, 200);
     assert_eq!(body["StreamDescription"]["StreamName"], "name");
 }
 ```
@@ -87,7 +88,7 @@ cargo cov-html                      # alias: llvm-cov --open (HTML report)
 
 ## Conformance tests
 
-Multi-language SDK conformance tests in `tests/conformance/{go,python,node,java-v1,java-v2}`. SDK clients serialize differently — always check conformance coverage when modifying an operation.
+Multi-language SDK conformance tests in `tests/conformance/{go-sdk-v2,python-boto3,node-sdk-v3,java-sdk-v1,java-sdk-v2}`. SDK clients serialize differently — always check conformance coverage when modifying an operation.
 
 ## Commit messages
 
