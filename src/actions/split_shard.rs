@@ -80,6 +80,10 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                 .parse()
                 .unwrap_or_else(|_| BigUint::zero());
 
+            // Strict interior constraint: the split key must be > start+1 AND < end.
+            // Equal to start+1 would give the lower child an empty hash range [start, start];
+            // equal to end would give the upper child an empty range [end, end]. Either
+            // degenerate case would prevent any partition key from routing to that child.
             if hash_key <= &shard_start + BigUint::one() || hash_key >= shard_end {
                 return Err(KinesisErrorResponse::client_error(
                     constants::INVALID_ARGUMENT,
@@ -111,6 +115,9 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                 let now = current_time_ms();
                 stream.stream_status = StreamStatus::Active;
 
+                // Use the maximum possible seq_ix (0x7fffffffffffffff) for the closing
+                // sequence number so that no future record in this shard could produce a
+                // sequence number that compares as ≥ the ending sequence.
                 let max_seq_ix = BigUint::from_str_radix("7fffffffffffffff", 16)
                     .unwrap_or_else(|_| BigUint::zero());
 
@@ -141,6 +148,10 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                     },
                     sequence_number_range: SequenceNumberRange {
                         starting_sequence_number: sequence::stringify_sequence(&sequence::SeqObj {
+                            // Child's create_time is 1 second ahead of the parent's closing
+                            // timestamp so child sequence numbers always sort lexically after
+                            // the parent's last sequence (the token format encodes create_time
+                            // in hex[1..10], so a higher create_time produces a larger number).
                             shard_create_time: now + 1000,
                             shard_ix: new_ix1,
                             seq_ix: None,
@@ -164,6 +175,8 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                     },
                     sequence_number_range: SequenceNumberRange {
                         starting_sequence_number: sequence::stringify_sequence(&sequence::SeqObj {
+                            // Same as the lower child: 1 second ahead so this child's
+                            // sequences sort after the parent's closing sequence number.
                             shard_create_time: now + 1000,
                             shard_ix: new_ix2,
                             seq_ix: None,

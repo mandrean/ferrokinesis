@@ -42,6 +42,10 @@ impl Serialize for KinesisError {
         let mut map = serializer.serialize_map(Some(len))?;
         map.serialize_entry("__type", &self.error_type)?;
         if let Some(ref msg) = self.message {
+            // Kinesis uses dual casing for the message field — this is a real AWS quirk,
+            // not a typo. SerializationException responses use the uppercase key "Message"
+            // while every other error type uses lowercase "message". Clients that parse
+            // error bodies must handle both spellings.
             if self.error_type == constants::SERIALIZATION_EXCEPTION {
                 map.serialize_entry("Message", msg)?;
             } else {

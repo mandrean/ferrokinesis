@@ -41,6 +41,10 @@ pub fn parse_sequence(seq: &str) -> Result<SeqObj, SequenceError> {
         .parse()
         .map_err(|_| SequenceError::InvalidSequenceNumber(seq.to_string()))?;
 
+    // AWS sequence numbers always have their high bit set (≥ 2^124). Numbers below
+    // that threshold are pre-production / kinesalite v0 tokens that were generated
+    // without the high bit. Bumping them up normalises the representation so that the
+    // fixed hex-slice offsets used by all version parsers below are consistent.
     let pow_2_124 = pow_2(124);
     let seq_num = if seq_num < pow_2_124 {
         &seq_num + &pow_2_124
@@ -50,6 +54,11 @@ pub fn parse_sequence(seq: &str) -> Result<SeqObj, SequenceError> {
 
     let hex = format!("{seq_num:x}");
 
+    // Version detection by numeric magnitude:
+    //   v0  → [2^124,  2^125 × 16)   — kinesalite legacy format
+    //   v1/v2 → (2^185, 2^185 × 3/2) — AWS production format; the exact version
+    //            (1 or 2) is encoded in the last hex nibble of the sequence number.
+    // Any value outside these ranges is an unknown/corrupt sequence.
     let pow_2_124_next = pow_2(125) * BigUint::from(16u32);
     let pow_2_185 = pow_2(185);
     let pow_2_185_next = &pow_2_185 * BigUint::from(3u32) / BigUint::from(2u32);
@@ -65,6 +74,13 @@ pub fn parse_sequence(seq: &str) -> Result<SeqObj, SequenceError> {
 
     match version {
         2 => {
+            // v2 hex layout (total 47 hex digits after the leading '2'):
+            //   hex[1..10]  = shard_create_time (seconds, 9 hex digits)
+            //   hex[10]     = last nibble of shard_ix (overlaps with shard_ix field)
+            //   hex[11..27] = seq_ix (16 hex digits, unsigned 64-bit)
+            //   hex[27..29] = byte1 (2 hex digits, opaque AWS field)
+            //   hex[29..38] = seq_time (seconds, 9 hex digits)
+            //   hex[38..46] = shard_ix (8 hex digits, two's-complement 32-bit)
             let seq_ix_hex = &hex[11..27];
             let shard_ix_hex_raw = &hex[38..46];
 
@@ -73,9 +89,12 @@ pub fn parse_sequence(seq: &str) -> Result<SeqObj, SequenceError> {
                 return Err(SequenceError::SequenceIndexTooHigh);
             }
 
+            // Two's-complement sign extension: the shard_ix field is stored as a
+            // 32-bit unsigned value in hex, but Kinesis uses negative shard indices
+            // for merged child shards. If the high nibble is > 7 the 32-bit value
+            // represents a negative signed integer; subtract 2^32 to get the i64.
             let shard_ix_first = u8::from_str_radix(&shard_ix_hex_raw[..1], 16).unwrap_or(0);
             let shard_ix: i64 = if shard_ix_first > 7 {
-                // Negative shard index
                 let val = i64::from_str_radix(shard_ix_hex_raw, 16).unwrap_or(0);
                 val - (1i64 << 32)
             } else {
@@ -84,6 +103,9 @@ pub fn parse_sequence(seq: &str) -> Result<SeqObj, SequenceError> {
 
             let shard_create_secs = u64::from_str_radix(&hex[1..10], 16)
                 .map_err(|e| SequenceError::HexParse(e.to_string()))?;
+            // 16_025_175_000 seconds is approximately year 2477. A value that large
+            // would not fit in the 9-nibble hex slot that stringify_sequence allocates
+            // for shard_create_time, producing a silently truncated (wrong) sequence.
             if shard_create_secs >= 16025175000 {
                 return Err(SequenceError::DateTooLarge(shard_create_secs));
             }

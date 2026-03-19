@@ -75,6 +75,8 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
             let mut shard_create_time = 0u64;
 
             for (i, shard) in stream.shards.iter().enumerate() {
+                // Only shards without an ending_sequence_number are open; once a shard
+                // is closed (split or merged) it no longer accepts writes (Kinesis invariant).
                 if shard.sequence_number_range.ending_sequence_number.is_none() {
                     let start: BigUint = shard
                         .hash_key_range
@@ -99,7 +101,13 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                 }
             }
 
+            // kinesalite groups every 5 consecutive shards into a shared sequence-index
+            // bucket; seq_ix is incremented per-bucket rather than per-shard. This
+            // emulates that bucketing exactly so sequence numbers match real AWS ordering.
             let seq_ix_ix = (shard_ix as usize) / 5;
+            // Clamp `now` to at least the shard's own creation time. A record timestamp
+            // that precedes the shard's start would produce a sequence number that sorts
+            // before the shard's starting sequence number — an impossible ordering.
             let now = current_time_ms().max(shard_create_time);
 
             // Ensure seq_ix vec is large enough
@@ -108,6 +116,9 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
             }
 
             if stream.seq_ix[seq_ix_ix].is_none() {
+                // Start seq_ix at 1 (not 0) when the shard was created in the same
+                // millisecond as this write, so the first record's sequence number is
+                // strictly greater than the shard's starting sequence number.
                 stream.seq_ix[seq_ix_ix] = Some(if shard_create_time == now { 1 } else { 0 });
             }
 

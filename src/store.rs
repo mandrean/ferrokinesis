@@ -103,6 +103,11 @@ pub struct Store {
 fn serialize_stream(stream: &Stream) -> Vec<u8> {
     let mut val = serde_json::to_value(stream).unwrap();
     let obj = val.as_object_mut().unwrap();
+    // Fields like _seq_ix and _tags are stored under underscore-prefixed keys so they
+    // survive the round-trip through serde_json. The corresponding struct fields carry
+    // `#[serde(skip)]`, which prevents them from appearing in API responses but also
+    // means serde_json::to_value() drops them. Writing them explicitly here under
+    // private names ensures they are persisted to the database and restored on read.
     obj.insert(
         "_seq_ix".to_string(),
         serde_json::to_value(&stream.seq_ix).unwrap(),
@@ -240,6 +245,10 @@ impl Store {
 
             // Delete all records for this stream
             let mut records = write_txn.open_table(RECORDS).unwrap();
+            // `\0` separates stream name from shard key; `\x01` is the byte immediately
+            // after `\0` in ASCII, so the half-open range "{name}\0".."{name}\x01"
+            // captures every record belonging to this stream without false matches from
+            // a stream whose name is a prefix of another stream's name.
             let prefix = format!("{name}\0");
             let prefix_end = format!("{name}\x01");
             let keys_to_remove: Vec<String> = records
