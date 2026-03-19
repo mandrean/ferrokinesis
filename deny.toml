@@ -5,7 +5,12 @@ targets = []
 feature-depth = 1
 
 [advisories]
-ignore = []
+ignore = [
+    # atomic-polyfill is only pulled in when --all-features enables postcard's
+    # heapless-cas feature (which we don't use: default-features = false).
+    # No upgrade path exists (postcard v2 not released). Not a runtime dependency.
+    { id = "RUSTSEC-2023-0089", reason = "transitive dep only under --all-features via postcard/heapless-cas; not used at runtime" },
+]
 
 [licenses]
 allow = [
