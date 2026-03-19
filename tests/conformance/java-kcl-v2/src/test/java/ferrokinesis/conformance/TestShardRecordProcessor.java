@@ -55,16 +55,20 @@ public class TestShardRecordProcessor implements ShardRecordProcessor {
 
     @Override
     public void processRecords(ProcessRecordsInput processRecordsInput) {
+        int newCount = 0;
         for (KinesisClientRecord record : processRecordsInput.records()) {
             if (seenSequenceNumbers.add(record.sequenceNumber())) {
                 receivedRecords.add(record);
-                latch.countDown();
+                newCount++;
             }
         }
         try {
             processRecordsInput.checkpointer().checkpoint();
         } catch (Exception e) {
             System.err.println("[KCLv2] Checkpoint failed for shard " + shardId + ": " + e.getMessage());
+        }
+        for (int i = 0; i < newCount; i++) {
+            latch.countDown();
         }
     }
 

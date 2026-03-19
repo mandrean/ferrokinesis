@@ -203,8 +203,9 @@ public class KclV2IntegrationTest {
     @Order(3)
     void verifyLeaseTable() {
         // KCL 2.x uses applicationName as the DynamoDB table name (same as KCL 1.x).
-        // By the time this test runs the latch has fired, meaning processRecords was called
-        // and checkpoint() succeeded — so the table exists and is populated.
+        // By the time this test runs the latch has fired. Because latch.countDown() now fires
+        // only after checkpoint() returns, we are guaranteed the lease entry is committed to
+        // DynamoDB Local before this scan runs.
         ScanResponse result = dynamoSyncClient.scan(ScanRequest.builder()
                 .tableName(APPLICATION_NAME)
                 .attributesToGet("leaseKey", "checkpoint", "leaseOwner")
@@ -241,7 +242,7 @@ public class KclV2IntegrationTest {
             }
         }
         if (schedulerThread != null) {
-            schedulerThread.join(5000);
+            schedulerThread.join(30_000);
         }
         kinesisAsyncClient.deleteStream(DeleteStreamRequest.builder()
                 .streamName(STREAM_NAME)
