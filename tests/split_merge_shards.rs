@@ -635,40 +635,12 @@ async fn split_shard_ending_sequence_number_valid() {
     let seq2 = r2["SequenceNumber"].as_str().unwrap().to_string();
 
     // Split
-    let desc = server.describe_stream(name).await;
-    let shard = &desc["StreamDescription"]["Shards"][0];
-    let start: u128 = shard["HashKeyRange"]["StartingHashKey"]
+    let (_, shards) = split_at_midpoint(&server, name).await;
+    let end_seq = shards[0]["SequenceNumberRange"]["EndingSequenceNumber"]
         .as_str()
-        .unwrap()
-        .parse()
         .unwrap();
-    let end: u128 = shard["HashKeyRange"]["EndingHashKey"]
-        .as_str()
-        .unwrap()
-        .parse()
-        .unwrap();
-    let mid = (start + end) / 2;
 
-    let res = server
-        .request(
-            "SplitShard",
-            &json!({
-                "StreamName": name,
-                "ShardToSplit": "shardId-000000000000",
-                "NewStartingHashKey": mid.to_string(),
-            }),
-        )
-        .await;
-    assert_eq!(res.status(), 200);
-    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-
-    let desc = server.describe_stream(name).await;
-    let end_seq =
-        desc["StreamDescription"]["Shards"][0]["SequenceNumberRange"]["EndingSequenceNumber"]
-            .as_str()
-            .unwrap();
-
-    // EndingSequenceNumber must be greater than both record sequence numbers
+    // EndingSequenceNumber must be lexicographically greater than both record sequence numbers
     assert!(
         end_seq > seq1.as_str(),
         "EndingSequenceNumber {end_seq} should be > record seq {seq1}"
@@ -1244,4 +1216,76 @@ async fn split_child_shard_creates_third_generation() {
         gc2_id,
         "hash key max should route to grandchild 2"
     );
+}
+
+// -- Test 14: Merged child shard serves records put to both parents --
+
+#[tokio::test]
+async fn merged_child_shard_serves_records_from_both_parents() {
+    let server = TestServer::new().await;
+    let name = "test-merge-read-child";
+    server.create_stream(name, 2).await;
+
+    // Get shard 1's starting hash key for explicit routing
+    let desc = server.describe_stream(name).await;
+    let shard1_start = desc["StreamDescription"]["Shards"][1]["HashKeyRange"]["StartingHashKey"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Put a record to each parent shard
+    put_record_with_hash_key(&server, name, "cGFyZW50MA==", "pk0", "0").await;
+    put_record_with_hash_key(&server, name, "cGFyZW50MQ==", "pk1", &shard1_start).await;
+
+    // Merge shards 0 + 1
+    let res = server
+        .request(
+            "MergeShards",
+            &json!({
+                "StreamName": name,
+                "ShardToMerge": "shardId-000000000000",
+                "AdjacentShardToMerge": "shardId-000000000001",
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Put a record to the merged child
+    put_record_with_hash_key(&server, name, "bWVyZ2Vk", "pk2", "0").await;
+
+    // Read from merged child via TRIM_HORIZON
+    let desc = server.describe_stream(name).await;
+    let shards = desc["StreamDescription"]["Shards"].as_array().unwrap();
+    let merged_id = shards[2]["ShardId"].as_str().unwrap();
+
+    let iter = server
+        .get_shard_iterator(name, merged_id, "TRIM_HORIZON")
+        .await;
+    let result = server.get_records(&iter).await;
+    let records = result["Records"].as_array().unwrap();
+
+    assert_eq!(
+        records.len(),
+        1,
+        "merged child should serve the record put after merge"
+    );
+    assert_eq!(records[0]["Data"], "bWVyZ2Vk");
+
+    // Parent shards should still serve their pre-merge records
+    let iter0 = server
+        .get_shard_iterator(name, "shardId-000000000000", "TRIM_HORIZON")
+        .await;
+    let result0 = server.get_records(&iter0).await;
+    let records0 = result0["Records"].as_array().unwrap();
+    assert_eq!(records0.len(), 1, "parent 0 should still have its record");
+    assert_eq!(records0[0]["Data"], "cGFyZW50MA==");
+
+    let iter1 = server
+        .get_shard_iterator(name, "shardId-000000000001", "TRIM_HORIZON")
+        .await;
+    let result1 = server.get_records(&iter1).await;
+    let records1 = result1["Records"].as_array().unwrap();
+    assert_eq!(records1.len(), 1, "parent 1 should still have its record");
+    assert_eq!(records1[0]["Data"], "cGFyZW50MQ==");
 }
