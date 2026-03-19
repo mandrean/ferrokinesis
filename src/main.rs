@@ -102,6 +102,10 @@ fn resolve<T>(cli: Option<T>, file: Option<T>, default: T) -> T {
 
 #[derive(Args, Debug)]
 struct HealthCheckArgs {
+    /// Host of the server to check
+    #[arg(long, default_value = "127.0.0.1")]
+    host: String,
+
     /// Port of the server to check
     #[arg(long, default_value_t = 4567)]
     port: u16,
@@ -193,7 +197,7 @@ fn run_generate_cert(args: &GenerateCertArgs) -> ExitCode {
 }
 
 fn run_health_check(args: &HealthCheckArgs) -> ExitCode {
-    let addr = format!("127.0.0.1:{}", args.port);
+    let addr = format!("{}:{}", args.host, args.port);
 
     let stream = match TcpStream::connect_timeout(
         &addr.parse().expect("invalid address"),
