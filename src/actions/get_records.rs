@@ -83,6 +83,9 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     let record_store = store.get_record_store(&stream_name).await;
     let cutoff_time = now - (stream.retention_period_hours as u64 * 60 * 60 * 1000);
 
+    // Record keys are ordered as "{shard_hex}/{seq_num}". Scanning the half-open
+    // range [hex(shard_ix), hex(shard_ix+1)) captures exactly the records for this
+    // shard in sequence order without a full-table scan or per-record shard check.
     let range_start = format!("{}/{}", sequence::shard_ix_to_hex(shard_ix), seq_no);
     let range_end = sequence::shard_ix_to_hex(shard_ix + 1);
 
@@ -113,6 +116,10 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         last_seq_obj = Some(record_seq_obj);
     }
 
+    // If the iterator's embedded seq_time is in the future (e.g. a LATEST iterator
+    // created just before the system clock stepped backward), use that future time as
+    // the base for the next-iterator sequence rather than `now`. Using `now` would
+    // regress the iterator position and cause the caller to re-scan already-seen records.
     let default_time = if seq_obj.seq_time.unwrap_or(0) > now {
         seq_obj.seq_time.unwrap_or(now)
     } else {
@@ -132,7 +139,12 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     ));
     let mut millis_behind = 0u64;
 
-    // If shard is closed and no items found, check if iterator should be null
+    // Per Kinesis spec, NextShardIterator must be absent (not null) once a consumer
+    // has read past the end of a closed shard. The three conditions guard exactly that:
+    //   1. no records were returned (the consumer is at or past the frontier),
+    //   2. the shard has an ending_sequence_number (it is closed), and
+    //   3. the iterator's position is at or past the closing sequence's timestamp.
+    // Only when all three hold is it safe to omit the next iterator.
     if items.is_empty()
         && let Some(ref end_seq) = stream.shards[shard_ix as usize]
             .sequence_number_range
@@ -144,7 +156,9 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         millis_behind = now.saturating_sub(end_seq_obj.seq_time.unwrap_or(0));
     }
 
-    // Clean up old records asynchronously
+    // Expired-record deletion runs asynchronously so it does not block the caller's
+    // response. The records were already excluded from `items` above; this task just
+    // reclaims storage space after the response has been sent.
     if !keys_to_delete.is_empty() {
         let store_clone = store.clone();
         let name = stream_name.to_string();

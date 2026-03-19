@@ -26,6 +26,10 @@ pub enum ShardIteratorError {
 type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
 type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
 
+// Key and IV are hardcoded to match kinesalite's values exactly. Changing either
+// would make all in-flight iterator tokens undecryptable (decrypt would return garbage
+// or a padding error), silently breaking any client that calls GetRecords after an
+// emulator restart or upgrade.
 pub const ITERATOR_PWD_KEY: [u8; 32] = [
     0x11, 0x33, 0xa5, 0xa8, 0x33, 0x66, 0x6b, 0x49, 0xab, 0xf2, 0x8c, 0x8b, 0xa3, 0x02, 0x93, 0x0f,
     0x0b, 0x2f, 0xb2, 0x40, 0xdc, 0xcd, 0x43, 0xcf, 0x4d, 0xfb, 0xc0, 0xca, 0x91, 0xf1, 0x77, 0x51,
@@ -39,6 +43,11 @@ pub const ITERATOR_PWD_IV: [u8; 16] = [
 pub fn create_shard_iterator(stream_name: &str, shard_id: &str, seq: &str) -> String {
     let now = current_time_ms() as u128;
 
+    // Plaintext token format (slash-delimited, 5 fields):
+    //   {timestamp_ms:014}/{stream_name}/{shard_id}/{seq_num}/{36 zero nonce}
+    // The 14-digit zero-padded timestamp covers ~317 years from epoch. The 36-character
+    // nonce field is always zeros here (kinesalite compatible); it exists to pad the
+    // plaintext to a predictable length so AES-CBC block alignment is stable.
     let encrypt_str = format!(
         "{:014}/{stream_name}/{shard_id}/{seq}/{}",
         now,
@@ -60,8 +69,11 @@ pub fn create_shard_iterator(stream_name: &str, shard_id: &str, seq: &str) -> St
         .unwrap();
     buf.truncate(encrypted_len);
 
+    // Prepend an 8-byte little-endian version header [0,0,0,0,0,0,0,1] before the
+    // ciphertext. The value 1 is a format version that matches kinesalite. Decoders
+    // check this header first and reject any token whose version byte differs.
     let mut buffer = vec![0u8; 8];
-    buffer[7] = 1; // Version marker [0,0,0,0,0,0,0,1]
+    buffer[7] = 1;
     buffer.extend_from_slice(&buf);
 
     BASE64.encode(&buffer)
@@ -75,6 +87,10 @@ pub fn decode_shard_iterator(
         .decode(iterator)
         .map_err(|_| ShardIteratorError::InvalidBase64)?;
 
+    // 152 = 8 (header) + 144 (smallest PKCS7-padded ciphertext for the shortest valid
+    // plaintext). 280 = 8 + ceil((14+1+128+1+20+1+57+1+36)/16)*16, where 20 is the
+    // shard ID length ("shardId-000000000000") and 57 is the maximum decimal length of
+    // a v2 sequence number (47 hex digits ≈ log10(2^188) < 57).
     if buffer.len() < 152 || buffer.len() > 280 {
         return Err(ShardIteratorError::InvalidLength);
     }
