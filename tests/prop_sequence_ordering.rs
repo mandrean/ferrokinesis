@@ -1,0 +1,145 @@
+mod common;
+use common::*;
+
+use ferrokinesis::store::StoreOptions;
+use proptest::prelude::*;
+use proptest::test_runner::{Config, TestRunner};
+use serde_json::json;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn unique_stream_name() -> String {
+    format!("prop-seq-{}", COUNTER.fetch_add(1, Ordering::Relaxed))
+}
+
+/// P11: Sequential PutRecord calls produce strictly increasing sequence numbers.
+#[test]
+fn prop_sequential_puts_increasing_sequence_numbers() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let server = rt.block_on(TestServer::with_options(StoreOptions {
+        create_stream_ms: 0,
+        delete_stream_ms: 0,
+        update_stream_ms: 0,
+        shard_limit: 200,
+        ..Default::default()
+    }));
+
+    let mut runner = TestRunner::new(Config {
+        cases: 50,
+        ..Config::default()
+    });
+
+    runner
+        .run(&(2u32..=20), |record_count| {
+            let stream_name = unique_stream_name();
+
+            let seq_nums: Vec<String> = rt.block_on(async {
+                server.create_stream(&stream_name, 1).await;
+
+                let mut seqs = Vec::with_capacity(record_count as usize);
+                for _ in 0..record_count {
+                    let res = server
+                        .request(
+                            "PutRecord",
+                            &json!({
+                                "StreamName": stream_name,
+                                "Data": "dGVzdA==",
+                                "PartitionKey": "same-key",
+                            }),
+                        )
+                        .await;
+                    assert_eq!(res.status(), 200);
+                    let body: serde_json::Value = res.json().await.unwrap();
+                    seqs.push(body["SequenceNumber"].as_str().unwrap().to_string());
+                }
+                seqs
+            });
+
+            // Sequence numbers should be strictly increasing (lexicographic order
+            // matches numeric order for these fixed-format hex strings)
+            for i in 0..seq_nums.len() - 1 {
+                prop_assert!(
+                    seq_nums[i] < seq_nums[i + 1],
+                    "sequence number ordering violated at index {}: {:?} >= {:?}",
+                    i,
+                    seq_nums[i],
+                    seq_nums[i + 1]
+                );
+            }
+
+            Ok(())
+        })
+        .unwrap();
+}
+
+/// P12: Within a PutRecords batch, sequence numbers on the same shard are
+/// strictly increasing.
+#[test]
+fn prop_batch_sequence_numbers_increasing() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let server = rt.block_on(TestServer::with_options(StoreOptions {
+        create_stream_ms: 0,
+        delete_stream_ms: 0,
+        update_stream_ms: 0,
+        shard_limit: 200,
+        ..Default::default()
+    }));
+
+    let mut runner = TestRunner::new(Config {
+        cases: 50,
+        ..Config::default()
+    });
+
+    runner
+        .run(&(2u32..=50), |batch_size| {
+            let stream_name = unique_stream_name();
+
+            let seq_nums: Vec<String> = rt.block_on(async {
+                server.create_stream(&stream_name, 1).await;
+
+                let records: Vec<serde_json::Value> = (0..batch_size)
+                    .map(|_| {
+                        json!({
+                            "Data": "dGVzdA==",
+                            "PartitionKey": "same-key",
+                        })
+                    })
+                    .collect();
+
+                let res = server
+                    .request(
+                        "PutRecords",
+                        &json!({
+                            "StreamName": stream_name,
+                            "Records": records,
+                        }),
+                    )
+                    .await;
+                assert_eq!(res.status(), 200);
+                let body: serde_json::Value = res.json().await.unwrap();
+
+                body["Records"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|r| r["SequenceNumber"].as_str().unwrap().to_string())
+                    .collect()
+            });
+
+            prop_assert_eq!(seq_nums.len(), batch_size as usize);
+
+            for i in 0..seq_nums.len() - 1 {
+                prop_assert!(
+                    seq_nums[i] < seq_nums[i + 1],
+                    "batch sequence ordering violated at index {}: {:?} >= {:?}",
+                    i,
+                    seq_nums[i],
+                    seq_nums[i + 1]
+                );
+            }
+
+            Ok(())
+        })
+        .unwrap();
+}

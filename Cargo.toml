@@ -61,6 +61,7 @@ cbc = "0.1"
 ciborium = "0.2"
 criterion = { version = "0.5", features = ["async_tokio"] }
 num-bigint = "0.4"
+proptest = "1"
 reqwest = { version = "0.12", features = ["json"] }
 tempfile = "3"
 
