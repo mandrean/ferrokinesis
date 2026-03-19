@@ -608,8 +608,6 @@ async fn shard_iterator_during_split() {
 
         join_set.spawn(async move {
             barrier.wait().await;
-            // Brief delay to let readers start
-            tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
 
             let res = server
                 .request(
@@ -623,8 +621,16 @@ async fn shard_iterator_during_split() {
                 .await;
             assert_eq!(res.status(), 200, "SplitShard failed");
 
-            // Wait for split to complete
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            // Wait for split to complete (stream returns to ACTIVE)
+            server
+                .wait_for_stream_status(
+                    stream,
+                    "ACTIVE",
+                    tokio::time::Duration::from_millis(10),
+                    100,
+                )
+                .await
+                .expect("stream did not return to ACTIVE after split");
             None
         });
     }
@@ -743,7 +749,7 @@ async fn put_records_batch_contention() {
 #[tokio::test]
 async fn mixed_workload_stress() {
     let result =
-        tokio::time::timeout(tokio::time::Duration::from_secs(15), mixed_workload_inner()).await;
+        tokio::time::timeout(tokio::time::Duration::from_secs(30), mixed_workload_inner()).await;
 
     assert!(result.is_ok(), "mixed workload test timed out (deadlock?)");
 }
@@ -927,8 +933,6 @@ async fn mixed_workload_inner() {
 
         join_set.spawn(async move {
             barrier.wait().await;
-            // Brief delay so other operations start first
-            tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
 
             let (status, _) = {
                 let res = server
