@@ -351,7 +351,6 @@ fn parse_health_response(reader: BufReader<impl std::io::Read>) -> ExitCode {
     }
 }
 
-#[cfg(feature = "tls")]
 async fn shutdown_signal() {
     #[cfg(unix)]
     {
@@ -481,7 +480,10 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     println!("Listening at http://{addr}");
 
-    if let Err(e) = axum::serve(listener, app).await {
+    if let Err(e) = axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+    {
         eprintln!("server error: {e}");
         return ExitCode::FAILURE;
     }
