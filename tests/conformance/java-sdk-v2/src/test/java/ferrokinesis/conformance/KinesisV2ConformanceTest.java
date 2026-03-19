@@ -19,6 +19,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -206,8 +207,10 @@ public class KinesisV2ConformanceTest {
                 })
                 .build();
 
-        asyncClient.subscribeToShard(subscribeRequest, responseHandler).join();
+        CompletableFuture<Void> subscription =
+                asyncClient.subscribeToShard(subscribeRequest, responseHandler);
         assertTrue(latch.await(10, TimeUnit.SECONDS), "Timed out waiting for events");
+        subscription.cancel(true);
         assertNull(error.get(), "Event stream error: " + error.get());
         assertFalse(receivedRecords.isEmpty(), "Should have received at least one record");
 
