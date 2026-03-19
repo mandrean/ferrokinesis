@@ -1,3 +1,11 @@
+//! In-memory redb-backed store for streams, records, consumers, and policies.
+//!
+//! [`Store`] is the central state object threaded through all action handlers.
+//! It is cheap to clone — all clones share the same underlying [`Arc`]`<`[`Database`]`>`.
+//!
+//! [`StoreOptions`] controls runtime behaviour such as simulated delays and
+//! account identity. Pass it to [`crate::create_app`] to wire everything up.
+
 use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::types::{Consumer, StoredRecord, Stream};
@@ -10,8 +18,10 @@ use std::sync::Arc;
 /// Errors that can occur when probing store health.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreHealthError {
+    /// A read transaction could not be started.
     #[error("db read failed: {0}")]
     ReadFailed(String),
+    /// A required table could not be opened within the read transaction.
     #[error("table open failed: {0}")]
     TableOpenFailed(String),
 }
@@ -23,15 +33,39 @@ const POLICIES: TableDefinition<&str, &str> = TableDefinition::new("policies");
 const RESOURCE_TAGS: TableDefinition<&str, &[u8]> = TableDefinition::new("resource_tags");
 const ACCOUNT_SETTINGS: TableDefinition<&str, &[u8]> = TableDefinition::new("account_settings");
 
+/// Runtime configuration passed to [`crate::create_app`].
+///
+/// All fields have sensible defaults via [`StoreOptions::default`].
+///
+/// # Examples
+///
+/// ```rust
+/// use ferrokinesis::store::StoreOptions;
+///
+/// let opts = StoreOptions {
+///     shard_limit: 50,
+///     aws_region: "eu-west-1".to_string(),
+///     ..StoreOptions::default()
+/// };
+/// ```
 #[derive(Debug, Clone)]
 pub struct StoreOptions {
+    /// Simulated delay for `CreateStream` in milliseconds. Defaults to `500`.
     pub create_stream_ms: u64,
+    /// Simulated delay for `DeleteStream` in milliseconds. Defaults to `500`.
     pub delete_stream_ms: u64,
+    /// Simulated delay for stream-update operations in milliseconds. Defaults to `500`.
     pub update_stream_ms: u64,
+    /// Maximum total number of open shards across all streams. Defaults to `10`.
     pub shard_limit: u32,
+    /// Shard iterator TTL in seconds. Iterators older than this are expired. Defaults to `300`.
     pub iterator_ttl_seconds: u64,
+    /// Background retention-reaper check interval in seconds.
+    /// Set to `0` (default) to disable the reaper.
     pub retention_check_interval_secs: u64,
+    /// Simulated AWS account ID (12 digits). Defaults to `"000000000000"`.
     pub aws_account_id: String,
+    /// Simulated AWS region. Defaults to `"us-east-1"`.
     pub aws_region: String,
 }
 
@@ -50,10 +84,17 @@ impl Default for StoreOptions {
     }
 }
 
+/// Handle to the in-memory redb-backed stream store.
+///
+/// Cheap to clone — all clones share the same underlying `Arc<Database>`.
+/// Inject this into Axum handlers via `State<Store>`.
 #[derive(Clone)]
 pub struct Store {
+    /// Runtime configuration used by action handlers.
     pub options: StoreOptions,
+    /// The effective AWS account ID (digits only, length-validated at construction).
     pub aws_account_id: String,
+    /// The simulated AWS region.
     pub aws_region: String,
     db: Arc<Database>,
 }
@@ -120,6 +161,10 @@ fn record_range(stream_name: &str, start: &str, end: &str) -> (String, String) {
 }
 
 impl Store {
+    /// Creates a new store, initialising all redb tables.
+    ///
+    /// Strips non-digit characters from `options.aws_account_id` and warns if
+    /// the result is not exactly 12 digits.
     pub fn new(options: StoreOptions) -> Self {
         let aws_account_id: String = options
             .aws_account_id
@@ -158,6 +203,11 @@ impl Store {
         }
     }
 
+    /// Retrieves a stream by name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KinesisErrorResponse`] (`ResourceNotFoundException`) if the stream does not exist.
     pub async fn get_stream(&self, name: &str) -> Result<Stream, KinesisErrorResponse> {
         let read_txn = self.db.begin_read().unwrap();
         let table = read_txn.open_table(STREAMS).unwrap();
@@ -170,6 +220,7 @@ impl Store {
         }
     }
 
+    /// Inserts or replaces a stream by name.
     pub async fn put_stream(&self, name: &str, stream: Stream) {
         let bytes = serialize_stream(&stream);
         let write_txn = self.db.begin_write().unwrap();
@@ -180,6 +231,7 @@ impl Store {
         write_txn.commit().unwrap();
     }
 
+    /// Deletes a stream and all of its records.
     pub async fn delete_stream(&self, name: &str) {
         let write_txn = self.db.begin_write().unwrap();
         {
@@ -205,14 +257,14 @@ impl Store {
         write_txn.commit().unwrap();
     }
 
-    /// Check if a stream exists
+    /// Returns `true` if a stream with the given name exists.
     pub async fn contains_stream(&self, name: &str) -> bool {
         let read_txn = self.db.begin_read().unwrap();
         let table = read_txn.open_table(STREAMS).unwrap();
         table.get(name).unwrap().is_some()
     }
 
-    /// List all stream names (sorted)
+    /// Returns all stream names in sorted order.
     pub async fn list_stream_names(&self) -> Vec<String> {
         let read_txn = self.db.begin_read().unwrap();
         let table = read_txn.open_table(STREAMS).unwrap();
@@ -226,8 +278,28 @@ impl Store {
             .collect()
     }
 
-    /// Update a stream in a read-modify-write transaction.
-    /// Returns the result of the closure.
+    /// Atomically reads, mutates, and writes a stream (read-modify-write).
+    ///
+    /// The closure `f` receives a mutable reference to the stream and must
+    /// return `Ok(R)` to commit the change, or `Err(e)` to abort.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KinesisErrorResponse`] (`ResourceNotFoundException`) if the stream
+    /// does not exist, or any error returned by the closure `f`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use ferrokinesis::store::{Store, StoreOptions};
+    /// # async fn example(store: &Store) -> Result<(), ferrokinesis::error::KinesisErrorResponse> {
+    /// store.update_stream("my-stream", |stream| {
+    ///     stream.retention_period_hours = 48;
+    ///     Ok(())
+    /// }).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn update_stream<F, R>(&self, name: &str, f: F) -> Result<R, KinesisErrorResponse>
     where
         F: FnOnce(&mut Stream) -> Result<R, KinesisErrorResponse>,
@@ -249,9 +321,11 @@ impl Store {
         Ok(result)
     }
 
-    /// Execute a closure with write access to all streams.
-    /// The closure receives a mutable BTreeMap of all streams.
-    /// Changes are written back to the database.
+    /// Executes a closure with write access to all streams simultaneously.
+    ///
+    /// The closure receives a mutable `BTreeMap` of all streams, the current
+    /// `StoreOptions`, the account ID, and the region. All changes to the map
+    /// are written back atomically when the closure returns.
     pub async fn with_streams_write<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&mut BTreeMap<String, Stream>, &StoreOptions, &str, &str) -> R,
@@ -298,6 +372,10 @@ impl Store {
         result
     }
 
+    /// Returns all records for a stream as a map from shard-key to record.
+    ///
+    /// The map key is `"{shard_hex}/{seq_num}"` (the composite key with the
+    /// stream-name prefix stripped).
     pub async fn get_record_store(&self, stream_name: &str) -> BTreeMap<String, StoredRecord> {
         let read_txn = self.db.begin_read().unwrap();
         let table = read_txn.open_table(RECORDS).unwrap();
@@ -320,6 +398,7 @@ impl Store {
             .collect()
     }
 
+    /// Stores a single record under the given composite shard key.
     pub async fn put_record(&self, stream_name: &str, key: &str, record: StoredRecord) {
         let composite_key = record_key(stream_name, key);
         let bytes = serde_json::to_vec(&record).unwrap();
@@ -333,6 +412,7 @@ impl Store {
         write_txn.commit().unwrap();
     }
 
+    /// Stores multiple records in a single write transaction.
     pub async fn put_records_batch(&self, stream_name: &str, batch: Vec<(String, StoredRecord)>) {
         let write_txn = self.db.begin_write().unwrap();
         {
@@ -348,8 +428,8 @@ impl Store {
         write_txn.commit().unwrap();
     }
 
-    /// Delete records whose sequence-number–embedded timestamp is older than
-    /// the retention cutoff.  Returns the number of records removed.
+    /// Deletes records whose sequence-number–embedded timestamp is older than
+    /// the retention cutoff. Returns the number of records removed.
     pub async fn delete_expired_records(&self, stream_name: &str, retention_hours: u32) -> usize {
         let now = crate::util::current_time_ms();
         let cutoff_time = now - (retention_hours as u64 * 60 * 60 * 1000);
@@ -392,6 +472,7 @@ impl Store {
         count
     }
 
+    /// Deletes records by their shard keys within a stream.
     pub async fn delete_record_keys(&self, stream_name: &str, keys: &[String]) {
         let write_txn = self.db.begin_write().unwrap();
         {
@@ -404,6 +485,7 @@ impl Store {
         write_txn.commit().unwrap();
     }
 
+    /// Returns the total number of open (non-closed) shards across all streams.
     pub async fn sum_open_shards(&self) -> u32 {
         let read_txn = self.db.begin_read().unwrap();
         let table = read_txn.open_table(STREAMS).unwrap();
@@ -422,7 +504,10 @@ impl Store {
             .sum()
     }
 
-    /// Get records in a specific range for a stream
+    /// Returns records in the given shard-key range for a stream.
+    ///
+    /// Both `range_start` and `range_end` are shard keys of the form
+    /// `"{shard_hex}/{seq_num}"`.
     pub async fn get_records_range(
         &self,
         stream_name: &str,
@@ -451,6 +536,7 @@ impl Store {
 
     // --- Consumer operations ---
 
+    /// Inserts or replaces a consumer keyed by its ARN.
     pub async fn put_consumer(&self, consumer_arn: &str, consumer: Consumer) {
         let bytes = serde_json::to_vec(&consumer).unwrap();
         let write_txn = self.db.begin_write().unwrap();
@@ -461,6 +547,7 @@ impl Store {
         write_txn.commit().unwrap();
     }
 
+    /// Returns the consumer with the given ARN, or `None` if not found.
     pub async fn get_consumer(&self, consumer_arn: &str) -> Option<Consumer> {
         let read_txn = self.db.begin_read().unwrap();
         let table = read_txn.open_table(CONSUMERS).unwrap();
@@ -470,6 +557,7 @@ impl Store {
             .map(|guard| serde_json::from_slice(guard.value()).unwrap())
     }
 
+    /// Deletes the consumer with the given ARN.
     pub async fn delete_consumer(&self, consumer_arn: &str) {
         let write_txn = self.db.begin_write().unwrap();
         {
@@ -479,6 +567,7 @@ impl Store {
         write_txn.commit().unwrap();
     }
 
+    /// Returns all consumers whose ARN belongs to the given stream ARN.
     pub async fn list_consumers_for_stream(&self, stream_arn: &str) -> Vec<Consumer> {
         let prefix = format!("{stream_arn}/consumer/");
         let prefix_end = format!("{stream_arn}/consumer0"); // '0' > '/'
@@ -494,7 +583,9 @@ impl Store {
             .collect()
     }
 
-    /// Find a consumer by stream ARN + consumer name
+    /// Finds a consumer by stream ARN and consumer name.
+    ///
+    /// Returns `None` if no consumer with the given name is registered to the stream.
     pub async fn find_consumer(&self, stream_arn: &str, consumer_name: &str) -> Option<Consumer> {
         let consumers = self.list_consumers_for_stream(stream_arn).await;
         consumers
@@ -504,6 +595,7 @@ impl Store {
 
     // --- Resource policy operations ---
 
+    /// Stores a resource policy JSON string for the given resource ARN.
     pub async fn put_policy(&self, resource_arn: &str, policy: &str) {
         let write_txn = self.db.begin_write().unwrap();
         {
@@ -513,6 +605,7 @@ impl Store {
         write_txn.commit().unwrap();
     }
 
+    /// Returns the resource policy for the given ARN, or `None` if none is set.
     pub async fn get_policy(&self, resource_arn: &str) -> Option<String> {
         let read_txn = self.db.begin_read().unwrap();
         let table = read_txn.open_table(POLICIES).unwrap();
@@ -522,6 +615,7 @@ impl Store {
             .map(|guard| guard.value().to_string())
     }
 
+    /// Deletes the resource policy for the given ARN.
     pub async fn delete_policy(&self, resource_arn: &str) {
         let write_txn = self.db.begin_write().unwrap();
         {
@@ -531,15 +625,27 @@ impl Store {
         write_txn.commit().unwrap();
     }
 
-    /// Resolve a stream name from a stream ARN
+    /// Extracts the stream name from a Kinesis stream ARN.
+    ///
+    /// ARN format: `arn:aws:kinesis:{region}:{account}:stream/{name}`
+    ///
+    /// Returns `None` if the ARN does not contain a `/`.
     pub fn stream_name_from_arn(&self, arn: &str) -> Option<String> {
         // Format: arn:aws:kinesis:{region}:{account}:stream/{name}
         arn.split("/").nth(1).map(|s| s.to_string())
     }
 
-    /// Resolve a stream name from a JSON request body that may contain
-    /// `StreamName`, `StreamARN`, or both.  AWS rejects requests that
-    /// supply both, so we do the same.
+    /// Resolves the stream name from a JSON request body.
+    ///
+    /// Accepts bodies with `StreamName`, `StreamARN`, or both. AWS rejects requests
+    /// that supply both fields simultaneously, and this method does the same.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KinesisErrorResponse`] (`InvalidArgumentException`) if both
+    /// `StreamName` and `StreamARN` are provided, or if neither is provided.
+    /// Returns `ResourceNotFoundException` if an ARN is provided but the stream
+    /// name cannot be resolved from it.
     pub fn resolve_stream_name(&self, data: &Value) -> Result<String, KinesisErrorResponse> {
         let stream_name_raw = data[constants::STREAM_NAME].as_str().unwrap_or("");
         let stream_arn = data[constants::STREAM_ARN].as_str().unwrap_or("");
@@ -570,6 +676,7 @@ impl Store {
 
     // --- Resource tag operations (for non-stream resources like consumers) ---
 
+    /// Returns the tag map for the given resource ARN, or an empty map if none are set.
     pub async fn get_resource_tags(&self, resource_arn: &str) -> BTreeMap<String, String> {
         let read_txn = self.db.begin_read().unwrap();
         let table = read_txn.open_table(RESOURCE_TAGS).unwrap();
@@ -580,6 +687,7 @@ impl Store {
             .unwrap_or_default()
     }
 
+    /// Replaces the tag map for the given resource ARN.
     pub async fn put_resource_tags(&self, resource_arn: &str, tags: &BTreeMap<String, String>) {
         let bytes = serde_json::to_vec(tags).unwrap();
         let write_txn = self.db.begin_write().unwrap();
@@ -592,6 +700,7 @@ impl Store {
 
     // --- Account settings operations ---
 
+    /// Returns the account-level settings object, or an empty JSON object if none are set.
     pub async fn get_account_settings(&self) -> Value {
         let read_txn = self.db.begin_read().unwrap();
         let table = read_txn.open_table(ACCOUNT_SETTINGS).unwrap();
@@ -602,6 +711,7 @@ impl Store {
             .unwrap_or(Value::Object(Default::default()))
     }
 
+    /// Stores the account-level settings object.
     pub async fn put_account_settings(&self, settings: &Value) {
         let bytes = serde_json::to_vec(settings).unwrap();
         let write_txn = self.db.begin_write().unwrap();
@@ -612,7 +722,12 @@ impl Store {
         write_txn.commit().unwrap();
     }
 
-    /// Probe the database with a read transaction to verify all core tables are accessible.
+    /// Probes the database with a read transaction to verify all core tables are accessible.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreHealthError::ReadFailed`] if a read transaction cannot be started,
+    /// or [`StoreHealthError::TableOpenFailed`] if any core table cannot be opened.
     pub fn check_ready(&self) -> Result<(), StoreHealthError> {
         let txn = self
             .db
