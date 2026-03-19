@@ -381,6 +381,7 @@ func TestStreamConfig(t *testing.T) {
 		if err != nil {
 			t.Fatalf("StartStreamEncryption: %v", err)
 		}
+		waitForActive(t, client, streamName)
 	})
 
 	// 6. StopStreamEncryption
