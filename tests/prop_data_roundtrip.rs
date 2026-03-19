@@ -15,8 +15,8 @@ fn prop_data_roundtrip_integrity() {
 
     // Single shard with fixed partition key so we can retrieve records via a known
     // shard iterator. Cross-shard routing is tested in prop_shard_routing.rs.
-    let stream_name = "prop-data-rt";
-    rt.block_on(server.create_stream(stream_name, 1));
+    let stream_name = unique_stream_name("prop-data-rt");
+    rt.block_on(server.create_stream(&stream_name, 1));
 
     let mut runner = TestRunner::new(Config {
         cases: 50,
@@ -93,8 +93,8 @@ fn prop_partition_key_roundtrip() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let server = rt.block_on(TestServer::new());
 
-    let stream_name = "prop-pk-rt";
-    rt.block_on(server.create_stream(stream_name, 1));
+    let stream_name = unique_stream_name("prop-pk-rt");
+    rt.block_on(server.create_stream(&stream_name, 1));
 
     let mut runner = TestRunner::new(Config {
         cases: 50,

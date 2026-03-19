@@ -67,16 +67,16 @@ fn prop_invalid_stream_names_rejected() {
 
     let invalid_names = prop_oneof![
         // Empty string
-        Just(String::new()),
+        1 => Just(String::new()),
         // Too long (129-200 chars of valid characters)
-        "[a-zA-Z0-9_.\\-]{129,200}",
+        10 => "[a-zA-Z0-9_.\\-]{129,200}".prop_map(String::from),
         // Contains characters outside [a-zA-Z0-9_.-]
-        "[a-zA-Z0-9_.\\-]{0,10}[!@#$%^&*()+=\\[\\]{}|;:',<>?/~`][a-zA-Z0-9_.\\-]{0,10}",
+        10 => "[a-zA-Z0-9_.\\-]{0,10}[!@#$%^&*()+=\\[\\]{}|;:',<>?/~`][a-zA-Z0-9_.\\-]{0,10}".prop_map(String::from),
         // Whitespace characters
-        "[a-zA-Z0-9_.\\-]{1,10}[\\t\\n\\r ][a-zA-Z0-9_.\\-]{1,10}",
+        10 => "[a-zA-Z0-9_.\\-]{1,10}[\\t\\n\\r ][a-zA-Z0-9_.\\-]{1,10}".prop_map(String::from),
         // Control characters and null bytes
-        Just("test\x00stream".to_string()),
-        Just("test\tstream".to_string()),
+        1 => Just("test\x00stream".to_string()),
+        1 => Just("test\tstream".to_string()),
     ];
 
     runner

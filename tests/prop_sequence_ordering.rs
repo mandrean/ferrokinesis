@@ -2,6 +2,7 @@ mod common;
 use common::*;
 
 use ferrokinesis::store::StoreOptions;
+use num_bigint::BigUint;
 use proptest::prelude::*;
 use proptest::test_runner::{Config, TestRunner};
 use serde_json::json;
@@ -49,15 +50,18 @@ fn prop_sequential_puts_increasing_sequence_numbers() {
                 seqs
             });
 
-            // Sequence numbers are decimal bigints with fixed-width formatting,
-            // so lexicographic ordering matches numeric ordering.
-            for i in 0..seq_nums.len() - 1 {
+            let parsed: Vec<BigUint> = seq_nums
+                .iter()
+                .map(|s| s.parse::<BigUint>().unwrap())
+                .collect();
+
+            for i in 0..parsed.len() - 1 {
                 prop_assert!(
-                    seq_nums[i] < seq_nums[i + 1],
-                    "sequence number ordering violated at index {}: {:?} >= {:?}",
+                    parsed[i] < parsed[i + 1],
+                    "sequence number ordering violated at index {}: {} >= {}",
                     i,
-                    seq_nums[i],
-                    seq_nums[i + 1]
+                    parsed[i],
+                    parsed[i + 1]
                 );
             }
 
@@ -122,13 +126,18 @@ fn prop_batch_sequence_numbers_increasing() {
 
             prop_assert_eq!(seq_nums.len(), batch_size as usize);
 
-            for i in 0..seq_nums.len() - 1 {
+            let parsed: Vec<BigUint> = seq_nums
+                .iter()
+                .map(|s| s.parse::<BigUint>().unwrap())
+                .collect();
+
+            for i in 0..parsed.len() - 1 {
                 prop_assert!(
-                    seq_nums[i] < seq_nums[i + 1],
-                    "batch sequence ordering violated at index {}: {:?} >= {:?}",
+                    parsed[i] < parsed[i + 1],
+                    "batch sequence ordering violated at index {}: {} >= {}",
                     i,
-                    seq_nums[i],
-                    seq_nums[i + 1]
+                    parsed[i],
+                    parsed[i + 1]
                 );
             }
 
