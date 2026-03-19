@@ -5,22 +5,12 @@ use common::*;
 
 use aes::cipher::{BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
+use ferrokinesis::shard_iterator::{ITERATOR_PWD_IV, ITERATOR_PWD_KEY};
 use ferrokinesis::store::StoreOptions;
 use proptest::prelude::*;
-use proptest::test_runner::{Config, TestRunner};
 use serde_json::json;
 
 type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
-
-/// These constants mirror the private constants in shard_iterator.rs.
-const ITERATOR_PWD_KEY: [u8; 32] = [
-    0x11, 0x33, 0xa5, 0xa8, 0x33, 0x66, 0x6b, 0x49, 0xab, 0xf2, 0x8c, 0x8b, 0xa3, 0x02, 0x93, 0x0f,
-    0x0b, 0x2f, 0xb2, 0x40, 0xdc, 0xcd, 0x43, 0xcf, 0x4d, 0xfb, 0xc0, 0xca, 0x91, 0xf1, 0x77, 0x51,
-];
-
-const ITERATOR_PWD_IV: [u8; 16] = [
-    0x7b, 0xf1, 0x39, 0xdb, 0xab, 0xbe, 0xa2, 0xd9, 0x99, 0x5d, 0x6f, 0xca, 0xe1, 0xdf, 0xf7, 0xda,
-];
 
 fn create_iterator_with_timestamp(
     stream_name: &str,
@@ -85,10 +75,7 @@ fn prop_expired_iterator_returns_error() {
         (seq, "shardId-000000000000".to_string())
     });
 
-    let mut runner = TestRunner::new(Config {
-        cases: 50,
-        ..Config::default()
-    });
+    let mut runner = prop_runner(50);
 
     // Generate ms offsets past the 1-second TTL (2s to 600s)
     runner

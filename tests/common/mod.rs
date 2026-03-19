@@ -492,6 +492,14 @@ fn json_to_cbor_inner(val: &Value, path: &str, raw_data: &[u8]) -> ciborium::Val
     }
 }
 
+/// Create a proptest `TestRunner` with the given case count.
+pub fn prop_runner(cases: u32) -> proptest::test_runner::TestRunner {
+    proptest::test_runner::TestRunner::new(proptest::test_runner::Config {
+        cases,
+        ..Default::default()
+    })
+}
+
 /// Remove specified keys from a JSON Value (recursive).
 pub fn strip_keys(val: &mut Value, keys: &[&str]) {
     match val {

@@ -5,7 +5,6 @@ use common::*;
 
 use ferrokinesis::store::StoreOptions;
 use proptest::prelude::*;
-use proptest::test_runner::{Config, TestRunner};
 use serde_json::json;
 
 /// P30: Duplicate CreateStream returns ResourceInUseException.
@@ -22,10 +21,7 @@ fn prop_duplicate_create_stream() {
         ..Default::default()
     }));
 
-    let mut runner = TestRunner::new(Config {
-        cases: 100,
-        ..Config::default()
-    });
+    let mut runner = prop_runner(100);
 
     runner
         .run(&"[a-zA-Z0-9_.\\-]{1,50}", |name_prefix| {

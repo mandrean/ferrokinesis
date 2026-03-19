@@ -6,7 +6,6 @@ use common::*;
 use num_bigint::BigUint;
 use num_traits::One;
 use proptest::prelude::*;
-use proptest::test_runner::{Config, TestRunner};
 use serde_json::json;
 
 /// P24: ExplicitHashKey >= 2^128 returns InvalidArgumentException (PutRecord).
@@ -21,17 +20,22 @@ fn prop_explicit_hash_key_out_of_range_put_record() {
     let stream_name = unique_stream_name("prop-ehk-pr");
     rt.block_on(server.create_stream(&stream_name, 1));
 
-    let mut runner = TestRunner::new(Config {
-        cases: 50,
-        ..Config::default()
-    });
+    let mut runner = prop_runner(50);
 
-    // Generate offsets from 2^128 (keep values within 39-digit decimal range)
-    let strategy = (0u64..=10_000_000_000).prop_map(|offset| {
-        let base = BigUint::one() << 128;
-        let val: BigUint = base + BigUint::from(offset);
-        val.to_string()
-    });
+    // Generate values in [2^128, 10^39-1] from two regions
+    let strategy = prop_oneof![
+        // Near 2^128 boundary
+        (0u64..=10_000_000_000).prop_map(|offset| {
+            let base = BigUint::one() << 128;
+            let val: BigUint = base + BigUint::from(offset);
+            val.to_string()
+        }),
+        // Near 10^39 - 1 ceiling (max value passing regex)
+        (0u64..=10_000_000_000).prop_map(|offset| {
+            let ceiling: BigUint = BigUint::from(10u64).pow(39) - BigUint::one();
+            (ceiling - BigUint::from(offset)).to_string()
+        }),
+    ];
 
     runner
         .run(&strategy, |ehk| {
@@ -78,16 +82,22 @@ fn prop_explicit_hash_key_out_of_range_put_records() {
     let stream_name = unique_stream_name("prop-ehk-prs");
     rt.block_on(server.create_stream(&stream_name, 1));
 
-    let mut runner = TestRunner::new(Config {
-        cases: 50,
-        ..Config::default()
-    });
+    let mut runner = prop_runner(50);
 
-    let strategy = (0u64..=10_000_000_000).prop_map(|offset| {
-        let base = BigUint::one() << 128;
-        let val: BigUint = base + BigUint::from(offset);
-        val.to_string()
-    });
+    // Generate values in [2^128, 10^39-1] from two regions
+    let strategy = prop_oneof![
+        // Near 2^128 boundary
+        (0u64..=10_000_000_000).prop_map(|offset| {
+            let base = BigUint::one() << 128;
+            let val: BigUint = base + BigUint::from(offset);
+            val.to_string()
+        }),
+        // Near 10^39 - 1 ceiling (max value passing regex)
+        (0u64..=10_000_000_000).prop_map(|offset| {
+            let ceiling: BigUint = BigUint::from(10u64).pow(39) - BigUint::one();
+            (ceiling - BigUint::from(offset)).to_string()
+        }),
+    ];
 
     runner
         .run(&strategy, |ehk| {

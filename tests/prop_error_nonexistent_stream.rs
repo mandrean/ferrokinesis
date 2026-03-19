@@ -4,7 +4,6 @@ mod common;
 use common::*;
 
 use proptest::prelude::*;
-use proptest::test_runner::{Config, TestRunner};
 use serde_json::json;
 
 /// P20: PutRecord to a non-existent stream returns ResourceNotFoundException.
@@ -13,10 +12,7 @@ fn prop_put_record_nonexistent_stream() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let server = rt.block_on(TestServer::new());
 
-    let mut runner = TestRunner::new(Config {
-        cases: 50,
-        ..Config::default()
-    });
+    let mut runner = prop_runner(50);
 
     runner
         .run(&"[a-zA-Z0-9_.\\-]{1,50}", |name_prefix| {
@@ -59,10 +55,7 @@ fn prop_put_records_nonexistent_stream() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let server = rt.block_on(TestServer::new());
 
-    let mut runner = TestRunner::new(Config {
-        cases: 50,
-        ..Config::default()
-    });
+    let mut runner = prop_runner(50);
 
     runner
         .run(&"[a-zA-Z0-9_.\\-]{1,50}", |name_prefix| {
@@ -106,10 +99,7 @@ fn prop_get_shard_iterator_nonexistent_stream() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let server = rt.block_on(TestServer::new());
 
-    let mut runner = TestRunner::new(Config {
-        cases: 50,
-        ..Config::default()
-    });
+    let mut runner = prop_runner(50);
 
     runner
         .run(&"[a-zA-Z0-9_.\\-]{1,50}", |name_prefix| {

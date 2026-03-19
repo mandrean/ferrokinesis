@@ -4,7 +4,8 @@
 use ferrokinesis::sequence::{SeqObj, parse_sequence, stringify_sequence};
 use num_bigint::BigUint;
 use proptest::prelude::*;
-use proptest::test_runner::{Config, TestRunner};
+mod common;
+use common::prop_runner;
 
 /// P19: stringify_sequence(parse_sequence(s)) = identity for version-2 sequences.
 ///
@@ -12,10 +13,7 @@ use proptest::test_runner::{Config, TestRunner};
 /// parses it back, and re-stringifies. The two strings must be identical.
 #[test]
 fn prop_sequence_roundtrip_identity() {
-    let mut runner = TestRunner::new(Config {
-        cases: 256,
-        ..Config::default()
-    });
+    let mut runner = prop_runner(256);
 
     // Strategy: generate SeqObj fields within valid ranges for version 2.
     // shard_create_time and seq_time must be multiples of 1000 (stored as seconds).

@@ -6,7 +6,6 @@ use common::*;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use ferrokinesis::store::StoreOptions;
 use proptest::prelude::*;
-use proptest::test_runner::{Config, TestRunner};
 use serde_json::json;
 
 /// P28: PutRecords with > 500 records returns ValidationException.
@@ -18,10 +17,7 @@ fn prop_put_records_exceeds_500_records() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let server = rt.block_on(TestServer::new());
 
-    let mut runner = TestRunner::new(Config {
-        cases: 50,
-        ..Config::default()
-    });
+    let mut runner = prop_runner(50);
 
     runner
         .run(&(501u32..=550), |record_count| {
@@ -39,6 +35,7 @@ fn prop_put_records_exceeds_500_records() {
                     .request(
                         "PutRecords",
                         &json!({
+                            // Stream doesn't need to exist — validation rejects before dispatch.
                             "StreamName": "any-stream",
                             "Records": records,
                         }),
@@ -84,10 +81,7 @@ fn prop_put_records_exceeds_5mb_total() {
     let stream_name = unique_stream_name("prop-batch-5mb");
     rt.block_on(server.create_stream(&stream_name, 4));
 
-    let mut runner = TestRunner::new(Config {
-        cases: 50,
-        ..Config::default()
-    });
+    let mut runner = prop_runner(50);
 
     // Generate 6-10 records, each sized so total exceeds 5 MB but each stays under 1 MB.
     runner

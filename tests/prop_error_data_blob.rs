@@ -5,7 +5,6 @@ use common::*;
 
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use proptest::prelude::*;
-use proptest::test_runner::{Config, TestRunner};
 use serde_json::json;
 
 /// P27: Data blob > 1 MB returns ValidationException.
@@ -17,10 +16,7 @@ fn prop_oversized_data_blob_rejected() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let server = rt.block_on(TestServer::new());
 
-    let mut runner = TestRunner::new(Config {
-        cases: 50,
-        ..Config::default()
-    });
+    let mut runner = prop_runner(50);
 
     // Generate decoded byte counts just over 1 MB
     runner
@@ -33,6 +29,7 @@ fn prop_oversized_data_blob_rejected() {
                     .request(
                         "PutRecord",
                         &json!({
+                            // Stream doesn't need to exist — validation rejects before dispatch.
                             "StreamName": "any-stream",
                             "Data": b64_data,
                             "PartitionKey": "pk",
