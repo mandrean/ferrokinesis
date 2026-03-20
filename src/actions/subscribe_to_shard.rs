@@ -220,12 +220,21 @@ pub async fn execute_streaming(
                 .await;
 
             if event_count == 0 {
+                // Broad query: any records in this shard (no sequence filter)?
+                let broad_start = format!("{}/", sequence::shard_ix_to_hex(shard_ix));
+                let broad_end = sequence::shard_ix_to_hex(shard_ix + 1);
+                let broad_count = store
+                    .get_records_range_limited(&stream_name, &broad_start, &broad_end, 5)
+                    .await;
+                let first_key = broad_count.first().map(|(k, _)| k.as_str()).unwrap_or("(none)");
                 tracing::info!(
                     shard = %shard_id,
                     stream = %stream_name,
                     %range_start,
                     %range_end,
                     raw_count = range_records.len(),
+                    broad_count = broad_count.len(),
+                    %first_key,
                     "subscribe: first range query"
                 );
             }
