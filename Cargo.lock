@@ -1128,7 +1128,7 @@ checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 
 [[package]]
 name = "ferrokinesis"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aes",
  "async-stream",
@@ -1175,7 +1175,7 @@ dependencies = [
 
 [[package]]
 name = "ferrokinesis-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aes",
  "base64",
