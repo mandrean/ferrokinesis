@@ -40,11 +40,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assertions.*;
 
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 public class KclV2IntegrationTest {
@@ -94,7 +90,9 @@ public class KclV2IntegrationTest {
             .build();
 
     // CloudWatchAsyncClient required by ConfigsBuilder API even when MetricsLevel.NONE is set.
-    // Pointed at a non-existent local port; never actually called with MetricsLevel.NONE.
+    // Port 19999 is an arbitrary unused local port — this client is never actually called with
+    // MetricsLevel.NONE. If ferrokinesis gains a CloudWatch-compatible endpoint, wire it here
+    // and raise MetricsLevel to SUMMARY.
     private static final CloudWatchAsyncClient cloudWatchClient = CloudWatchAsyncClient.builder()
             .endpointOverride(URI.create("http://localhost:19999"))
             .region(Region.of(REGION))
@@ -131,6 +129,9 @@ public class KclV2IntegrationTest {
 
         String workerId = "worker-" + UUID.randomUUID();
 
+        // ConfigsBuilder defaults to TRIM_HORIZON for a new application name with no existing
+        // checkpoint in DynamoDB. Since this stream and application name are freshly created,
+        // TRIM_HORIZON guarantees all 10 records put in test 1 are visible from the start.
         // ConfigsBuilder is the unified KCL 2.x configuration entry point.
         ConfigsBuilder configsBuilder = new ConfigsBuilder(
                 STREAM_NAME,

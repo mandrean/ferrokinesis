@@ -27,6 +27,11 @@ public class TestShardRecordProcessor implements ShardRecordProcessor {
 
     private String shardId;
 
+    /**
+     * Must be called before each test run to clear accumulated state.
+     * Relies on {@link org.junit.jupiter.api.TestMethodOrder} + {@link org.junit.jupiter.api.Order}
+     * to ensure {@code runKclSchedulerAndVerify()} always calls this before starting the Scheduler.
+     */
     public static void reset(int expectedCount) {
         receivedRecords.clear();
         seenSequenceNumbers.clear();
