@@ -80,7 +80,7 @@ pub struct Mirror {
     host: String,
     diff: bool,
     client: reqwest::Client,
-    credentials: Option<aws_credential_types::Credentials>,
+    credentials: Option<aws_credential_types::provider::SharedCredentialsProvider>,
     region: String,
     semaphore: Arc<Semaphore>,
     retry_config: RetryConfig,
@@ -93,6 +93,8 @@ pub enum SignError {
     Build(aws_sigv4::sign::v4::signing_params::BuildError),
     /// Failed to sign the request.
     Signing(aws_sigv4::http_request::SigningError),
+    /// Failed to resolve credentials from the provider.
+    Credentials(aws_credential_types::provider::error::CredentialsError),
 }
 
 impl std::fmt::Display for SignError {
@@ -100,6 +102,7 @@ impl std::fmt::Display for SignError {
         match self {
             Self::Build(e) => write!(f, "failed to build signing params: {e}"),
             Self::Signing(e) => write!(f, "signing failed: {e}"),
+            Self::Credentials(e) => write!(f, "failed to resolve credentials: {e}"),
         }
     }
 }
@@ -109,6 +112,7 @@ impl std::error::Error for SignError {
         match self {
             Self::Build(e) => Some(e),
             Self::Signing(e) => Some(e),
+            Self::Credentials(e) => Some(e),
         }
     }
 }
@@ -125,26 +129,35 @@ impl From<aws_sigv4::http_request::SigningError> for SignError {
     }
 }
 
+impl From<aws_credential_types::provider::error::CredentialsError> for SignError {
+    fn from(e: aws_credential_types::provider::error::CredentialsError) -> Self {
+        Self::Credentials(e)
+    }
+}
+
 impl Mirror {
     /// Default number of concurrent in-flight mirror requests.
     pub const DEFAULT_CONCURRENCY: usize = 64;
 
-    /// Create a mirror that loads AWS credentials from environment variables.
+    /// Create a mirror using the AWS default credential provider chain.
     ///
-    /// Looks for `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optionally
-    /// `AWS_SESSION_TOKEN`. Logs a warning if credentials are not found.
-    pub fn new(
+    /// Resolves credentials via `aws-config`'s default chain (env vars,
+    /// `~/.aws/credentials`, IMDS, ECS task roles, etc.) with automatic
+    /// refresh on every signing call. Logs a warning if no provider is found.
+    pub async fn new(
         endpoint: &str,
         diff: bool,
         region: &str,
         concurrency: usize,
         retry_config: RetryConfig,
     ) -> Self {
-        let credentials = Self::load_credentials();
+        let credentials = Self::build_credentials_provider().await;
         if credentials.is_none() {
-            tracing::warn!("no AWS credentials found, requests will be forwarded unsigned");
+            tracing::warn!(
+                "no AWS credentials provider found, requests will be forwarded unsigned"
+            );
         }
-        Self::with_credentials(
+        Self::with_provider(
             endpoint,
             diff,
             region,
@@ -154,12 +167,26 @@ impl Mirror {
         )
     }
 
-    /// Create a mirror with explicit credentials.
+    /// Create a mirror with explicit static credentials (used in tests).
     pub fn with_credentials(
         endpoint: &str,
         diff: bool,
         region: &str,
         credentials: Option<aws_credential_types::Credentials>,
+        concurrency: usize,
+        retry_config: RetryConfig,
+    ) -> Self {
+        let provider =
+            credentials.map(aws_credential_types::provider::SharedCredentialsProvider::new);
+        Self::with_provider(endpoint, diff, region, provider, concurrency, retry_config)
+    }
+
+    /// Create a mirror with an explicit credentials provider.
+    pub fn with_provider(
+        endpoint: &str,
+        diff: bool,
+        region: &str,
+        provider: Option<aws_credential_types::provider::SharedCredentialsProvider>,
         concurrency: usize,
         retry_config: RetryConfig,
     ) -> Self {
@@ -173,29 +200,23 @@ impl Mirror {
                 .timeout(Duration::from_secs(10))
                 .build()
                 .expect("failed to build mirror HTTP client"),
-            credentials,
+            credentials: provider,
             region: region.to_string(),
             semaphore: Arc::new(Semaphore::new(concurrency)),
             retry_config,
         }
     }
 
-    /// Load AWS credentials from environment variables once at startup.
+    /// Build a credentials provider using the AWS default provider chain.
     ///
-    /// Credentials are captured at construction time and not refreshed. If the
-    /// underlying env vars change (e.g. STS temporary credentials expire), the
-    /// mirror will continue using the original values.
-    fn load_credentials() -> Option<aws_credential_types::Credentials> {
-        let access_key = std::env::var("AWS_ACCESS_KEY_ID").ok()?;
-        let secret_key = std::env::var("AWS_SECRET_ACCESS_KEY").ok()?;
-        let session_token = std::env::var("AWS_SESSION_TOKEN").ok();
-        Some(aws_credential_types::Credentials::new(
-            access_key,
-            secret_key,
-            session_token,
-            None,
-            "env",
-        ))
+    /// Covers env vars, `~/.aws/credentials`, IMDS, ECS task roles — all with
+    /// automatic refresh, so STS temporary credentials are never stale.
+    async fn build_credentials_provider()
+    -> Option<aws_credential_types::provider::SharedCredentialsProvider> {
+        let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+            .load()
+            .await;
+        config.credentials_provider()
     }
 
     /// Returns `true` if this operation should be mirrored.
@@ -236,10 +257,14 @@ impl Mirror {
         body: Bytes,
         local_result: MirrorableResponse,
     ) {
-        // Sign headers once before the retry loop.
+        // Resolve fresh credentials and sign once before the retry loop.
         // SigV4 signatures are valid for 5 minutes — retries stay well within that window.
-        let signed_headers = if let Some(ref credentials) = self.credentials {
-            match self.sign_headers(content_type, target, &body, credentials) {
+        // Re-resolving on each signing call ensures STS tokens are never stale.
+        let signed_headers = if let Some(ref provider) = self.credentials {
+            match self
+                .sign_headers(content_type, target, &body, provider)
+                .await
+            {
                 Ok(headers) => Some(headers),
                 Err(e) => {
                     tracing::error!(error = %e, "signing failed");
@@ -331,19 +356,20 @@ impl Mirror {
         }
     }
 
-    fn sign_headers(
+    async fn sign_headers(
         &self,
         content_type: &str,
         target: &str,
         body: &[u8],
-        credentials: &aws_credential_types::Credentials,
+        provider: &aws_credential_types::provider::SharedCredentialsProvider,
     ) -> Result<Vec<(String, String)>, SignError> {
+        use aws_credential_types::provider::ProvideCredentials;
         use aws_sigv4::http_request::{SignableBody, SignableRequest, SigningSettings, sign};
         use aws_sigv4::sign::v4;
         use std::time::SystemTime;
 
-        let identity =
-            aws_smithy_runtime_api::client::identity::Identity::from(credentials.clone());
+        let credentials = provider.provide_credentials().await?;
+        let identity = aws_smithy_runtime_api::client::identity::Identity::from(credentials);
 
         let params = v4::SigningParams::builder()
             .identity(&identity)
