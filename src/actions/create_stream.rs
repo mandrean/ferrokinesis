@@ -92,7 +92,6 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         StreamStatus::Creating,
         EpochSeconds((create_time / 1000) as f64),
         vec![], // Start empty while CREATING
-        vec![None; (shard_count as usize).div_ceil(5)],
     )
     .build();
 

@@ -1,20 +1,34 @@
-//! In-memory redb-backed store for streams, records, consumers, and policies.
+//! Concurrent in-memory store for streams, records, consumers, and policies.
 //!
 //! [`Store`] is the central state object threaded through all action handlers.
-//! It is cheap to clone — all clones share the same underlying [`Arc`]`<`[`Database`]`>`.
+//! It is cheap to clone — all clones share the same underlying [`Arc`]-wrapped
+//! concurrent data structures.
+//!
+//! Concurrency model:
+//! - **Cross-stream**: [`DashMap`] provides near-lock-free concurrent access
+//!   to different streams.
+//! - **Per-stream**: [`tokio::sync::RwLock`] on stream metadata allows concurrent
+//!   readers with exclusive writers.
+//! - **Per-shard records**: Each shard has its own [`RwLock`]`<`[`BTreeMap`]`>`,
+//!   so reads/writes to different shards never contend.
 //!
 //! [`StoreOptions`] controls runtime behaviour such as simulated delays and
 //! account identity. Pass it to [`crate::create_app`] to wire everything up.
 
 use crate::constants;
 use crate::error::KinesisErrorResponse;
-use crate::types::{Consumer, StoredRecord, Stream};
-use redb::backends::InMemoryBackend;
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+use crate::sequence;
+use crate::types::{Consumer, StoredRecord, Stream, StreamStatus};
+use crate::util::current_time_ms;
+use dashmap::DashMap;
+use num_bigint::BigUint;
+use num_traits::Zero;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::sync::RwLock;
 
 /// Errors that can occur when probing store health.
 #[derive(Debug, thiserror::Error)]
@@ -26,13 +40,6 @@ pub enum StoreHealthError {
     #[error("table open failed: {0}")]
     TableOpenFailed(String),
 }
-
-const STREAMS: TableDefinition<&str, &[u8]> = TableDefinition::new("streams");
-const RECORDS: TableDefinition<&str, &[u8]> = TableDefinition::new("records");
-const CONSUMERS: TableDefinition<&str, &[u8]> = TableDefinition::new("consumers");
-const POLICIES: TableDefinition<&str, &str> = TableDefinition::new("policies");
-const RESOURCE_TAGS: TableDefinition<&str, &[u8]> = TableDefinition::new("resource_tags");
-const ACCOUNT_SETTINGS: TableDefinition<&str, &[u8]> = TableDefinition::new("account_settings");
 
 /// Runtime configuration passed to [`crate::create_app`].
 ///
@@ -85,9 +92,55 @@ impl Default for StoreOptions {
     }
 }
 
-/// Handle to the in-memory redb-backed stream store.
+/// Per-shard sequence counter for lock-free sequence number generation.
+struct ShardSeqState {
+    /// Atomic counter — `fetch_add(1)` returns the next seq_ix to use.
+    counter: AtomicU64,
+}
+
+/// Per-stream entry holding metadata and per-shard sequence state.
 ///
-/// Cheap to clone — all clones share the same underlying `Arc<Database>`.
+/// Lock ordering (to prevent deadlock): `stream` before `shard_seq` before record maps.
+struct StreamEntry {
+    /// Stream metadata. Read-locked on the hot path; write-locked for admin ops.
+    stream: RwLock<Stream>,
+    /// Per-shard sequence counters, indexed by shard position.
+    /// Read-locked on the hot path (AtomicU64 inside is lock-free).
+    /// Write-locked only when topology changes (split/merge adds shards).
+    shard_seq: RwLock<Vec<ShardSeqState>>,
+}
+
+/// Result of allocating a sequence number for a record.
+pub struct SequenceAllocation {
+    /// The shard ID the record was routed to.
+    pub shard_id: String,
+    /// The generated sequence number string.
+    pub seq_num: String,
+    /// Composite key `"{shard_hex}/{seq_num}"` for record storage.
+    pub stream_key: String,
+    /// Timestamp used in the sequence number (milliseconds).
+    pub now: u64,
+}
+
+/// Per-shard record map: shard_hex → sorted records.
+type ShardRecords = DashMap<String, Arc<RwLock<BTreeMap<String, Vec<u8>>>>>;
+
+/// Shared inner state behind an [`Arc`] for cheap [`Store`] clones.
+struct StoreInner {
+    /// Stream metadata entries.
+    streams: DashMap<String, Arc<StreamEntry>>,
+    /// Per-stream, per-shard records. Outer key: stream name.
+    /// Decoupled from streams so records can exist independently.
+    stream_records: DashMap<String, ShardRecords>,
+    consumers: DashMap<String, Vec<u8>>,
+    policies: DashMap<String, String>,
+    resource_tags: DashMap<String, BTreeMap<String, String>>,
+    account_settings: RwLock<Value>,
+}
+
+/// Handle to the concurrent in-memory stream store.
+///
+/// Cheap to clone — all clones share the same underlying `Arc<StoreInner>`.
 /// Inject this into Axum handlers via `State<Store>`.
 #[derive(Clone)]
 pub struct Store {
@@ -97,79 +150,29 @@ pub struct Store {
     pub aws_account_id: String,
     /// The simulated AWS region.
     pub aws_region: String,
-    db: Arc<Database>,
+    inner: Arc<StoreInner>,
     /// Optional capture writer for recording PutRecord/PutRecords calls.
     pub(crate) capture_writer: Option<crate::capture::CaptureWriter>,
 }
 
-/// Serialize a Stream for storage, including hidden fields (seq_ix, tags)
-fn serialize_stream(stream: &Stream) -> Vec<u8> {
-    let mut val = serde_json::to_value(stream).unwrap();
-    let obj = val.as_object_mut().unwrap();
-    // Fields like _seq_ix and _tags are stored under underscore-prefixed keys so they
-    // survive the round-trip through serde_json. The corresponding struct fields carry
-    // `#[serde(skip)]`, which prevents them from appearing in API responses but also
-    // means serde_json::to_value() drops them. Writing them explicitly here under
-    // private names ensures they are persisted to the database and restored on read.
-    obj.insert(
-        "_seq_ix".to_string(),
-        serde_json::to_value(&stream.seq_ix).unwrap(),
-    );
-    obj.insert(
-        "_tags".to_string(),
-        serde_json::to_value(&stream.tags).unwrap(),
-    );
-    if let Some(ref key_id) = stream.key_id {
-        obj.insert("_key_id".to_string(), serde_json::to_value(key_id).unwrap());
-    }
-    obj.insert(
-        "_warm_throughput_mibps".to_string(),
-        serde_json::to_value(stream.warm_throughput_mibps).unwrap(),
-    );
-    obj.insert(
-        "_max_record_size_kib".to_string(),
-        serde_json::to_value(stream.max_record_size_kib).unwrap(),
-    );
-    serde_json::to_vec(&val).unwrap()
+/// Extract the shard hex prefix from a shard key like `"{shard_hex}/{seq_num}"`.
+fn shard_hex_from_key(key: &str) -> &str {
+    key.split('/').next().unwrap_or("")
 }
 
-/// Deserialize a Stream from storage, restoring hidden fields
-fn deserialize_stream(bytes: &[u8]) -> Stream {
-    let val: Value = serde_json::from_slice(bytes).unwrap();
-    let mut stream: Stream = serde_json::from_value(val.clone()).unwrap();
-    if let Some(arr) = val.get("_seq_ix") {
-        stream.seq_ix = serde_json::from_value(arr.clone()).unwrap_or_default();
-    }
-    if let Some(obj) = val.get("_tags") {
-        stream.tags = serde_json::from_value(obj.clone()).unwrap_or_default();
-    }
-    if let Some(key_id) = val.get("_key_id") {
-        stream.key_id = serde_json::from_value(key_id.clone()).ok();
-    }
-    if let Some(v) = val.get("_warm_throughput_mibps") {
-        stream.warm_throughput_mibps = serde_json::from_value(v.clone()).unwrap_or(0);
-    }
-    if let Some(v) = val.get("_max_record_size_kib") {
-        stream.max_record_size_kib = serde_json::from_value(v.clone()).unwrap_or(1024);
-    }
-    stream
-}
-
-/// Composite key for records: "{stream_name}\0{shard_hex}/{seq_num}"
-fn record_key(stream_name: &str, shard_key: &str) -> String {
-    format!("{stream_name}\0{shard_key}")
-}
-
-/// Range bounds for all records in a stream's shard range
-fn record_range(stream_name: &str, start: &str, end: &str) -> (String, String) {
-    (
-        format!("{stream_name}\0{start}"),
-        format!("{stream_name}\0{end}"),
-    )
+/// Get or create the per-shard record map for a stream.
+fn ensure_shard_map<'a>(
+    stream_records: &'a DashMap<String, ShardRecords>,
+    stream_name: &str,
+) -> dashmap::mapref::one::Ref<'a, String, ShardRecords> {
+    stream_records
+        .entry(stream_name.to_string())
+        .or_default()
+        .downgrade()
 }
 
 impl Store {
-    /// Creates a new store, initialising all redb tables.
+    /// Creates a new store.
     ///
     /// Strips non-digit characters from `options.aws_account_id` and warns if
     /// the result is not exactly 12 digits.
@@ -201,28 +204,23 @@ impl Store {
 
         let aws_region = options.aws_region.clone();
 
-        let db = Database::builder()
-            .create_with_backend(InMemoryBackend::new())
-            .expect("Failed to create in-memory redb database");
-
-        // Create tables
-        let write_txn = db.begin_write().unwrap();
-        write_txn.open_table(STREAMS).unwrap();
-        write_txn.open_table(RECORDS).unwrap();
-        write_txn.open_table(CONSUMERS).unwrap();
-        write_txn.open_table(POLICIES).unwrap();
-        write_txn.open_table(RESOURCE_TAGS).unwrap();
-        write_txn.open_table(ACCOUNT_SETTINGS).unwrap();
-        write_txn.commit().unwrap();
-
         Self {
             options,
             aws_account_id,
             aws_region,
-            db: Arc::new(db),
+            inner: Arc::new(StoreInner {
+                streams: DashMap::new(),
+                stream_records: DashMap::new(),
+                consumers: DashMap::new(),
+                policies: DashMap::new(),
+                resource_tags: DashMap::new(),
+                account_settings: RwLock::new(Value::Object(Default::default())),
+            }),
             capture_writer,
         }
     }
+
+    // --- Stream operations ---
 
     /// Retrieves a stream by name.
     ///
@@ -230,77 +228,47 @@ impl Store {
     ///
     /// Returns [`KinesisErrorResponse`] (`ResourceNotFoundException`) if the stream does not exist.
     pub async fn get_stream(&self, name: &str) -> Result<Stream, KinesisErrorResponse> {
-        let read_txn = self.db.begin_read().unwrap();
-        let table = read_txn.open_table(STREAMS).unwrap();
-        match table.get(name).unwrap() {
-            Some(guard) => Ok(deserialize_stream(guard.value())),
-            None => Err(KinesisErrorResponse::stream_not_found(
-                name,
-                &self.aws_account_id,
-            )),
-        }
+        let entry = self
+            .inner
+            .streams
+            .get(name)
+            .map(|e| e.value().clone())
+            .ok_or_else(|| KinesisErrorResponse::stream_not_found(name, &self.aws_account_id))?;
+        Ok(entry.stream.read().await.clone())
     }
 
     /// Inserts or replaces a stream by name.
     pub async fn put_stream(&self, name: &str, stream: Stream) {
-        let bytes = serialize_stream(&stream);
-        let write_txn = self.db.begin_write().unwrap();
-        {
-            let mut table = write_txn.open_table(STREAMS).unwrap();
-            table.insert(name, bytes.as_slice()).unwrap();
+        if let Some(existing) = self.inner.streams.get(name) {
+            // Update metadata, preserve existing records and seq state.
+            let mut guard = existing.stream.write().await;
+            *guard = stream;
+        } else {
+            let shard_seq = build_shard_seq(&stream);
+            let entry = Arc::new(StreamEntry {
+                stream: RwLock::new(stream),
+                shard_seq: RwLock::new(shard_seq),
+            });
+            self.inner.streams.insert(name.to_string(), entry);
         }
-        write_txn.commit().unwrap();
     }
 
     /// Deletes a stream and all of its records.
     pub async fn delete_stream(&self, name: &str) {
-        let write_txn = self.db.begin_write().unwrap();
-        {
-            let mut streams = write_txn.open_table(STREAMS).unwrap();
-            streams.remove(name).unwrap();
-
-            // Delete all records for this stream
-            let mut records = write_txn.open_table(RECORDS).unwrap();
-            // `\0` separates stream name from shard key; `\x01` is the byte immediately
-            // after `\0` in ASCII, so the half-open range "{name}\0".."{name}\x01"
-            // captures every record belonging to this stream without false matches from
-            // a stream whose name is a prefix of another stream's name.
-            let prefix = format!("{name}\0");
-            let prefix_end = format!("{name}\x01");
-            let keys_to_remove: Vec<String> = records
-                .range(prefix.as_str()..prefix_end.as_str())
-                .unwrap()
-                .map(|r| {
-                    let (k, _) = r.unwrap();
-                    k.value().to_string()
-                })
-                .collect();
-            for key in keys_to_remove {
-                records.remove(key.as_str()).unwrap();
-            }
-        }
-        write_txn.commit().unwrap();
+        self.inner.streams.remove(name);
+        self.inner.stream_records.remove(name);
     }
 
     /// Returns `true` if a stream with the given name exists.
     pub async fn contains_stream(&self, name: &str) -> bool {
-        let read_txn = self.db.begin_read().unwrap();
-        let table = read_txn.open_table(STREAMS).unwrap();
-        table.get(name).unwrap().is_some()
+        self.inner.streams.contains_key(name)
     }
 
     /// Returns all stream names in sorted order.
     pub async fn list_stream_names(&self) -> Vec<String> {
-        let read_txn = self.db.begin_read().unwrap();
-        let table = read_txn.open_table(STREAMS).unwrap();
-        table
-            .iter()
-            .unwrap()
-            .map(|r| {
-                let (k, _) = r.unwrap();
-                k.value().to_string()
-            })
-            .collect()
+        let mut names: Vec<String> = self.inner.streams.iter().map(|e| e.key().clone()).collect();
+        names.sort();
+        names
     }
 
     /// Atomically reads, mutates, and writes a stream (read-modify-write).
@@ -329,73 +297,34 @@ impl Store {
     where
         F: FnOnce(&mut Stream) -> Result<R, KinesisErrorResponse>,
     {
-        let write_txn = self.db.begin_write().unwrap();
-        let result;
-        {
-            let mut table = write_txn.open_table(STREAMS).unwrap();
-            let bytes = table.get(name).unwrap().ok_or_else(|| {
-                KinesisErrorResponse::stream_not_found(name, &self.aws_account_id)
-            })?;
-            let mut stream = deserialize_stream(bytes.value());
-            drop(bytes);
-            result = f(&mut stream)?;
-            let new_bytes = serialize_stream(&stream);
-            table.insert(name, new_bytes.as_slice()).unwrap();
-        }
-        write_txn.commit().unwrap();
+        let entry = self
+            .inner
+            .streams
+            .get(name)
+            .map(|e| e.value().clone())
+            .ok_or_else(|| KinesisErrorResponse::stream_not_found(name, &self.aws_account_id))?;
+        let mut stream = entry.stream.write().await;
+        let result = f(&mut stream)?;
+        // Sync shard_seq if the closure added shards (split/merge/reshard).
+        sync_shard_seq(&entry, &stream).await;
         Ok(result)
     }
 
-    /// Executes a closure with write access to all streams simultaneously.
-    ///
-    /// The closure receives a mutable `BTreeMap` of all streams, the current
-    /// `StoreOptions`, the account ID, and the region. All changes to the map
-    /// are written back atomically when the closure returns.
-    pub async fn with_streams_write<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&mut BTreeMap<String, Stream>, &StoreOptions, &str, &str) -> R,
-    {
-        let write_txn = self.db.begin_write().unwrap();
-        let result;
-        {
-            let mut table = write_txn.open_table(STREAMS).unwrap();
-            let mut streams: BTreeMap<String, Stream> = table
+    /// Returns the total number of open (non-closed) shards across all streams.
+    pub async fn sum_open_shards(&self) -> u32 {
+        let mut sum = 0u32;
+        for entry in self.inner.streams.iter() {
+            let stream = entry.value().stream.read().await;
+            sum += stream
+                .shards
                 .iter()
-                .unwrap()
-                .map(|r| {
-                    let (k, v) = r.unwrap();
-                    (k.value().to_string(), deserialize_stream(v.value()))
-                })
-                .collect();
-
-            result = f(
-                &mut streams,
-                &self.options,
-                &self.aws_account_id,
-                &self.aws_region,
-            );
-
-            // Write all streams back
-            // First, collect existing keys to detect deletions
-            let existing_keys: Vec<String> = table
-                .iter()
-                .unwrap()
-                .map(|r| r.unwrap().0.value().to_string())
-                .collect();
-
-            for key in &existing_keys {
-                if !streams.contains_key(key) {
-                    table.remove(key.as_str()).unwrap();
-                }
-            }
-            for (name, stream) in &streams {
-                let bytes = serialize_stream(stream);
-                table.insert(name.as_str(), bytes.as_slice()).unwrap();
-            }
+                .filter(|s| s.sequence_number_range.ending_sequence_number.is_none())
+                .count() as u32;
         }
-        write_txn.commit().unwrap();
-        result
+        sum
     }
+
+    // --- Record operations ---
 
     /// Returns all records for a stream as a map from shard-key to record.
     ///
@@ -406,52 +335,61 @@ impl Store {
     /// [`get_records_range_limited`](Self::get_records_range_limited) or
     /// [`find_first_record_at_timestamp`](Self::find_first_record_at_timestamp).
     pub async fn get_record_store(&self, stream_name: &str) -> BTreeMap<String, StoredRecord> {
-        let read_txn = self.db.begin_read().unwrap();
-        let table = read_txn.open_table(RECORDS).unwrap();
-        let prefix = format!("{stream_name}\0");
-        let prefix_end = format!("{stream_name}\x01");
-        let prefix_len = stream_name.len() + 1;
-        table
-            .range(prefix.as_str()..prefix_end.as_str())
-            .unwrap()
-            .map(|r| {
-                let (k, v) = r.unwrap();
-                let full_key = k.value().to_string();
-                let shard_key = full_key[prefix_len..].to_string();
-                let record: StoredRecord = postcard::from_bytes(v.value()).unwrap();
-                (shard_key, record)
-            })
-            .collect()
+        let shard_map = match self.inner.stream_records.get(stream_name) {
+            Some(m) => m,
+            None => return BTreeMap::new(),
+        };
+        let mut all_records = BTreeMap::new();
+        for shard_entry in shard_map.iter() {
+            let records = shard_entry.value().read().await;
+            for (k, v) in records.iter() {
+                let record: StoredRecord = postcard::from_bytes(v).unwrap();
+                all_records.insert(k.clone(), record);
+            }
+        }
+        all_records
     }
 
     /// Stores a single record under the given composite shard key.
     pub async fn put_record<R: Serialize>(&self, stream_name: &str, key: &str, record: &R) {
-        let composite_key = record_key(stream_name, key);
         let bytes = postcard::to_allocvec(record).unwrap();
-        let write_txn = self.db.begin_write().unwrap();
-        {
-            let mut table = write_txn.open_table(RECORDS).unwrap();
-            table
-                .insert(composite_key.as_str(), bytes.as_slice())
-                .unwrap();
-        }
-        write_txn.commit().unwrap();
+        let shard_hex = shard_hex_from_key(key);
+        let shard_map = ensure_shard_map(&self.inner.stream_records, stream_name);
+        let records_arc = shard_map
+            .entry(shard_hex.to_string())
+            .or_insert_with(|| Arc::new(RwLock::new(BTreeMap::new())))
+            .value()
+            .clone();
+        drop(shard_map);
+        let mut records = records_arc.write().await;
+        records.insert(key.to_string(), bytes);
     }
 
-    /// Stores multiple records in a single write transaction.
+    /// Stores multiple records in a single batch.
     pub async fn put_records_batch<R: Serialize>(&self, stream_name: &str, batch: &[(String, R)]) {
-        let write_txn = self.db.begin_write().unwrap();
-        {
-            let mut table = write_txn.open_table(RECORDS).unwrap();
-            for (key, record) in batch {
-                let composite_key = record_key(stream_name, key);
-                let bytes = postcard::to_allocvec(record).unwrap();
-                table
-                    .insert(composite_key.as_str(), bytes.as_slice())
-                    .unwrap();
-            }
+        // Phase 1: collect Arc refs and serialized bytes while holding the DashMap ref.
+        let pending: Vec<_> = {
+            let shard_map = ensure_shard_map(&self.inner.stream_records, stream_name);
+            batch
+                .iter()
+                .map(|(key, record)| {
+                    let bytes = postcard::to_allocvec(record).unwrap();
+                    let shard_hex = shard_hex_from_key(key);
+                    let records_arc = shard_map
+                        .entry(shard_hex.to_string())
+                        .or_insert_with(|| Arc::new(RwLock::new(BTreeMap::new())))
+                        .value()
+                        .clone();
+                    (records_arc, key.clone(), bytes)
+                })
+                .collect()
+        }; // shard_map Ref dropped here — no DashMap lock held across await.
+
+        // Phase 2: insert records under per-shard write locks only.
+        for (records_arc, key, bytes) in pending {
+            let mut records = records_arc.write().await;
+            records.insert(key, bytes);
         }
-        write_txn.commit().unwrap();
     }
 
     /// Deletes records whose sequence-number–embedded timestamp is older than
@@ -460,75 +398,66 @@ impl Store {
         let now = crate::util::current_time_ms();
         let cutoff_time = now - (retention_hours as u64 * 60 * 60 * 1000);
 
-        let prefix = format!("{stream_name}\0");
-        let prefix_end = format!("{stream_name}\x01");
-        let prefix_len = stream_name.len() + 1;
+        // Phase 1: collect Arc refs while holding the DashMap Ref.
+        let shard_arcs: Vec<_> = match self.inner.stream_records.get(stream_name) {
+            Some(shard_map) => shard_map.iter().map(|e| e.value().clone()).collect(),
+            None => return 0,
+        }; // DashMap Ref dropped here.
 
-        let keys_to_delete: Vec<String> = {
-            let read_txn = self.db.begin_read().unwrap();
-            let table = read_txn.open_table(RECORDS).unwrap();
-            table
-                .range(prefix.as_str()..prefix_end.as_str())
-                .unwrap()
-                .filter_map(|r| {
-                    let (k, _) = r.unwrap();
-                    let full_key = k.value().to_string();
-                    let shard_key = &full_key[prefix_len..];
-                    let seq_num = shard_key.split('/').nth(1)?;
-                    let seq_obj = crate::sequence::parse_sequence(seq_num).ok()?;
-                    if seq_obj.seq_time.unwrap_or(0) < cutoff_time {
-                        Some(full_key)
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        };
+        // Phase 2: scan and delete under per-shard locks only.
+        let mut total_deleted = 0;
+        for records_arc in shard_arcs {
+            let keys_to_delete: Vec<String> = {
+                let records = records_arc.read().await;
+                records
+                    .iter()
+                    .filter_map(|(key, _)| {
+                        let seq_num = key.split('/').nth(1)?;
+                        let seq_obj = crate::sequence::parse_sequence(seq_num).ok()?;
+                        if seq_obj.seq_time.unwrap_or(0) < cutoff_time {
+                            Some(key.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            };
 
-        let count = keys_to_delete.len();
-        if count > 0 {
-            let write_txn = self.db.begin_write().unwrap();
-            {
-                let mut table = write_txn.open_table(RECORDS).unwrap();
+            if !keys_to_delete.is_empty() {
+                let mut records = records_arc.write().await;
                 for key in &keys_to_delete {
-                    table.remove(key.as_str()).unwrap();
+                    records.remove(key);
                 }
+                total_deleted += keys_to_delete.len();
             }
-            write_txn.commit().unwrap();
         }
-        count
+
+        total_deleted
     }
 
     /// Deletes records by their shard keys within a stream.
     pub async fn delete_record_keys(&self, stream_name: &str, keys: &[String]) {
-        let write_txn = self.db.begin_write().unwrap();
-        {
-            let mut table = write_txn.open_table(RECORDS).unwrap();
-            for key in keys {
-                let composite_key = record_key(stream_name, key);
-                table.remove(composite_key.as_str()).unwrap();
-            }
-        }
-        write_txn.commit().unwrap();
-    }
+        // Phase 1: collect Arc refs while holding the DashMap Ref.
+        let pending: Vec<_> = {
+            let shard_map = match self.inner.stream_records.get(stream_name) {
+                Some(m) => m,
+                None => return,
+            };
+            keys.iter()
+                .filter_map(|key| {
+                    let shard_hex = shard_hex_from_key(key);
+                    shard_map
+                        .get(shard_hex)
+                        .map(|r| (r.value().clone(), key.clone()))
+                })
+                .collect()
+        }; // DashMap Ref dropped here.
 
-    /// Returns the total number of open (non-closed) shards across all streams.
-    pub async fn sum_open_shards(&self) -> u32 {
-        let read_txn = self.db.begin_read().unwrap();
-        let table = read_txn.open_table(STREAMS).unwrap();
-        table
-            .iter()
-            .unwrap()
-            .map(|r| {
-                let (_, v) = r.unwrap();
-                let stream = deserialize_stream(v.value());
-                stream
-                    .shards
-                    .iter()
-                    .filter(|s| s.sequence_number_range.ending_sequence_number.is_none())
-                    .count() as u32
-            })
-            .sum()
+        // Phase 2: delete under per-shard write locks only.
+        for (records_arc, key) in pending {
+            let mut records = records_arc.write().await;
+            records.remove(&key);
+        }
     }
 
     /// Returns records in the given shard-key range for a stream.
@@ -545,19 +474,21 @@ impl Store {
         range_start: &str,
         range_end: &str,
     ) -> Vec<(String, StoredRecord)> {
-        let read_txn = self.db.begin_read().unwrap();
-        let table = read_txn.open_table(RECORDS).unwrap();
-        let (start, end) = record_range(stream_name, range_start, range_end);
-        let prefix_len = stream_name.len() + 1;
-        table
-            .range(start.as_str()..end.as_str())
-            .unwrap()
-            .map(|r| {
-                let (k, v) = r.unwrap();
-                let full_key = k.value().to_string();
-                let shard_key = full_key[prefix_len..].to_string();
-                let record: StoredRecord = postcard::from_bytes(v.value()).unwrap();
-                (shard_key, record)
+        let shard_map = match self.inner.stream_records.get(stream_name) {
+            Some(m) => m,
+            None => return Vec::new(),
+        };
+        let shard_hex = shard_hex_from_key(range_start);
+        let records_arc = match shard_map.get(shard_hex) {
+            Some(r) => r.value().clone(),
+            None => return Vec::new(),
+        };
+        let records = records_arc.read().await;
+        records
+            .range(range_start.to_string()..range_end.to_string())
+            .map(|(k, v)| {
+                let record: StoredRecord = postcard::from_bytes(v).unwrap();
+                (k.clone(), record)
             })
             .collect()
     }
@@ -570,20 +501,22 @@ impl Store {
         range_end: &str,
         limit: usize,
     ) -> Vec<(String, StoredRecord)> {
-        let read_txn = self.db.begin_read().unwrap();
-        let table = read_txn.open_table(RECORDS).unwrap();
-        let (start, end) = record_range(stream_name, range_start, range_end);
-        let prefix_len = stream_name.len() + 1; // stream_name + '\0'
-        table
-            .range(start.as_str()..end.as_str())
-            .unwrap()
+        let shard_map = match self.inner.stream_records.get(stream_name) {
+            Some(m) => m,
+            None => return Vec::new(),
+        };
+        let shard_hex = shard_hex_from_key(range_start);
+        let records_arc = match shard_map.get(shard_hex) {
+            Some(r) => r.value().clone(),
+            None => return Vec::new(),
+        };
+        let records = records_arc.read().await;
+        records
+            .range(range_start.to_string()..range_end.to_string())
             .take(limit)
-            .map(|r| {
-                let (k, v) = r.unwrap();
-                let full_key = k.value().to_string();
-                let shard_key = full_key[prefix_len..].to_string();
-                let record: StoredRecord = postcard::from_bytes(v.value()).unwrap();
-                (shard_key, record)
+            .map(|(k, v)| {
+                let record: StoredRecord = postcard::from_bytes(v).unwrap();
+                (k.clone(), record)
             })
             .collect()
     }
@@ -596,17 +529,14 @@ impl Store {
         range_end: &str,
         timestamp: f64,
     ) -> Option<(String, StoredRecord)> {
-        let read_txn = self.db.begin_read().unwrap();
-        let table = read_txn.open_table(RECORDS).unwrap();
-        let (start, end) = record_range(stream_name, range_start, range_end);
-        let prefix_len = stream_name.len() + 1;
-        for r in table.range(start.as_str()..end.as_str()).unwrap() {
-            let (k, v) = r.unwrap();
-            let record: StoredRecord = postcard::from_bytes(v.value()).unwrap();
+        let shard_map = self.inner.stream_records.get(stream_name)?;
+        let shard_hex = shard_hex_from_key(range_start);
+        let records_arc = shard_map.get(shard_hex)?.value().clone();
+        let records = records_arc.read().await;
+        for (k, v) in records.range(range_start.to_string()..range_end.to_string()) {
+            let record: StoredRecord = postcard::from_bytes(v).unwrap();
             if record.approximate_arrival_timestamp >= timestamp {
-                let full_key = k.value().to_string();
-                let shard_key = full_key[prefix_len..].to_string();
-                return Some((shard_key, record));
+                return Some((k.clone(), record));
             }
         }
         None
@@ -617,47 +547,30 @@ impl Store {
     /// Inserts or replaces a consumer keyed by its ARN.
     pub async fn put_consumer(&self, consumer_arn: &str, consumer: Consumer) {
         let bytes = serde_json::to_vec(&consumer).unwrap();
-        let write_txn = self.db.begin_write().unwrap();
-        {
-            let mut table = write_txn.open_table(CONSUMERS).unwrap();
-            table.insert(consumer_arn, bytes.as_slice()).unwrap();
-        }
-        write_txn.commit().unwrap();
+        self.inner.consumers.insert(consumer_arn.to_string(), bytes);
     }
 
     /// Returns the consumer with the given ARN, or `None` if not found.
     pub async fn get_consumer(&self, consumer_arn: &str) -> Option<Consumer> {
-        let read_txn = self.db.begin_read().unwrap();
-        let table = read_txn.open_table(CONSUMERS).unwrap();
-        table
+        self.inner
+            .consumers
             .get(consumer_arn)
-            .unwrap()
-            .map(|guard| serde_json::from_slice(guard.value()).unwrap())
+            .map(|entry| serde_json::from_slice(entry.value()).unwrap())
     }
 
     /// Deletes the consumer with the given ARN.
     pub async fn delete_consumer(&self, consumer_arn: &str) {
-        let write_txn = self.db.begin_write().unwrap();
-        {
-            let mut table = write_txn.open_table(CONSUMERS).unwrap();
-            table.remove(consumer_arn).unwrap();
-        }
-        write_txn.commit().unwrap();
+        self.inner.consumers.remove(consumer_arn);
     }
 
     /// Returns all consumers whose ARN belongs to the given stream ARN.
     pub async fn list_consumers_for_stream(&self, stream_arn: &str) -> Vec<Consumer> {
         let prefix = format!("{stream_arn}/consumer/");
-        let prefix_end = format!("{stream_arn}/consumer0"); // '0' > '/'
-        let read_txn = self.db.begin_read().unwrap();
-        let table = read_txn.open_table(CONSUMERS).unwrap();
-        table
-            .range(prefix.as_str()..prefix_end.as_str())
-            .unwrap()
-            .map(|r| {
-                let (_, v) = r.unwrap();
-                serde_json::from_slice(v.value()).unwrap()
-            })
+        self.inner
+            .consumers
+            .iter()
+            .filter(|entry| entry.key().starts_with(&prefix))
+            .map(|entry| serde_json::from_slice(entry.value()).unwrap())
             .collect()
     }
 
@@ -675,32 +588,22 @@ impl Store {
 
     /// Stores a resource policy JSON string for the given resource ARN.
     pub async fn put_policy(&self, resource_arn: &str, policy: &str) {
-        let write_txn = self.db.begin_write().unwrap();
-        {
-            let mut table = write_txn.open_table(POLICIES).unwrap();
-            table.insert(resource_arn, policy).unwrap();
-        }
-        write_txn.commit().unwrap();
+        self.inner
+            .policies
+            .insert(resource_arn.to_string(), policy.to_string());
     }
 
     /// Returns the resource policy for the given ARN, or `None` if none is set.
     pub async fn get_policy(&self, resource_arn: &str) -> Option<String> {
-        let read_txn = self.db.begin_read().unwrap();
-        let table = read_txn.open_table(POLICIES).unwrap();
-        table
+        self.inner
+            .policies
             .get(resource_arn)
-            .unwrap()
-            .map(|guard| guard.value().to_string())
+            .map(|entry| entry.value().clone())
     }
 
     /// Deletes the resource policy for the given ARN.
     pub async fn delete_policy(&self, resource_arn: &str) {
-        let write_txn = self.db.begin_write().unwrap();
-        {
-            let mut table = write_txn.open_table(POLICIES).unwrap();
-            table.remove(resource_arn).unwrap();
-        }
-        write_txn.commit().unwrap();
+        self.inner.policies.remove(resource_arn);
     }
 
     /// Extracts the stream name from a Kinesis stream ARN.
@@ -709,7 +612,6 @@ impl Store {
     ///
     /// Returns `None` if the ARN does not contain a `/`.
     pub fn stream_name_from_arn(&self, arn: &str) -> Option<String> {
-        // Format: arn:aws:kinesis:{region}:{account}:stream/{name}
         arn.split("/").nth(1).map(|s| s.to_string())
     }
 
@@ -756,68 +658,234 @@ impl Store {
 
     /// Returns the tag map for the given resource ARN, or an empty map if none are set.
     pub async fn get_resource_tags(&self, resource_arn: &str) -> BTreeMap<String, String> {
-        let read_txn = self.db.begin_read().unwrap();
-        let table = read_txn.open_table(RESOURCE_TAGS).unwrap();
-        table
+        self.inner
+            .resource_tags
             .get(resource_arn)
-            .unwrap()
-            .map(|guard| serde_json::from_slice(guard.value()).unwrap_or_default())
+            .map(|entry| entry.value().clone())
             .unwrap_or_default()
     }
 
     /// Replaces the tag map for the given resource ARN.
     pub async fn put_resource_tags(&self, resource_arn: &str, tags: &BTreeMap<String, String>) {
-        let bytes = serde_json::to_vec(tags).unwrap();
-        let write_txn = self.db.begin_write().unwrap();
-        {
-            let mut table = write_txn.open_table(RESOURCE_TAGS).unwrap();
-            table.insert(resource_arn, bytes.as_slice()).unwrap();
-        }
-        write_txn.commit().unwrap();
+        self.inner
+            .resource_tags
+            .insert(resource_arn.to_string(), tags.clone());
     }
 
     // --- Account settings operations ---
 
     /// Returns the account-level settings object, or an empty JSON object if none are set.
     pub async fn get_account_settings(&self) -> Value {
-        let read_txn = self.db.begin_read().unwrap();
-        let table = read_txn.open_table(ACCOUNT_SETTINGS).unwrap();
-        table
-            .get("account_settings")
-            .unwrap()
-            .map(|guard| serde_json::from_slice(guard.value()).unwrap())
-            .unwrap_or(Value::Object(Default::default()))
+        self.inner.account_settings.read().await.clone()
     }
 
     /// Stores the account-level settings object.
     pub async fn put_account_settings(&self, settings: &Value) {
-        let bytes = serde_json::to_vec(settings).unwrap();
-        let write_txn = self.db.begin_write().unwrap();
-        {
-            let mut table = write_txn.open_table(ACCOUNT_SETTINGS).unwrap();
-            table.insert("account_settings", bytes.as_slice()).unwrap();
-        }
-        write_txn.commit().unwrap();
+        let mut guard = self.inner.account_settings.write().await;
+        *guard = settings.clone();
     }
 
-    /// Probes the database with a read transaction to verify all core tables are accessible.
+    /// Probes store health. Always succeeds for the in-memory store.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreHealthError::ReadFailed`] if a read transaction cannot be started,
-    /// or [`StoreHealthError::TableOpenFailed`] if any core table cannot be opened.
+    /// Returns [`StoreHealthError`] if the store is not ready. With the current
+    /// in-memory implementation this never happens, but the signature is kept
+    /// for API compatibility.
     pub fn check_ready(&self) -> Result<(), StoreHealthError> {
-        let txn = self
-            .db
-            .begin_read()
-            .map_err(|e| StoreHealthError::ReadFailed(e.to_string()))?;
-        for table in [STREAMS, RECORDS, CONSUMERS, RESOURCE_TAGS, ACCOUNT_SETTINGS] {
-            txn.open_table(table)
-                .map_err(|e| StoreHealthError::TableOpenFailed(e.to_string()))?;
-        }
-        // POLICIES has a different value type (&str vs &[u8]), so it can't share the loop above.
-        txn.open_table(POLICIES)
-            .map_err(|e| StoreHealthError::TableOpenFailed(e.to_string()))?;
         Ok(())
     }
+
+    // --- Lock-free hot-path operations ---
+
+    /// Allocates a sequence number for a single record (lock-free on the hot path).
+    ///
+    /// 1. Read-locks stream metadata to route `hash_key` → shard (shared, non-blocking).
+    /// 2. Atomically increments the per-shard counter (lock-free `fetch_add`).
+    /// 3. Generates the sequence number string (pure computation).
+    ///
+    /// The caller is responsible for storing the record via [`put_record`](Self::put_record).
+    pub async fn allocate_sequence(
+        &self,
+        name: &str,
+        hash_key: &BigUint,
+    ) -> Result<SequenceAllocation, KinesisErrorResponse> {
+        let entry = self
+            .inner
+            .streams
+            .get(name)
+            .map(|e| e.value().clone())
+            .ok_or_else(|| KinesisErrorResponse::stream_not_found(name, &self.aws_account_id))?;
+
+        // Read-lock stream metadata (shared — concurrent PutRecords don't block each other).
+        let stream = entry.stream.read().await;
+        if !matches!(
+            stream.stream_status,
+            StreamStatus::Active | StreamStatus::Updating
+        ) {
+            return Err(KinesisErrorResponse::stream_not_found(
+                name,
+                &self.aws_account_id,
+            ));
+        }
+
+        let (shard_ix, shard_id, shard_create_time) = route_hash_to_shard(&stream, hash_key);
+        drop(stream); // Release read lock before atomic ops.
+
+        // Lock-free sequence generation via per-shard AtomicU64.
+        let shard_seq = entry.shard_seq.read().await;
+        let now = current_time_ms().max(shard_create_time);
+        let current_seq_ix = shard_seq
+            .get(shard_ix as usize)
+            .map(|s| s.counter.fetch_add(1, Ordering::Relaxed))
+            .unwrap_or(0);
+        drop(shard_seq);
+
+        let seq_num = sequence::stringify_sequence(&sequence::SeqObj {
+            shard_create_time,
+            seq_ix: Some(BigUint::from(current_seq_ix)),
+            byte1: None,
+            seq_time: Some(now),
+            seq_rand: None,
+            shard_ix,
+            version: 2,
+        });
+        let stream_key = format!("{}/{}", sequence::shard_ix_to_hex(shard_ix), seq_num);
+
+        Ok(SequenceAllocation {
+            shard_id,
+            seq_num,
+            stream_key,
+            now,
+        })
+    }
+
+    /// Allocates sequence numbers for a batch of records (lock-free on the hot path).
+    ///
+    /// Same concurrency properties as [`allocate_sequence`](Self::allocate_sequence)
+    /// but processes multiple records in a single stream read-lock acquisition.
+    pub async fn allocate_sequences_batch(
+        &self,
+        name: &str,
+        hash_keys: &[BigUint],
+    ) -> Result<Vec<SequenceAllocation>, KinesisErrorResponse> {
+        let entry = self
+            .inner
+            .streams
+            .get(name)
+            .map(|e| e.value().clone())
+            .ok_or_else(|| KinesisErrorResponse::stream_not_found(name, &self.aws_account_id))?;
+
+        let stream = entry.stream.read().await;
+        if !matches!(
+            stream.stream_status,
+            StreamStatus::Active | StreamStatus::Updating
+        ) {
+            return Err(KinesisErrorResponse::stream_not_found(
+                name,
+                &self.aws_account_id,
+            ));
+        }
+
+        let shard_seq = entry.shard_seq.read().await;
+        let mut allocations = Vec::with_capacity(hash_keys.len());
+
+        for hash_key in hash_keys {
+            let (shard_ix, shard_id, shard_create_time) = route_hash_to_shard(&stream, hash_key);
+            let now = current_time_ms().max(shard_create_time);
+            let current_seq_ix = shard_seq
+                .get(shard_ix as usize)
+                .map(|s| s.counter.fetch_add(1, Ordering::Relaxed))
+                .unwrap_or(0);
+
+            let seq_num = sequence::stringify_sequence(&sequence::SeqObj {
+                shard_create_time,
+                seq_ix: Some(BigUint::from(current_seq_ix)),
+                byte1: None,
+                seq_time: Some(now),
+                seq_rand: None,
+                shard_ix,
+                version: 2,
+            });
+            let stream_key = format!("{}/{}", sequence::shard_ix_to_hex(shard_ix), seq_num);
+
+            allocations.push(SequenceAllocation {
+                shard_id,
+                seq_num,
+                stream_key,
+                now,
+            });
+        }
+
+        Ok(allocations)
+    }
+
+    /// Returns the current per-shard sequence counter (the next seq_ix that would
+    /// be assigned). Used by LATEST iterators to position at the write frontier.
+    pub async fn current_shard_seq(&self, name: &str, shard_ix: i64) -> u64 {
+        if let Some(entry) = self.inner.streams.get(name).map(|e| e.value().clone()) {
+            let shard_seq = entry.shard_seq.read().await;
+            if let Some(seq_state) = shard_seq.get(shard_ix as usize) {
+                return seq_state.counter.load(Ordering::Relaxed);
+            }
+        }
+        0
+    }
+}
+
+// --- Free functions ---
+
+/// Build per-shard sequence state from a stream's shard list.
+fn build_shard_seq(stream: &Stream) -> Vec<ShardSeqState> {
+    stream
+        .shards
+        .iter()
+        .map(|_| ShardSeqState {
+            // Skip index 0: the shard's starting_sequence_number is generated with
+            // seq_ix=0. If the first PutRecord lands in the same millisecond as shard
+            // creation, seq_time would also match, so seq_ix must be ≥1 to guarantee
+            // every record's sequence number is strictly greater than the starting one.
+            counter: AtomicU64::new(1),
+        })
+        .collect()
+}
+
+/// Extend shard_seq if the stream has more shards than tracked counters.
+async fn sync_shard_seq(entry: &StreamEntry, stream: &Stream) {
+    let mut shard_seq = entry.shard_seq.write().await;
+    while shard_seq.len() < stream.shards.len() {
+        shard_seq.push(ShardSeqState {
+            // Skip index 0: the shard's starting_sequence_number is generated with
+            // seq_ix=0. If the first PutRecord lands in the same millisecond as shard
+            // creation, seq_time would also match, so seq_ix must be ≥1 to guarantee
+            // every record's sequence number is strictly greater than the starting one.
+            counter: AtomicU64::new(1),
+        });
+    }
+}
+
+/// Route a hash key to the appropriate open shard. Returns `(shard_ix, shard_id, create_time_ms)`.
+fn route_hash_to_shard(stream: &Stream, hash_key: &BigUint) -> (i64, String, u64) {
+    for (i, shard) in stream.shards.iter().enumerate() {
+        if shard.sequence_number_range.ending_sequence_number.is_none() {
+            let start: BigUint = shard
+                .hash_key_range
+                .starting_hash_key
+                .parse()
+                .unwrap_or_else(|_| BigUint::zero());
+            let end: BigUint = shard
+                .hash_key_range
+                .ending_hash_key
+                .parse()
+                .unwrap_or_else(|_| BigUint::zero());
+            if *hash_key >= start && *hash_key <= end {
+                let create_time =
+                    sequence::parse_sequence(&shard.sequence_number_range.starting_sequence_number)
+                        .map(|s| s.shard_create_time)
+                        .unwrap_or(0);
+                return (i as i64, shard.shard_id.clone(), create_time);
+            }
+        }
+    }
+    (0, String::new(), 0)
 }

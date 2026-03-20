@@ -197,9 +197,6 @@ pub struct Stream {
     // Hidden fields (not returned in API responses)
     #[serde(skip)]
     #[doc(hidden)]
-    pub seq_ix: Vec<Option<u64>>,
-    #[serde(skip)]
-    #[doc(hidden)]
     pub tags: BTreeMap<String, String>,
     #[serde(skip)]
     #[doc(hidden)]
@@ -226,7 +223,6 @@ impl Stream {
         stream_status: StreamStatus,
         stream_creation_timestamp: EpochSeconds,
         stream_mode_details: StreamModeDetails,
-        seq_ix: Vec<Option<u64>>,
         tags: BTreeMap<String, String>,
         key_id: Option<String>,
         warm_throughput_mibps: u32,
@@ -243,7 +239,6 @@ impl Stream {
             stream_status,
             stream_creation_timestamp,
             stream_mode_details,
-            seq_ix,
             tags,
             key_id,
             warm_throughput_mibps,
@@ -268,7 +263,6 @@ impl Stream {
 ///     StreamStatus::Creating,
 ///     EpochSeconds(1700000000.0),
 ///     vec![],
-///     vec![None],
 /// )
 /// .retention_period_hours(48)
 /// .build();
@@ -281,7 +275,6 @@ pub struct StreamBuilder {
     stream_status: StreamStatus,
     stream_creation_timestamp: EpochSeconds,
     shards: Vec<Shard>,
-    seq_ix: Vec<Option<u64>>,
     retention_period_hours: u32,
     enhanced_monitoring: Vec<EnhancedMonitoring>,
     encryption_type: EncryptionType,
@@ -301,7 +294,6 @@ impl StreamBuilder {
         stream_status: StreamStatus,
         stream_creation_timestamp: EpochSeconds,
         shards: Vec<Shard>,
-        seq_ix: Vec<Option<u64>>,
     ) -> Self {
         Self {
             stream_name,
@@ -309,7 +301,6 @@ impl StreamBuilder {
             stream_status,
             stream_creation_timestamp,
             shards,
-            seq_ix,
             retention_period_hours: 24,
             enhanced_monitoring: alloc::vec![EnhancedMonitoring {
                 shard_level_metrics: alloc::vec![],
@@ -393,7 +384,6 @@ impl StreamBuilder {
             self.stream_status,
             self.stream_creation_timestamp,
             self.stream_mode_details,
-            self.seq_ix,
             self.tags,
             self.key_id,
             self.warm_throughput_mibps,

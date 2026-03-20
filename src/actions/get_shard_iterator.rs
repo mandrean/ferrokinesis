@@ -141,14 +141,8 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                 iterator_seq = shard_seq.clone();
             }
             ShardIteratorType::Latest => {
-                // Read from the same seq_ix / 5 bucket that put_record writes, so the
-                // LATEST iterator starts at the true write frontier — the next sequence
-                // number that would be assigned to an incoming record.
-                let seq_ix = stream
-                    .seq_ix
-                    .get(shard_ix as usize / 5)
-                    .and_then(|v| *v)
-                    .unwrap_or(0);
+                // Read the per-shard atomic counter for the current write frontier.
+                let seq_ix = store.current_shard_seq(stream_name, shard_ix).await;
                 iterator_seq = sequence::stringify_sequence(&sequence::SeqObj {
                     shard_create_time: shard_seq_obj.shard_create_time,
                     seq_ix: Some(BigUint::from(seq_ix)),
