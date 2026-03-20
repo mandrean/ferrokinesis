@@ -180,11 +180,23 @@ async fn test_mirror_forwards_put_records() {
 
 #[tokio::test]
 async fn test_mirror_does_not_forward_non_write_operations() {
+    // Create a sentinel stream on both sides to act as a mirror-pipeline barrier.
     let target = TestServer::new().await;
+    target.create_stream("sentinel", 1).await;
 
     let (primary_addr, _store) = start_primary_with_mirror(&target.url(), false).await;
     let primary_url = format!("http://{primary_addr}");
     let client = reqwest::Client::new();
+
+    let res = kinesis_request(
+        &client,
+        &primary_url,
+        "CreateStream",
+        &json!({"StreamName": "sentinel", "ShardCount": 1}),
+    )
+    .await;
+    assert_eq!(res.status(), 200);
+    wait_active(&client, &primary_url, "sentinel").await;
 
     // CreateStream on primary — should NOT be mirrored
     let res = kinesis_request(
@@ -196,9 +208,23 @@ async fn test_mirror_does_not_forward_non_write_operations() {
     .await;
     assert_eq!(res.status(), 200);
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    // Send a PutRecord (which IS mirrored) as a pipeline flush barrier.
+    // Once this arrives at the target, anything queued before it has been processed.
+    let res = kinesis_request(
+        &client,
+        &primary_url,
+        "PutRecord",
+        &json!({
+            "StreamName": "sentinel",
+            "Data": "YmFycmllcg==",
+            "PartitionKey": "barrier"
+        }),
+    )
+    .await;
+    assert_eq!(res.status(), 200);
+    wait_for_records(&target, "sentinel", "shardId-000000000000", 1).await;
 
-    // Verify stream does NOT exist on mirror target
+    // Verify stream does NOT exist on mirror target — deterministic, no sleep needed
     let res = target
         .request("DescribeStream", &json!({"StreamName": "no-mirror"}))
         .await;

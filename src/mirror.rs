@@ -21,11 +21,51 @@ pub type MirrorableResponse = Option<Value>;
 /// Async traffic mirror that forwards write operations to a remote endpoint.
 pub struct Mirror {
     url: String,
+    host: String,
     diff: bool,
     client: reqwest::Client,
     credentials: Option<aws_credential_types::Credentials>,
     region: String,
     semaphore: Arc<Semaphore>,
+}
+
+/// Error during SigV4 request signing.
+#[derive(Debug)]
+pub enum SignError {
+    /// Failed to build signing parameters.
+    Build(aws_sigv4::sign::v4::signing_params::BuildError),
+    /// Failed to sign the request.
+    Signing(aws_sigv4::http_request::SigningError),
+}
+
+impl std::fmt::Display for SignError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Build(e) => write!(f, "failed to build signing params: {e}"),
+            Self::Signing(e) => write!(f, "signing failed: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for SignError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Build(e) => Some(e),
+            Self::Signing(e) => Some(e),
+        }
+    }
+}
+
+impl From<aws_sigv4::sign::v4::signing_params::BuildError> for SignError {
+    fn from(e: aws_sigv4::sign::v4::signing_params::BuildError) -> Self {
+        Self::Build(e)
+    }
+}
+
+impl From<aws_sigv4::http_request::SigningError> for SignError {
+    fn from(e: aws_sigv4::http_request::SigningError) -> Self {
+        Self::Signing(e)
+    }
 }
 
 impl Mirror {
@@ -53,8 +93,10 @@ impl Mirror {
         concurrency: usize,
     ) -> Self {
         let url = format!("{}/", endpoint.trim_end_matches('/'));
+        let host = extract_host(&url);
         Self {
             url,
+            host,
             diff,
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(10))
@@ -129,7 +171,7 @@ impl Mirror {
             .header("X-Amz-Target", target);
 
         if let Some(ref credentials) = self.credentials {
-            match self.sign_headers(&self.url, content_type, target, &body, credentials) {
+            match self.sign_headers(content_type, target, &body, credentials) {
                 Ok(headers) => {
                     for (name, value) in headers {
                         request = request.header(name, value);
@@ -178,12 +220,11 @@ impl Mirror {
 
     fn sign_headers(
         &self,
-        url: &str,
         content_type: &str,
         target: &str,
         body: &[u8],
         credentials: &aws_credential_types::Credentials,
-    ) -> Result<Vec<(String, String)>, String> {
+    ) -> Result<Vec<(String, String)>, SignError> {
         use aws_sigv4::http_request::{SignableBody, SignableRequest, SigningSettings, sign};
         use aws_sigv4::sign::v4;
         use std::time::SystemTime;
@@ -197,27 +238,22 @@ impl Mirror {
             .name("kinesis")
             .time(SystemTime::now())
             .settings(SigningSettings::default())
-            .build()
-            .map_err(|e| e.to_string())?;
+            .build()?;
 
-        let host = extract_host(url);
         let headers = [
-            ("host", host.as_str()),
+            ("host", self.host.as_str()),
             ("content-type", content_type),
             ("x-amz-target", target),
         ];
 
         let signable = SignableRequest::new(
             "POST",
-            url,
+            &self.url,
             headers.iter().copied(),
             SignableBody::Bytes(body),
-        )
-        .map_err(|e| e.to_string())?;
+        )?;
 
-        let (instructions, _) = sign(signable, &params.into())
-            .map_err(|e| e.to_string())?
-            .into_parts();
+        let (instructions, _) = sign(signable, &params.into())?.into_parts();
 
         Ok(instructions
             .headers()
