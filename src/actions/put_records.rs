@@ -78,7 +78,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         hash_keys.push(hash_key);
     }
 
-    let (return_records, batch) = store
+    let (return_records, batch, timestamps) = store
         .update_stream(&stream_name, |stream| {
             if !matches!(
                 stream.stream_status,
@@ -131,6 +131,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
             let mut batch_ops: Vec<Option<(String, StoredRecordRef<'_>)>> =
                 (0..records.len()).map(|_| None).collect();
             let mut return_records: Vec<Value> = vec![json!(null); records.len()];
+            let mut timestamps: Vec<u64> = vec![0u64; records.len()];
 
             for shard_ix in 0..stream.shards.len() as i64 {
                 for (i, record) in records.iter().enumerate() {
@@ -180,6 +181,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                     let partition_key = record["PartitionKey"].as_str().unwrap_or("");
                     let record_data = record["Data"].as_str().unwrap_or("");
 
+                    timestamps[i] = now;
                     batch_ops[i] = Some((
                         stream_key,
                         StoredRecordRef {
@@ -198,19 +200,19 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
 
             let batch: Vec<(String, StoredRecordRef<'_>)> =
                 batch_ops.into_iter().flatten().collect();
-            Ok((return_records, batch))
+            Ok((return_records, batch, timestamps))
         })
         .await?;
 
     store.put_records_batch(&stream_name, &batch).await;
 
     if let Some(ref writer) = store.capture_writer {
-        let ts = current_time_ms();
         let capture_refs: Vec<CaptureRecordRef<'_>> = records
             .iter()
             .zip(return_records.iter())
-            .filter(|(_, resp)| resp.get(constants::ERROR_CODE).is_none_or(|v| v.is_null()))
-            .map(|(req, resp)| CaptureRecordRef {
+            .zip(timestamps.iter())
+            .filter(|((_, resp), _)| resp.get(constants::ERROR_CODE).is_none_or(|v| v.is_null()))
+            .map(|((req, resp), &ts)| CaptureRecordRef {
                 op: CaptureOp::PutRecords,
                 ts,
                 stream: &stream_name,
