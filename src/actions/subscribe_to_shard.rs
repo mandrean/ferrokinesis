@@ -3,7 +3,7 @@ use crate::error::KinesisErrorResponse;
 use crate::event_stream;
 use crate::sequence;
 use crate::store::Store;
-use crate::types::{ResponseRecord, ShardIteratorType, StreamStatus};
+use crate::types::{EpochSeconds, ResponseRecord, ShardIteratorType, StreamStatus};
 use crate::util::current_time_ms;
 use axum::body::Body;
 use bytes::Bytes;
@@ -122,7 +122,7 @@ pub async fn execute_streaming(
 
     let now = current_time_ms();
 
-    tracing::debug!(
+    tracing::trace!(
         shard = %shard_id,
         ?iterator_type,
         "subscribe: starting position"
@@ -235,7 +235,7 @@ pub async fn execute_streaming(
                     data: &record.data,
                     partition_key: &record.partition_key,
                     sequence_number: seq_num,
-                    approximate_arrival_timestamp: record.approximate_arrival_timestamp,
+                    approximate_arrival_timestamp: EpochSeconds(record.approximate_arrival_timestamp),
                 });
 
                 last_seq_num = Some(seq_num);

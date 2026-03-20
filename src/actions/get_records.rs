@@ -3,7 +3,7 @@ use crate::error::KinesisErrorResponse;
 use crate::sequence;
 use crate::shard_iterator;
 use crate::store::Store;
-use crate::types::ResponseRecord;
+use crate::types::{EpochSeconds, ResponseRecord};
 use crate::util::current_time_ms;
 use serde_json::{Value, json};
 
@@ -108,7 +108,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         items.push(ResponseRecord {
             partition_key: &record.partition_key,
             data: &record.data,
-            approximate_arrival_timestamp: record.approximate_arrival_timestamp,
+            approximate_arrival_timestamp: EpochSeconds(record.approximate_arrival_timestamp),
             sequence_number: seq_num,
         });
 

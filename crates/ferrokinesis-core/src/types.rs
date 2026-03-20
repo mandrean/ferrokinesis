@@ -14,10 +14,11 @@ use serde::{Deserialize, Serialize, Serializer};
 /// losslessly through `i64` — i.e. it can safely be emitted as an integer.
 #[allow(clippy::cast_possible_truncation)]
 pub fn is_whole_epoch(f: f64) -> bool {
-    f.fract() == 0.0 && f.is_finite() && (f as i64 as f64) == f
+    f.is_finite() && (f as i64 as f64) == f
 }
 
-/// Serializes an `f64` as an `i64` when it has no fractional part.
+/// A newtype around `f64` for epoch-second timestamps that serializes whole
+/// values as `i64`.
 ///
 /// Real AWS Kinesis encodes timestamps as whole-number epoch seconds. The AWS
 /// Java SDK v2 reads CBOR numbers via `Double.toString()` → `StringToInstant`,
@@ -25,12 +26,22 @@ pub fn is_whole_epoch(f: f64) -> bool {
 /// Emitting integer-valued timestamps as `i64` avoids this: serde_json writes
 /// `1773966938` (no `.0` suffix), and `json_to_cbor_impl` converts it to a
 /// CBOR integer that Java reads cleanly.
-fn serialize_epoch_seconds<S: Serializer>(val: &f64, serializer: S) -> Result<S::Ok, S::Error> {
-    #[allow(clippy::cast_possible_truncation)]
-    if is_whole_epoch(*val) {
-        serializer.serialize_i64(*val as i64)
-    } else {
-        serializer.serialize_f64(*val)
+///
+/// Using this newtype instead of bare `f64` + `#[serde(serialize_with)]`
+/// ensures `json!()` macros (which call `to_value()` → `Serialize`) also emit
+/// integer timestamps without requiring manual `as i64` casts.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Deserialize)]
+#[serde(transparent)]
+pub struct EpochSeconds(pub f64);
+
+impl Serialize for EpochSeconds {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[allow(clippy::cast_possible_truncation)]
+        if is_whole_epoch(self.0) {
+            serializer.serialize_i64(self.0 as i64)
+        } else {
+            serializer.serialize_f64(self.0)
+        }
     }
 }
 
@@ -95,8 +106,7 @@ pub struct Consumer {
     /// Current lifecycle state of the consumer.
     pub consumer_status: ConsumerStatus,
     /// Unix timestamp (seconds) when this consumer was created.
-    #[serde(serialize_with = "serialize_epoch_seconds")]
-    pub consumer_creation_timestamp: f64,
+    pub consumer_creation_timestamp: EpochSeconds,
 }
 
 /// Server-side encryption type applied to a stream.
@@ -180,8 +190,7 @@ pub struct Stream {
     /// Current lifecycle state of this stream.
     pub stream_status: StreamStatus,
     /// Unix timestamp (seconds) when this stream was created.
-    #[serde(serialize_with = "serialize_epoch_seconds")]
-    pub stream_creation_timestamp: f64,
+    pub stream_creation_timestamp: EpochSeconds,
     /// Capacity mode details for this stream.
     pub stream_mode_details: StreamModeDetails,
 
@@ -215,7 +224,7 @@ impl Stream {
         stream_arn: String,
         stream_name: String,
         stream_status: StreamStatus,
-        stream_creation_timestamp: f64,
+        stream_creation_timestamp: EpochSeconds,
         stream_mode_details: StreamModeDetails,
         seq_ix: Vec<Option<u64>>,
         tags: BTreeMap<String, String>,
@@ -257,7 +266,7 @@ impl Stream {
 ///     "my-stream".into(),
 ///     "arn:aws:kinesis:us-east-1:123456789012:stream/my-stream".into(),
 ///     StreamStatus::Creating,
-///     1700000000.0,
+///     EpochSeconds(1700000000.0),
 ///     vec![],
 ///     vec![None],
 /// )
@@ -270,7 +279,7 @@ pub struct StreamBuilder {
     stream_name: String,
     stream_arn: String,
     stream_status: StreamStatus,
-    stream_creation_timestamp: f64,
+    stream_creation_timestamp: EpochSeconds,
     shards: Vec<Shard>,
     seq_ix: Vec<Option<u64>>,
     retention_period_hours: u32,
@@ -290,7 +299,7 @@ impl StreamBuilder {
         stream_name: String,
         stream_arn: String,
         stream_status: StreamStatus,
-        stream_creation_timestamp: f64,
+        stream_creation_timestamp: EpochSeconds,
         shards: Vec<Shard>,
         seq_ix: Vec<Option<u64>>,
     ) -> Self {
@@ -489,8 +498,7 @@ pub struct ResponseRecord<'a> {
     /// Base64-encoded record payload.
     pub data: &'a str,
     /// Unix timestamp (seconds) when the record arrived at the stream.
-    #[serde(serialize_with = "serialize_epoch_seconds")]
-    pub approximate_arrival_timestamp: f64,
+    pub approximate_arrival_timestamp: EpochSeconds,
     /// The sequence number of this record within its shard.
     pub sequence_number: &'a str,
 }

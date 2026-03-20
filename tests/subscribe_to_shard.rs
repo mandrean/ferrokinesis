@@ -4,7 +4,7 @@ use aws_smithy_eventstream::frame::read_message_from;
 use aws_smithy_types::event_stream::Message;
 use common::*;
 use ferrokinesis::store::{Store, StoreOptions};
-use ferrokinesis::types::{Consumer, ConsumerStatus};
+use ferrokinesis::types::{Consumer, ConsumerStatus, EpochSeconds};
 use serde_json::{Value, json};
 use std::io::Cursor;
 
@@ -284,7 +284,7 @@ async fn subscribe_stream_not_found_from_consumer_arn() {
                 consumer_name: "c".to_string(),
                 consumer_arn: consumer_arn.to_string(),
                 consumer_status: ConsumerStatus::Active,
-                consumer_creation_timestamp: 1.0,
+                consumer_creation_timestamp: EpochSeconds(1.0),
             },
         )
         .await;
@@ -318,7 +318,7 @@ async fn subscribe_consumer_arn_missing_consumer_segment() {
                 consumer_name: "test".to_string(),
                 consumer_arn: malformed_arn.to_string(),
                 consumer_status: ConsumerStatus::Active,
-                consumer_creation_timestamp: 1.0,
+                consumer_creation_timestamp: EpochSeconds(1.0),
             },
         )
         .await;
@@ -352,7 +352,7 @@ async fn subscribe_consumer_arn_unresolvable_stream_name() {
                 consumer_name: "c".to_string(),
                 consumer_arn: consumer_arn.to_string(),
                 consumer_status: ConsumerStatus::Active,
-                consumer_creation_timestamp: 1.0,
+                consumer_creation_timestamp: EpochSeconds(1.0),
             },
         )
         .await;
@@ -491,7 +491,7 @@ async fn subscribe_unknown_position_type_direct() {
                 consumer_name: "c".to_string(),
                 consumer_arn: consumer_arn.clone(),
                 consumer_status: ConsumerStatus::Active,
-                consumer_creation_timestamp: 1.0,
+                consumer_creation_timestamp: EpochSeconds(1.0),
             },
         )
         .await;
