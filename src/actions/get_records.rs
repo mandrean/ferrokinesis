@@ -165,6 +165,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         });
     }
 
+    let record_count = items.len();
     let mut result = json!({
         "MillisBehindLatest": millis_behind,
         "Records": items,
@@ -174,7 +175,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         result["NextShardIterator"] = json!(iter);
     }
 
-    tracing::trace!(stream = %stream_name, shard = %shard_id, records = items.len(), millis_behind, "records retrieved");
+    tracing::trace!(stream = %stream_name, shard = %shard_id, records = record_count, millis_behind, "records retrieved");
     Ok(Some(result))
 }
 
