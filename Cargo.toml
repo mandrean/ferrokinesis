@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "crates/ferrokinesis-core"]
+
 [package]
 name = "ferrokinesis"
 version = "0.3.0"
@@ -21,6 +24,7 @@ loadtest = ["dep:goose"]
 tls = ["dep:axum-server", "dep:rcgen", "dep:rustls"]
 
 [dependencies]
+ferrokinesis-core = { path = "crates/ferrokinesis-core" }
 aes = "0.8"
 async-stream = "0.3"
 aws-smithy-eventstream = "0.60"
