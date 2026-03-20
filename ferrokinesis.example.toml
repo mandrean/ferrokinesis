@@ -1,0 +1,53 @@
+# ferrokinesis configuration file
+#
+# Pass via: ferrokinesis --config ferrokinesis.toml
+# Or set:   FERROKINESIS_CONFIG=ferrokinesis.toml
+#
+# All fields are optional. CLI flags and environment variables
+# take precedence over values set here.
+
+# Port to listen on (default: 4567)
+# CLI: --port | Env: FERROKINESIS_PORT
+# port = 4567
+
+# AWS account ID used in ARN generation (default: "000000000000")
+# CLI: --account-id | Env: AWS_ACCOUNT_ID
+# account_id = "000000000000"
+
+# AWS region used in ARN generation and responses (default: "us-east-1")
+# CLI: --region | Env: AWS_REGION / AWS_DEFAULT_REGION
+# region = "us-east-1"
+
+# Shard limit for error reporting (default: 10)
+# CLI: --shard-limit | Env: FERROKINESIS_SHARD_LIMIT
+# shard_limit = 10
+
+# Time streams stay in CREATING state, in milliseconds (default: 500)
+# CLI: --create-stream-ms | Env: FERROKINESIS_CREATE_STREAM_MS
+# create_stream_ms = 500
+
+# Time streams stay in DELETING state, in milliseconds (default: 500)
+# CLI: --delete-stream-ms | Env: FERROKINESIS_DELETE_STREAM_MS
+# delete_stream_ms = 500
+
+# Time streams stay in UPDATING state, in milliseconds (default: 500)
+# CLI: --update-stream-ms | Env: FERROKINESIS_UPDATE_STREAM_MS
+# update_stream_ms = 500
+
+# Shard iterator time-to-live in seconds (min: 1, max: 86400, default: 300)
+# CLI: --iterator-ttl-seconds | Env: FERROKINESIS_ITERATOR_TTL_SECONDS
+# iterator_ttl_seconds = 300
+
+# Retention reaper interval in seconds (0 = disabled, max: 86400, default: 0)
+# CLI: --retention-check-interval-secs | Env: FERROKINESIS_RETENTION_CHECK_INTERVAL_SECS
+# retention_check_interval_secs = 0
+
+# Maximum request body size in megabytes (min: 1, max: 4096, default: 7)
+# CLI: --max-request-body-mb | Env: FERROKINESIS_MAX_REQUEST_BODY_MB
+# max_request_body_mb = 7
+
+# TLS certificate and key (requires the "tls" feature)
+# Both must be set together, or both omitted.
+# CLI: --tls-cert / --tls-key | Env: FERROKINESIS_TLS_CERT / FERROKINESIS_TLS_KEY
+# tls_cert = "cert.pem"
+# tls_key = "key.pem"
