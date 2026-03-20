@@ -3,18 +3,11 @@ use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::sequence;
 use crate::store::Store;
-use crate::types::{StoredRecordRef, StreamStatus};
-use crate::util::current_time_ms;
+use crate::types::StoredRecordRef;
 use num_bigint::BigUint;
 use num_traits::{One, Zero};
 use serde_json::{Value, json};
 use std::borrow::Cow;
-
-struct SeqPiece {
-    shard_ix: i64,
-    shard_id: String,
-    shard_create_time: u64,
-}
 
 fn is_capture_eligible(resp: &Value) -> bool {
     resp.get(constants::ERROR_CODE).is_none_or(|v| v.is_null())
@@ -43,7 +36,6 @@ fn build_capture_refs<'a>(
         })
         .collect()
 }
-
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_name = store.resolve_stream_name(&data)?;
     // capture_enabled gates the timestamps allocation inside the update_stream closure;
@@ -109,141 +101,37 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         hash_keys.push(hash_key);
     }
 
-    let (return_records, batch, timestamps) = store
-        .update_stream(&stream_name, |stream| {
-            if !matches!(
-                stream.stream_status,
-                StreamStatus::Active | StreamStatus::Updating
-            ) {
-                return Err(KinesisErrorResponse::stream_not_found(
-                    &stream_name,
-                    &store.aws_account_id,
-                ));
-            }
-
-            let mut seq_pieces = Vec::with_capacity(records.len());
-
-            for (idx, _record) in records.iter().enumerate() {
-                let hash_key = &hash_keys[idx];
-                let mut piece = SeqPiece {
-                    shard_ix: 0,
-                    shard_id: String::new(),
-                    shard_create_time: 0,
-                };
-
-                for (j, shard) in stream.shards.iter().enumerate() {
-                    if shard.sequence_number_range.ending_sequence_number.is_none() {
-                        let start: BigUint = shard
-                            .hash_key_range
-                            .starting_hash_key
-                            .parse()
-                            .unwrap_or_else(|_| BigUint::zero());
-                        let end: BigUint = shard
-                            .hash_key_range
-                            .ending_hash_key
-                            .parse()
-                            .unwrap_or_else(|_| BigUint::zero());
-                        if *hash_key >= start && *hash_key <= end {
-                            piece.shard_ix = j as i64;
-                            piece.shard_id = shard.shard_id.clone();
-                            piece.shard_create_time = sequence::parse_sequence(
-                                &shard.sequence_number_range.starting_sequence_number,
-                            )
-                            .map(|s| s.shard_create_time)
-                            .unwrap_or(0);
-                            break;
-                        }
-                    }
-                }
-
-                seq_pieces.push(piece);
-            }
-
-            let mut batch_ops: Vec<Option<(String, StoredRecordRef<'_>)>> =
-                (0..records.len()).map(|_| None).collect();
-            let mut return_records: Vec<Value> = vec![json!(null); records.len()];
-            let mut timestamps: Vec<u64> = if capture_enabled {
-                vec![0u64; records.len()]
-            } else {
-                Vec::new()
-            };
-
-            for shard_ix in 0..stream.shards.len() as i64 {
-                for (i, record) in records.iter().enumerate() {
-                    if seq_pieces[i].shard_ix != shard_ix {
-                        continue;
-                    }
-
-                    // kinesalite groups every 5 consecutive shards into a shared sequence-index
-                    // bucket; seq_ix is incremented per-bucket rather than per-shard. This
-                    // emulates that bucketing exactly so sequence numbers match real AWS ordering.
-                    let seq_ix_ix = (shard_ix as usize) / 5;
-                    // Clamp `now` to at least the shard's own creation time. A record timestamp
-                    // that precedes the shard's start would produce a sequence number that sorts
-                    // before the shard's starting sequence number — an impossible ordering.
-                    let now = current_time_ms().max(seq_pieces[i].shard_create_time);
-
-                    while stream.seq_ix.len() <= seq_ix_ix {
-                        stream.seq_ix.push(None);
-                    }
-
-                    // Start seq_ix at 1 (not 0) when the shard was created in the same
-                    // millisecond as this write, so the first record's sequence number is
-                    // strictly greater than the shard's starting sequence number.
-                    if stream.seq_ix[seq_ix_ix].is_none() {
-                        stream.seq_ix[seq_ix_ix] =
-                            Some(if seq_pieces[i].shard_create_time == now {
-                                1
-                            } else {
-                                0
-                            });
-                    }
-
-                    let current_seq_ix = stream.seq_ix[seq_ix_ix].unwrap_or(0);
-                    let seq_num = sequence::stringify_sequence(&sequence::SeqObj {
-                        shard_create_time: seq_pieces[i].shard_create_time,
-                        seq_ix: Some(BigUint::from(current_seq_ix)),
-                        byte1: None,
-                        seq_time: Some(now),
-                        seq_rand: None,
-                        shard_ix,
-                        version: 2,
-                    });
-
-                    let stream_key = format!("{}/{}", sequence::shard_ix_to_hex(shard_ix), seq_num);
-                    stream.seq_ix[seq_ix_ix] = Some(current_seq_ix + 1);
-
-                    let partition_key = record["PartitionKey"].as_str().unwrap_or("");
-                    let record_data = record["Data"].as_str().unwrap_or("");
-
-                    if capture_enabled {
-                        timestamps[i] = now;
-                    }
-                    batch_ops[i] = Some((
-                        stream_key,
-                        StoredRecordRef {
-                            partition_key,
-                            data: record_data,
-                            approximate_arrival_timestamp: (now / 1000) as f64,
-                        },
-                    ));
-
-                    return_records[i] = json!({
-                        "ShardId": seq_pieces[i].shard_id,
-                        "SequenceNumber": seq_num,
-                    });
-                }
-            }
-
-            let batch: Vec<(String, StoredRecordRef<'_>)> =
-                batch_ops.into_iter().flatten().collect();
-            Ok((return_records, batch, timestamps))
-        })
+    let allocations = store
+        .allocate_sequences_batch(&stream_name, &hash_keys)
         .await?;
+
+    let mut return_records: Vec<Value> = Vec::with_capacity(records.len());
+    let mut batch: Vec<(String, StoredRecordRef<'_>)> = Vec::with_capacity(records.len());
+
+    for (i, record) in records.iter().enumerate() {
+        let alloc = &allocations[i];
+        let partition_key = record["PartitionKey"].as_str().unwrap_or("");
+        let record_data = record["Data"].as_str().unwrap_or("");
+
+        batch.push((
+            alloc.stream_key.clone(),
+            StoredRecordRef {
+                partition_key,
+                data: record_data,
+                approximate_arrival_timestamp: (alloc.now / 1000) as f64,
+            },
+        ));
+
+        return_records.push(json!({
+            "ShardId": alloc.shard_id,
+            "SequenceNumber": alloc.seq_num,
+        }));
+    }
 
     store.put_records_batch(&stream_name, &batch).await;
 
     if let Some(ref writer) = store.capture_writer {
+        let timestamps: Vec<u64> = allocations.iter().map(|a| a.now).collect();
         let capture_refs = build_capture_refs(records, &return_records, &timestamps, &stream_name);
         writer.write_records(&capture_refs);
     }

@@ -17,12 +17,17 @@
 
 use crate::constants;
 use crate::error::KinesisErrorResponse;
-use crate::types::{Consumer, StoredRecord, Stream};
+use crate::sequence;
+use crate::types::{Consumer, StoredRecord, Stream, StreamStatus};
+use crate::util::current_time_ms;
 use dashmap::DashMap;
+use num_bigint::BigUint;
+use num_traits::Zero;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::RwLock;
 
 /// Errors that can occur when probing store health.
@@ -87,12 +92,36 @@ impl Default for StoreOptions {
     }
 }
 
-/// Per-stream entry holding metadata under a per-stream RwLock.
+/// Per-shard sequence counter for lock-free sequence number generation.
+struct ShardSeqState {
+    /// Atomic counter — `fetch_add(1)` returns the next seq_ix to use.
+    counter: AtomicU64,
+    /// Shard creation time in milliseconds (from starting_sequence_number).
+    _create_time_ms: u64,
+}
+
+/// Per-stream entry holding metadata and per-shard sequence state.
 ///
-/// Lock ordering (to prevent deadlock): `stream` before record maps.
+/// Lock ordering (to prevent deadlock): `stream` before `shard_seq` before record maps.
 struct StreamEntry {
     /// Stream metadata. Read-locked on the hot path; write-locked for admin ops.
     stream: RwLock<Stream>,
+    /// Per-shard sequence counters, indexed by shard position.
+    /// Read-locked on the hot path (AtomicU64 inside is lock-free).
+    /// Write-locked only when topology changes (split/merge adds shards).
+    shard_seq: RwLock<Vec<ShardSeqState>>,
+}
+
+/// Result of allocating a sequence number for a record.
+pub struct SequenceAllocation {
+    /// The shard ID the record was routed to.
+    pub shard_id: String,
+    /// The generated sequence number string.
+    pub seq_num: String,
+    /// Composite key `"{shard_hex}/{seq_num}"` for record storage.
+    pub stream_key: String,
+    /// Timestamp used in the sequence number (milliseconds).
+    pub now: u64,
 }
 
 /// Per-shard record map: shard_hex → sorted records.
@@ -138,9 +167,7 @@ fn ensure_shard_map<'a>(
     stream_records: &'a DashMap<String, ShardRecords>,
     stream_name: &str,
 ) -> dashmap::mapref::one::Ref<'a, String, ShardRecords> {
-    stream_records
-        .entry(stream_name.to_string())
-        .or_default();
+    stream_records.entry(stream_name.to_string()).or_default();
     // entry() returns a RefMut which we don't need; re-get as Ref.
     stream_records.get(stream_name).unwrap()
 }
@@ -214,12 +241,14 @@ impl Store {
     /// Inserts or replaces a stream by name.
     pub async fn put_stream(&self, name: &str, stream: Stream) {
         if let Some(existing) = self.inner.streams.get(name) {
-            // Update metadata, preserve existing records.
+            // Update metadata, preserve existing records and seq state.
             let mut guard = existing.stream.write().await;
             *guard = stream;
         } else {
+            let shard_seq = build_shard_seq(&stream);
             let entry = Arc::new(StreamEntry {
                 stream: RwLock::new(stream),
+                shard_seq: RwLock::new(shard_seq),
             });
             self.inner.streams.insert(name.to_string(), entry);
         }
@@ -276,7 +305,10 @@ impl Store {
             .map(|e| e.value().clone())
             .ok_or_else(|| KinesisErrorResponse::stream_not_found(name, &self.aws_account_id))?;
         let mut stream = entry.stream.write().await;
-        f(&mut stream)
+        let result = f(&mut stream)?;
+        // Sync shard_seq if the closure added shards (split/merge/reshard).
+        sync_shard_seq(&entry, &stream).await;
+        Ok(result)
     }
 
     /// Executes a closure with write access to all streams simultaneously.
@@ -317,8 +349,10 @@ impl Store {
                 let mut guard = entry.stream.write().await;
                 *guard = stream;
             } else {
+                let shard_seq = build_shard_seq(&stream);
                 let entry = Arc::new(StreamEntry {
                     stream: RwLock::new(stream),
+                    shard_seq: RwLock::new(shard_seq),
                 });
                 self.inner.streams.insert(name, entry);
             }
@@ -689,4 +723,205 @@ impl Store {
     pub fn check_ready(&self) -> Result<(), StoreHealthError> {
         Ok(())
     }
+
+    // --- Lock-free hot-path operations ---
+
+    /// Allocates a sequence number for a single record (lock-free on the hot path).
+    ///
+    /// 1. Read-locks stream metadata to route `hash_key` → shard (shared, non-blocking).
+    /// 2. Atomically increments the per-shard counter (lock-free `fetch_add`).
+    /// 3. Generates the sequence number string (pure computation).
+    ///
+    /// The caller is responsible for storing the record via [`put_record`](Self::put_record).
+    pub async fn allocate_sequence(
+        &self,
+        name: &str,
+        hash_key: &BigUint,
+    ) -> Result<SequenceAllocation, KinesisErrorResponse> {
+        let entry = self
+            .inner
+            .streams
+            .get(name)
+            .map(|e| e.value().clone())
+            .ok_or_else(|| KinesisErrorResponse::stream_not_found(name, &self.aws_account_id))?;
+
+        // Read-lock stream metadata (shared — concurrent PutRecords don't block each other).
+        let stream = entry.stream.read().await;
+        if !matches!(
+            stream.stream_status,
+            StreamStatus::Active | StreamStatus::Updating
+        ) {
+            return Err(KinesisErrorResponse::stream_not_found(
+                name,
+                &self.aws_account_id,
+            ));
+        }
+
+        let (shard_ix, shard_id, shard_create_time) = route_hash_to_shard(&stream, hash_key);
+        drop(stream); // Release read lock before atomic ops.
+
+        // Lock-free sequence generation via per-shard AtomicU64.
+        let shard_seq = entry.shard_seq.read().await;
+        let now = current_time_ms().max(shard_create_time);
+        let current_seq_ix = shard_seq
+            .get(shard_ix as usize)
+            .map(|s| s.counter.fetch_add(1, Ordering::Relaxed))
+            .unwrap_or(0);
+        drop(shard_seq);
+
+        let seq_num = sequence::stringify_sequence(&sequence::SeqObj {
+            shard_create_time,
+            seq_ix: Some(BigUint::from(current_seq_ix)),
+            byte1: None,
+            seq_time: Some(now),
+            seq_rand: None,
+            shard_ix,
+            version: 2,
+        });
+        let stream_key = format!("{}/{}", sequence::shard_ix_to_hex(shard_ix), seq_num);
+
+        Ok(SequenceAllocation {
+            shard_id,
+            seq_num,
+            stream_key,
+            now,
+        })
+    }
+
+    /// Allocates sequence numbers for a batch of records (lock-free on the hot path).
+    ///
+    /// Same concurrency properties as [`allocate_sequence`](Self::allocate_sequence)
+    /// but processes multiple records in a single stream read-lock acquisition.
+    pub async fn allocate_sequences_batch(
+        &self,
+        name: &str,
+        hash_keys: &[BigUint],
+    ) -> Result<Vec<SequenceAllocation>, KinesisErrorResponse> {
+        let entry = self
+            .inner
+            .streams
+            .get(name)
+            .map(|e| e.value().clone())
+            .ok_or_else(|| KinesisErrorResponse::stream_not_found(name, &self.aws_account_id))?;
+
+        let stream = entry.stream.read().await;
+        if !matches!(
+            stream.stream_status,
+            StreamStatus::Active | StreamStatus::Updating
+        ) {
+            return Err(KinesisErrorResponse::stream_not_found(
+                name,
+                &self.aws_account_id,
+            ));
+        }
+
+        let shard_seq = entry.shard_seq.read().await;
+        let mut allocations = Vec::with_capacity(hash_keys.len());
+
+        for hash_key in hash_keys {
+            let (shard_ix, shard_id, shard_create_time) = route_hash_to_shard(&stream, hash_key);
+            let now = current_time_ms().max(shard_create_time);
+            let current_seq_ix = shard_seq
+                .get(shard_ix as usize)
+                .map(|s| s.counter.fetch_add(1, Ordering::Relaxed))
+                .unwrap_or(0);
+
+            let seq_num = sequence::stringify_sequence(&sequence::SeqObj {
+                shard_create_time,
+                seq_ix: Some(BigUint::from(current_seq_ix)),
+                byte1: None,
+                seq_time: Some(now),
+                seq_rand: None,
+                shard_ix,
+                version: 2,
+            });
+            let stream_key = format!("{}/{}", sequence::shard_ix_to_hex(shard_ix), seq_num);
+
+            allocations.push(SequenceAllocation {
+                shard_id,
+                seq_num,
+                stream_key,
+                now,
+            });
+        }
+
+        Ok(allocations)
+    }
+
+    /// Returns the current per-shard sequence counter (the next seq_ix that would
+    /// be assigned). Used by LATEST iterators to position at the write frontier.
+    pub async fn current_shard_seq(&self, name: &str, shard_ix: i64) -> u64 {
+        if let Some(entry) = self.inner.streams.get(name).map(|e| e.value().clone()) {
+            let shard_seq = entry.shard_seq.read().await;
+            if let Some(seq_state) = shard_seq.get(shard_ix as usize) {
+                return seq_state.counter.load(Ordering::Relaxed);
+            }
+        }
+        0
+    }
+}
+
+// --- Free functions ---
+
+/// Build per-shard sequence state from a stream's shard list.
+fn build_shard_seq(stream: &Stream) -> Vec<ShardSeqState> {
+    stream
+        .shards
+        .iter()
+        .map(|shard| {
+            let create_time_ms =
+                sequence::parse_sequence(&shard.sequence_number_range.starting_sequence_number)
+                    .map(|s| s.shard_create_time)
+                    .unwrap_or(0);
+            ShardSeqState {
+                // Start at 1 so the first record's sequence number is always strictly
+                // greater than the shard's starting_sequence_number, regardless of timing.
+                counter: AtomicU64::new(1),
+                _create_time_ms: create_time_ms,
+            }
+        })
+        .collect()
+}
+
+/// Extend shard_seq if the stream has more shards than tracked counters.
+async fn sync_shard_seq(entry: &StreamEntry, stream: &Stream) {
+    let mut shard_seq = entry.shard_seq.write().await;
+    while shard_seq.len() < stream.shards.len() {
+        let idx = shard_seq.len();
+        let shard = &stream.shards[idx];
+        let create_time_ms =
+            sequence::parse_sequence(&shard.sequence_number_range.starting_sequence_number)
+                .map(|s| s.shard_create_time)
+                .unwrap_or(0);
+        shard_seq.push(ShardSeqState {
+            counter: AtomicU64::new(1),
+            _create_time_ms: create_time_ms,
+        });
+    }
+}
+
+/// Route a hash key to the appropriate open shard. Returns `(shard_ix, shard_id, create_time_ms)`.
+fn route_hash_to_shard(stream: &Stream, hash_key: &BigUint) -> (i64, String, u64) {
+    for (i, shard) in stream.shards.iter().enumerate() {
+        if shard.sequence_number_range.ending_sequence_number.is_none() {
+            let start: BigUint = shard
+                .hash_key_range
+                .starting_hash_key
+                .parse()
+                .unwrap_or_else(|_| BigUint::zero());
+            let end: BigUint = shard
+                .hash_key_range
+                .ending_hash_key
+                .parse()
+                .unwrap_or_else(|_| BigUint::zero());
+            if *hash_key >= start && *hash_key <= end {
+                let create_time =
+                    sequence::parse_sequence(&shard.sequence_number_range.starting_sequence_number)
+                        .map(|s| s.shard_create_time)
+                        .unwrap_or(0);
+                return (i as i64, shard.shard_id.clone(), create_time);
+            }
+        }
+    }
+    (0, String::new(), 0)
 }

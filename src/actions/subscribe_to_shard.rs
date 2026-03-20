@@ -131,13 +131,8 @@ pub async fn execute_streaming(
     let start_seq = match iterator_type {
         ShardIteratorType::TrimHorizon => shard_seq.clone(),
         ShardIteratorType::Latest => {
-            // Use the same seq_ix / 5 bucket as put_record so LATEST starts at the
-            // current write frontier.
-            let seq_ix = stream
-                .seq_ix
-                .get(shard_ix as usize / 5)
-                .and_then(|v| *v)
-                .unwrap_or(0);
+            // Read the per-shard atomic counter for the current write frontier.
+            let seq_ix = store.current_shard_seq(&stream_name, shard_ix).await;
             sequence::stringify_sequence(&sequence::SeqObj {
                 shard_create_time: shard_seq_obj.shard_create_time,
                 seq_ix: Some(BigUint::from(seq_ix)),
