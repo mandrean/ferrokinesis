@@ -553,10 +553,10 @@ impl Serialize for BlobAwareValue<'_> {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         match self.val {
             Value::String(st) if self.is_blob => {
-                let bytes = base64::engine::general_purpose::STANDARD
-                    .decode(st)
-                    .map_err(serde::ser::Error::custom)?;
-                s.serialize_bytes(&bytes)
+                match base64::engine::general_purpose::STANDARD.decode(st) {
+                    Ok(bytes) => s.serialize_bytes(&bytes),
+                    Err(_) => s.serialize_str(st), // fallback: emit as text
+                }
             }
             Value::Object(map) => {
                 use serde::ser::SerializeMap;
@@ -566,7 +566,7 @@ impl Serialize for BlobAwareValue<'_> {
                         k,
                         &BlobAwareValue {
                             val: v,
-                            is_blob: k == "Data",
+                            is_blob: k == constants::DATA,
                         },
                     )?;
                 }
@@ -739,5 +739,112 @@ pub fn cbor_to_json(val: &ciborium::Value) -> Value {
         }
         ciborium::Value::Tag(_, inner) => cbor_to_json(inner),
         _ => Value::Null,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::Engine;
+    use serde_json::json;
+
+    /// Helper: serialize a BlobAwareValue to CBOR bytes, then decode back to
+    /// ciborium::Value so we can inspect the CBOR structure.
+    fn to_cbor_value(bav: &BlobAwareValue<'_>) -> ciborium::Value {
+        let mut buf = Vec::new();
+        ciborium::into_writer(bav, &mut buf).expect("CBOR serialization failed");
+        ciborium::from_reader(&buf[..]).expect("CBOR deserialization failed")
+    }
+
+    #[test]
+    fn blob_valid_base64_emits_bytes() {
+        let raw = b"hello world";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(raw);
+        let val = Value::String(b64);
+        let bav = BlobAwareValue {
+            val: &val,
+            is_blob: true,
+        };
+        let cbor = to_cbor_value(&bav);
+        assert_eq!(cbor, ciborium::Value::Bytes(raw.to_vec()));
+    }
+
+    #[test]
+    fn blob_invalid_base64_falls_back_to_text() {
+        let val = Value::String("NOT!VALID!BASE64".to_string());
+        let bav = BlobAwareValue {
+            val: &val,
+            is_blob: true,
+        };
+        let cbor = to_cbor_value(&bav);
+        assert_eq!(cbor, ciborium::Value::Text("NOT!VALID!BASE64".to_string()));
+    }
+
+    #[test]
+    fn non_blob_string_emits_text() {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"bytes");
+        let val = Value::String(b64.clone());
+        let bav = BlobAwareValue {
+            val: &val,
+            is_blob: false,
+        };
+        let cbor = to_cbor_value(&bav);
+        // Even though it's valid base64, is_blob=false → text string
+        assert_eq!(cbor, ciborium::Value::Text(b64));
+    }
+
+    #[test]
+    fn object_with_data_key_decodes_blob() {
+        let raw = b"payload";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(raw);
+        let val = json!({"Data": b64, "PartitionKey": "pk"});
+        let bav = BlobAwareValue::new(&val);
+        let cbor = to_cbor_value(&bav);
+
+        // Data should be CBOR bytes, PartitionKey should be CBOR text
+        if let ciborium::Value::Map(entries) = cbor {
+            for (k, v) in &entries {
+                match k {
+                    ciborium::Value::Text(key) if key == "Data" => {
+                        assert_eq!(v, &ciborium::Value::Bytes(raw.to_vec()));
+                    }
+                    ciborium::Value::Text(key) if key == "PartitionKey" => {
+                        assert_eq!(v, &ciborium::Value::Text("pk".to_string()));
+                    }
+                    _ => panic!("unexpected key: {k:?}"),
+                }
+            }
+        } else {
+            panic!("expected CBOR map, got {cbor:?}");
+        }
+    }
+
+    #[test]
+    fn array_does_not_propagate_is_blob() {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"data");
+        let val = json!([b64]);
+        let bav = BlobAwareValue {
+            val: &val,
+            is_blob: true, // should not propagate into array elements
+        };
+        let cbor = to_cbor_value(&bav);
+
+        if let ciborium::Value::Array(items) = cbor {
+            // Array element should be text, not bytes
+            assert_eq!(items[0], ciborium::Value::Text(b64));
+        } else {
+            panic!("expected CBOR array");
+        }
+    }
+
+    #[test]
+    fn blob_empty_base64_emits_empty_bytes() {
+        let val = Value::String(String::new());
+        let bav = BlobAwareValue {
+            val: &val,
+            is_blob: true,
+        };
+        let cbor = to_cbor_value(&bav);
+        assert_eq!(cbor, ciborium::Value::Bytes(vec![]));
     }
 }

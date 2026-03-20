@@ -493,7 +493,7 @@ pub struct StoredRecordRef<'a> {
 ///
 /// Borrows from the underlying [`StoredRecord`] to avoid intermediate allocations.
 /// The `data` field is a base64-encoded string that is forwarded as-is in JSON
-/// responses; the CBOR path decodes it via [`BlobAwareValue`](crate::server).
+/// responses; the CBOR path decodes it via `BlobAwareValue` in the server crate.
 #[derive(Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct ResponseRecord<'a> {
