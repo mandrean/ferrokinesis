@@ -167,9 +167,10 @@ fn ensure_shard_map<'a>(
     stream_records: &'a DashMap<String, ShardRecords>,
     stream_name: &str,
 ) -> dashmap::mapref::one::Ref<'a, String, ShardRecords> {
-    stream_records.entry(stream_name.to_string()).or_default();
-    // entry() returns a RefMut which we don't need; re-get as Ref.
-    stream_records.get(stream_name).unwrap()
+    stream_records
+        .entry(stream_name.to_string())
+        .or_default()
+        .downgrade()
 }
 
 impl Store {
