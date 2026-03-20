@@ -224,15 +224,23 @@ public class KclV2IntegrationTest {
                     "Record has null approximateArrivalTimestamp");
         }
 
-        // Verify records came from multiple shards by checking distinct sequence number prefixes.
-        // Ferrokinesis encodes the shard index as a hex prefix in the sequence number.
+        // Verify records came from multiple shards by checking distinct shard indices
+        // encoded in the sequence number. Ferrokinesis uses version-2 sequence numbers
+        // where the shard index is in hex positions 38-45 of the BigUint hex representation.
+        // Comparing the full sequence numbers suffices: different shards produce numerically
+        // distinct ranges, so checking for > 1 distinct truncated BigInteger prefix (the
+        // first ~30 decimal digits cover shard_create_time + shard_ix_last) confirms multi-shard.
         Set<String> shardPrefixes = new HashSet<>();
         for (software.amazon.kinesis.retrieval.KinesisClientRecord r : records) {
-            // The shard hex prefix is the first 8 characters of the sequence number.
-            shardPrefixes.add(r.sequenceNumber().substring(0, 8));
+            java.math.BigInteger seq = new java.math.BigInteger(r.sequenceNumber());
+            // Extract shard_ix from hex position 38..46 (8 hex digits) of the 47-char hex.
+            String hex = seq.toString(16);
+            if (hex.length() >= 46) {
+                shardPrefixes.add(hex.substring(38, 46));
+            }
         }
         assertTrue(shardPrefixes.size() >= 2,
-                "Expected records from at least 2 shards, but only found prefixes: " + shardPrefixes);
+                "Expected records from at least 2 shards, but only found shard hex prefixes: " + shardPrefixes);
     }
 
     @Test
