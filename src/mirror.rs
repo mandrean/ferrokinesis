@@ -29,13 +29,13 @@ pub struct Mirror {
 }
 
 impl Mirror {
+    /// Default number of concurrent in-flight mirror requests.
+    pub const DEFAULT_CONCURRENCY: usize = 64;
+
     /// Create a mirror that loads AWS credentials from environment variables.
     ///
     /// Looks for `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optionally
     /// `AWS_SESSION_TOKEN`. Logs a warning if credentials are not found.
-    /// Default number of concurrent in-flight mirror requests.
-    pub const DEFAULT_CONCURRENCY: usize = 64;
-
     pub fn new(endpoint: &str, diff: bool, region: &str, concurrency: usize) -> Self {
         let credentials = Self::load_credentials();
         if credentials.is_none() {
@@ -108,7 +108,7 @@ impl Mirror {
         let mirror = Arc::clone(self);
         tokio::spawn(async move {
             mirror
-                .forward(&target, &content_type, body, &local_result)
+                .forward(&target, &content_type, body, local_result)
                 .await;
             drop(permit);
         });
@@ -119,7 +119,7 @@ impl Mirror {
         target: &str,
         content_type: &str,
         body: Bytes,
-        local_result: &MirrorableResponse,
+        local_result: MirrorableResponse,
     ) {
         let url = format!("{}/", self.endpoint);
 
@@ -229,7 +229,7 @@ impl Mirror {
     fn diff_responses(
         &self,
         target: &str,
-        local: &MirrorableResponse,
+        local: MirrorableResponse,
         mirror_status: u16,
         mirror_ct: &str,
         mirror_body: &[u8],
@@ -256,7 +256,7 @@ impl Mirror {
         };
 
         let volatile_keys = [constants::SEQUENCE_NUMBER, constants::ENCRYPTION_TYPE];
-        let local_stripped = local.clone().map(|mut v| {
+        let local_stripped = local.map(|mut v| {
             strip_volatile_keys(&mut v, &volatile_keys);
             v
         });

@@ -13,12 +13,15 @@ use crate::actions::{self, Operation};
 use crate::capture::{CaptureOp, CaptureRecordRef, CaptureWriter};
 use crate::constants;
 use crate::error::KinesisErrorResponse;
+#[cfg(feature = "mirror")]
 use crate::mirror::Mirror;
 use crate::store::Store;
 use crate::util::current_time_ms;
 use crate::validation;
 use axum::body::Bytes;
-use axum::extract::{Extension, Request, State};
+#[cfg(feature = "mirror")]
+use axum::extract::Extension;
+use axum::extract::{Request, State};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -26,8 +29,14 @@ use base64::Engine;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::borrow::Cow;
+#[cfg(feature = "mirror")]
 use std::sync::Arc;
 use tracing::Instrument;
+
+#[cfg(feature = "mirror")]
+type MirrorExt = Option<Extension<Arc<Mirror>>>;
+#[cfg(not(feature = "mirror"))]
+type MirrorExt = ();
 
 /// Axum fallback handler implementing the Kinesis wire protocol.
 ///
@@ -50,7 +59,7 @@ pub async fn handler(
     uri: Uri,
     headers: HeaderMap,
     State(store): State<Store>,
-    mirror: Option<Extension<Arc<Mirror>>>,
+    mirror: MirrorExt,
     body: Bytes,
 ) -> Response {
     let request_id = uuid::Uuid::new_v4().to_string();
@@ -446,15 +455,14 @@ pub async fn handler(
     };
 
     // Write capture records after successful dispatch
-    if let (Some(writer), Some((op, stream, input))) =
-        (&store.capture_writer, capture_ctx)
-    {
+    if let (Some(writer), Some((op, stream, input))) = (&store.capture_writer, capture_ctx) {
         if let Ok(Some(ref result)) = mirrorable_result {
             write_capture_records(writer, op, &stream, &input, result);
         }
     }
 
     // Mirror write operations (fire-and-forget) — result moved, not cloned
+    #[cfg(feature = "mirror")]
     if let Some(Extension(ref mirror)) = mirror
         && Mirror::should_mirror(&operation)
     {
@@ -470,6 +478,10 @@ pub async fn handler(
                 );
             }
         }
+    }
+    #[cfg(not(feature = "mirror"))]
+    {
+        let _ = (mirror, mirrorable_result);
     }
 
     response

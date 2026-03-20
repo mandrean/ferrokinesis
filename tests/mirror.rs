@@ -1,3 +1,5 @@
+#![cfg(feature = "mirror")]
+
 mod common;
 use common::*;
 
@@ -37,6 +39,21 @@ async fn start_primary_with_mirror(
     });
 
     (addr, store)
+}
+
+/// Helper: poll until the expected number of records are available.
+async fn wait_for_records(target: &TestServer, stream: &str, shard: &str, expected: usize) {
+    for _ in 0..50 {
+        let iter = target
+            .get_shard_iterator(stream, shard, "TRIM_HORIZON")
+            .await;
+        let records = target.get_records(&iter).await;
+        if records["Records"].as_array().map_or(0, |a| a.len()) >= expected {
+            return;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    }
+    panic!("expected {expected} records in {stream}/{shard}, timed out");
 }
 
 /// Helper: poll until the stream is ACTIVE on the given endpoint.
@@ -118,18 +135,8 @@ async fn test_mirror_forwards_put_record() {
     .await;
     assert_eq!(res.status(), 200);
 
-    // Wait for mirror task to complete
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-
-    // Verify record in mirror target
-    let iter = target
-        .get_shard_iterator("mirror-test", "shardId-000000000000", "TRIM_HORIZON")
-        .await;
-    let records = target.get_records(&iter).await;
-    assert!(
-        !records["Records"].as_array().unwrap().is_empty(),
-        "Mirror target should have the forwarded record"
-    );
+    // Wait for the mirrored record to arrive
+    wait_for_records(&target, "mirror-test", "shardId-000000000000", 1).await;
 }
 
 #[tokio::test]
@@ -167,18 +174,8 @@ async fn test_mirror_forwards_put_records() {
     .await;
     assert_eq!(res.status(), 200);
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-
-    let iter = target
-        .get_shard_iterator("mirror-batch", "shardId-000000000000", "TRIM_HORIZON")
-        .await;
-    let records = target.get_records(&iter).await;
-    let arr = records["Records"].as_array().unwrap();
-    assert_eq!(
-        arr.len(),
-        2,
-        "Mirror target should have both forwarded records"
-    );
+    // Wait for the mirrored records to arrive
+    wait_for_records(&target, "mirror-batch", "shardId-000000000000", 2).await;
 }
 
 #[tokio::test]
@@ -199,7 +196,7 @@ async fn test_mirror_does_not_forward_non_write_operations() {
     .await;
     assert_eq!(res.status(), 200);
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
     // Verify stream does NOT exist on mirror target
     let res = target

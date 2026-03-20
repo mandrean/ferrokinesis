@@ -27,6 +27,7 @@ required-features = ["loadtest"]
 [features]
 default = ["access-log"]
 access-log = ["dep:tower-http"]
+mirror = ["dep:reqwest", "dep:aws-credential-types", "dep:aws-sigv4", "dep:aws-smithy-runtime-api", "dep:url"]
 loadtest = ["dep:goose"]
 replay = ["dep:reqwest"]
 tls = ["dep:axum-server", "dep:rcgen", "dep:rustls"]
@@ -34,10 +35,10 @@ tls = ["dep:axum-server", "dep:rcgen", "dep:rustls"]
 [dependencies]
 ferrokinesis-core = { path = "crates/ferrokinesis-core" }
 async-stream = "0.3"
-aws-credential-types = "1"
-aws-sigv4 = "1"
+aws-credential-types = { version = "1", optional = true }
+aws-sigv4 = { version = "1", optional = true }
 aws-smithy-eventstream = "0.60"
-aws-smithy-runtime-api = { version = "1", features = ["client"] }
+aws-smithy-runtime-api = { version = "1", features = ["client"], optional = true }
 aws-smithy-types = "1.4"
 axum = "0.8"
 axum-server = { version = "0.8", features = ["tls-rustls"], optional = true }
@@ -64,7 +65,7 @@ toml = "0.8"
 tower-http = { version = "0.6", features = ["trace"], optional = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-url = "2"
+url = { version = "2", optional = true }
 uuid = { version = "1", features = ["v4"] }
 
 [profile.release]

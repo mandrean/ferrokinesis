@@ -43,6 +43,7 @@ pub mod error;
 #[doc(hidden)]
 pub mod event_stream;
 pub mod health;
+#[cfg(feature = "mirror")]
 #[doc(hidden)]
 pub mod mirror;
 #[doc(hidden)]

@@ -83,6 +83,7 @@ pub struct FileConfig {
     /// Whether to scrub (anonymize) partition keys during capture.
     pub scrub: Option<bool>,
     /// Mirror configuration section.
+    #[cfg(feature = "mirror")]
     pub mirror: Option<MirrorConfig>,
     /// Path to the TLS certificate file (PEM). Must be set together with `tls_key`.
     #[cfg(feature = "tls")]
@@ -93,6 +94,7 @@ pub struct FileConfig {
 }
 
 /// Mirror configuration (`[mirror]` TOML section).
+#[cfg(feature = "mirror")]
 #[derive(Deserialize, Default)]
 pub struct MirrorConfig {
     /// Kinesis-compatible endpoint to mirror PutRecord/PutRecords to.
@@ -146,9 +148,10 @@ pub fn load_config(path: &Path) -> Result<FileConfig, ConfigError> {
             ),
         });
     }
+    #[cfg(feature = "mirror")]
     if let Some(ref mirror) = config.mirror
         && let Some(concurrency) = mirror.concurrency
-        && concurrency < 1
+        && concurrency == 0
     {
         return Err(ConfigError::Validation {
             path: path.display().to_string(),
