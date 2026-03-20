@@ -14,7 +14,6 @@ use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::store::Store;
 use crate::validation;
-use crate::validation::rules;
 use axum::body::Bytes;
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
@@ -327,7 +326,7 @@ pub async fn handler(
     }
 
     // Validate request data
-    let validation_rules = get_validation_rules(operation);
+    let validation_rules = operation.validation_rules();
     let field_refs: Vec<(&str, &validation::FieldDef)> =
         validation_rules.iter().map(|(k, v)| (*k, v)).collect();
 
@@ -380,50 +379,6 @@ pub async fn handler(
             (StatusCode::OK, response_headers, "").into_response()
         }
         Err(ref err) => log_and_send_error(&span, &response_headers, response_content_type, err),
-    }
-}
-
-fn get_validation_rules(operation: Operation) -> Vec<(&'static str, validation::FieldDef)> {
-    match operation {
-        Operation::AddTagsToStream => rules::add_tags_to_stream(),
-        Operation::CreateStream => rules::create_stream(),
-        Operation::DecreaseStreamRetentionPeriod => rules::decrease_stream_retention_period(),
-        Operation::DeleteResourcePolicy => rules::delete_resource_policy(),
-        Operation::DeleteStream => rules::delete_stream(),
-        Operation::DeregisterStreamConsumer => rules::deregister_stream_consumer(),
-        Operation::DescribeAccountSettings => vec![],
-        Operation::DescribeLimits => vec![],
-        Operation::DescribeStream => rules::describe_stream(),
-        Operation::DescribeStreamConsumer => rules::describe_stream_consumer(),
-        Operation::DescribeStreamSummary => rules::describe_stream_summary(),
-        Operation::DisableEnhancedMonitoring => rules::disable_enhanced_monitoring(),
-        Operation::EnableEnhancedMonitoring => rules::enable_enhanced_monitoring(),
-        Operation::GetRecords => rules::get_records(),
-        Operation::GetResourcePolicy => rules::get_resource_policy(),
-        Operation::GetShardIterator => rules::get_shard_iterator(),
-        Operation::IncreaseStreamRetentionPeriod => rules::increase_stream_retention_period(),
-        Operation::ListShards => rules::list_shards(),
-        Operation::ListStreamConsumers => rules::list_stream_consumers(),
-        Operation::ListStreams => rules::list_streams(),
-        Operation::ListTagsForResource => rules::list_tags_for_resource(),
-        Operation::ListTagsForStream => rules::list_tags_for_stream(),
-        Operation::MergeShards => rules::merge_shards(),
-        Operation::PutRecord => rules::put_record(),
-        Operation::PutRecords => rules::put_records(),
-        Operation::PutResourcePolicy => rules::put_resource_policy(),
-        Operation::RegisterStreamConsumer => rules::register_stream_consumer(),
-        Operation::RemoveTagsFromStream => rules::remove_tags_from_stream(),
-        Operation::SplitShard => rules::split_shard(),
-        Operation::StartStreamEncryption => rules::start_stream_encryption(),
-        Operation::StopStreamEncryption => rules::stop_stream_encryption(),
-        Operation::SubscribeToShard => rules::subscribe_to_shard(),
-        Operation::TagResource => rules::tag_resource(),
-        Operation::UntagResource => rules::untag_resource(),
-        Operation::UpdateAccountSettings => rules::update_account_settings(),
-        Operation::UpdateMaxRecordSize => rules::update_max_record_size(),
-        Operation::UpdateShardCount => rules::update_shard_count(),
-        Operation::UpdateStreamMode => rules::update_stream_mode(),
-        Operation::UpdateStreamWarmThroughput => rules::update_stream_warm_throughput(),
     }
 }
 

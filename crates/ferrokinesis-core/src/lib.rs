@@ -4,6 +4,7 @@ extern crate alloc;
 
 pub mod constants;
 pub mod error;
+pub mod operation;
 pub mod sequence;
 pub mod shard_iterator;
 pub mod types;

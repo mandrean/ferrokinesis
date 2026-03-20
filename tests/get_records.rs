@@ -4,6 +4,7 @@ use aes::cipher::{BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use common::*;
 use ferrokinesis::shard_iterator::create_shard_iterator;
+use ferrokinesis::util::current_time_ms;
 use serde_json::{Value, json};
 
 #[tokio::test]
@@ -526,7 +527,7 @@ async fn get_records_shard_out_of_range() {
     server.create_stream(name, 1).await;
 
     let seq = "49590338271490256608559692538361571095921575989136588898";
-    let iter = create_shard_iterator(name, "shardId-000000000099", seq, 0);
+    let iter = create_shard_iterator(name, "shardId-000000000099", seq, current_time_ms());
 
     let res = server
         .request("GetRecords", &json!({ "ShardIterator": iter }))
