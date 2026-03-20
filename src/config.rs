@@ -167,7 +167,7 @@ pub fn load_config(path: &Path) -> Result<FileConfig, ConfigError> {
     #[cfg(feature = "mirror")]
     if let Some(ref mirror) = config.mirror
         && let Some(initial) = mirror.initial_backoff_ms
-        && initial < 1
+        && initial == 0
     {
         return Err(ConfigError::Validation {
             path: path.display().to_string(),

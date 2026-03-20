@@ -65,6 +65,7 @@
 # [mirror]
 # Mirror PutRecord/PutRecords to another Kinesis-compatible endpoint.
 # Requests are forwarded async (fire-and-forget) after local processing completes.
+# Requires compiling with `--features mirror`.
 
 # Kinesis-compatible endpoint to mirror to (default: disabled)
 # CLI: --mirror-to | Env: FERROKINESIS_MIRROR_TO
