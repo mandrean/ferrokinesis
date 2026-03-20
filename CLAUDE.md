@@ -49,6 +49,19 @@ Kinesis uses **dual casing** for the message field — this is intentional, not 
 
 The `KinesisError` struct has both `message` and `message_upper` (serialized as `"Message"`) fields.
 
+## Logging
+
+Use `tracing` macros (`tracing::info!`, `tracing::error!`, etc.) — **never `println!`/`eprintln!`** in the server code path. The subscriber is initialized in `run_serve()`, so code that runs without it (health-check, generate-cert, loadtest) keeps `eprintln!`.
+
+**Log level conventions:**
+
+- `INFO` — lifecycle mutations in action handlers (CreateStream, DeleteStream, MergeShards, SplitShard, RegisterStreamConsumer, DeregisterStreamConsumer, StartStreamEncryption, StopStreamEncryption), server startup/shutdown, 4xx client errors
+- `ERROR` — 5xx server errors, fatal startup failures
+- `WARN` — configuration warnings
+- `DEBUG` — successful request completion, routine maintenance (retention reaper)
+
+**Structured fields over format strings:** prefer `tracing::info!(stream = name, "created")` over `tracing::info!("created stream {name}")`.
+
 ## Testing
 
 Tests live in `tests/{operation}.rs`. Pattern:
