@@ -200,7 +200,7 @@ pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, Kines
             };
 
             let cutoff_time = now - (stream_data.retention_period_hours as u64 * 60 * 60 * 1000);
-            let cutoff_timestamp = cutoff_time as f64 / 1000.0;
+            let cutoff_timestamp = (cutoff_time / 1000) as f64;
             let range_start = format!("{}/{}", sequence::shard_ix_to_hex(shard_ix), current_seq);
             let range_end = sequence::shard_ix_to_hex(shard_ix + 1);
             let range_records = store

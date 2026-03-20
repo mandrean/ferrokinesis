@@ -33,7 +33,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
             "StreamARN": stream.stream_arn,
             "StreamName": stream.stream_name,
             "StreamStatus": stream.stream_status,
-            "StreamCreationTimestamp": stream.stream_creation_timestamp,
+            "StreamCreationTimestamp": stream.stream_creation_timestamp as i64,
             "StreamModeDetails": stream.stream_mode_details,
             "OpenShardCount": open_shard_count,
             "ConsumerCount": consumer_count,

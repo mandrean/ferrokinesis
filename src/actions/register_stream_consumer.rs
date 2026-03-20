@@ -40,7 +40,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     }
 
     let now = current_time_ms();
-    let creation_ts = now as f64 / 1000.0;
+    let creation_ts = (now / 1000) as f64;
     let consumer_arn = format!("{}/consumer/{}:{}", stream_arn, consumer_name, now / 1000);
 
     let consumer = Consumer {

@@ -784,6 +784,12 @@ fn json_to_cbor_impl(val: &Value, as_bytes: bool) -> ciborium::Value {
             if let Some(i) = n.as_i64() {
                 ciborium::Value::Integer(i.into())
             } else if let Some(f) = n.as_f64() {
+                // Whole-number floats (e.g. epoch-second timestamps) must be
+                // emitted as CBOR integers to avoid Java SDK parse failures.
+                if crate::types::is_whole_epoch(f) {
+                    #[allow(clippy::cast_possible_truncation)]
+                    return ciborium::Value::Integer((f as i64).into());
+                }
                 ciborium::Value::Float(f)
             } else {
                 ciborium::Value::Null

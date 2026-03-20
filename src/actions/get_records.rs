@@ -82,7 +82,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     }
 
     let cutoff_time = now - (stream.retention_period_hours as u64 * 60 * 60 * 1000);
-    let cutoff_timestamp = cutoff_time as f64 / 1000.0;
+    let cutoff_timestamp = (cutoff_time / 1000) as f64;
 
     // Record keys are ordered as "{shard_hex}/{seq_num}". Scanning the half-open
     // range [hex(shard_ix), hex(shard_ix+1)) captures exactly the records for this

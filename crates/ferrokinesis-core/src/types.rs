@@ -8,7 +8,31 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
+
+/// Returns `true` when `f` is a finite, whole-number value that round-trips
+/// losslessly through `i64` — i.e. it can safely be emitted as an integer.
+#[allow(clippy::cast_possible_truncation)]
+pub fn is_whole_epoch(f: f64) -> bool {
+    f.fract() == 0.0 && f.is_finite() && (f as i64 as f64) == f
+}
+
+/// Serializes an `f64` as an `i64` when it has no fractional part.
+///
+/// Real AWS Kinesis encodes timestamps as whole-number epoch seconds. The AWS
+/// Java SDK v2 reads CBOR numbers via `Double.toString()` → `StringToInstant`,
+/// and `Long.parseLong` rejects scientific notation (e.g. `"1.77E9"`).
+/// Emitting integer-valued timestamps as `i64` avoids this: serde_json writes
+/// `1773966938` (no `.0` suffix), and `json_to_cbor_impl` converts it to a
+/// CBOR integer that Java reads cleanly.
+fn serialize_epoch_seconds<S: Serializer>(val: &f64, serializer: S) -> Result<S::Ok, S::Error> {
+    #[allow(clippy::cast_possible_truncation)]
+    if is_whole_epoch(*val) {
+        serializer.serialize_i64(*val as i64)
+    } else {
+        serializer.serialize_f64(*val)
+    }
+}
 
 /// Lifecycle state of a Kinesis data stream.
 ///
@@ -71,6 +95,7 @@ pub struct Consumer {
     /// Current lifecycle state of the consumer.
     pub consumer_status: ConsumerStatus,
     /// Unix timestamp (seconds) when this consumer was created.
+    #[serde(serialize_with = "serialize_epoch_seconds")]
     pub consumer_creation_timestamp: f64,
 }
 
@@ -155,6 +180,7 @@ pub struct Stream {
     /// Current lifecycle state of this stream.
     pub stream_status: StreamStatus,
     /// Unix timestamp (seconds) when this stream was created.
+    #[serde(serialize_with = "serialize_epoch_seconds")]
     pub stream_creation_timestamp: f64,
     /// Capacity mode details for this stream.
     pub stream_mode_details: StreamModeDetails,
@@ -463,6 +489,7 @@ pub struct ResponseRecord<'a> {
     /// Base64-encoded record payload.
     pub data: &'a str,
     /// Unix timestamp (seconds) when the record arrived at the stream.
+    #[serde(serialize_with = "serialize_epoch_seconds")]
     pub approximate_arrival_timestamp: f64,
     /// The sequence number of this record within its shard.
     pub sequence_number: &'a str,
