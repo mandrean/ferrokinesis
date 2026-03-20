@@ -99,7 +99,7 @@ pub struct Store {
     pub aws_region: String,
     db: Arc<Database>,
     /// Optional capture writer for recording PutRecord/PutRecords calls.
-    pub capture_writer: Option<crate::capture::CaptureWriter>,
+    pub(crate) capture_writer: Option<crate::capture::CaptureWriter>,
 }
 
 /// Serialize a Stream for storage, including hidden fields (seq_ix, tags)

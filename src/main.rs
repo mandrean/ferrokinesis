@@ -459,6 +459,8 @@ fn parse_health_response(reader: BufReader<impl std::io::Read>) -> ExitCode {
 #[cfg(feature = "replay")]
 #[tokio::main]
 async fn run_replay(args: ReplayArgs) -> ExitCode {
+    use ferrokinesis::constants;
+
     let speed = match parse_replay_speed(&args.replay_speed) {
         Ok(s) => s,
         Err(()) => {
@@ -496,6 +498,9 @@ async fn run_replay(args: ReplayArgs) -> ExitCode {
     let total = records.len();
     let start = std::time::Instant::now();
 
+    // Replay always uses individual PutRecord calls regardless of the original
+    // CaptureOp. Batching captured PutRecords back into PutRecords batches
+    // could be a future optimization.
     for (i, record) in records.iter().enumerate() {
         // Sleep based on timestamp delta
         if let ReplaySpeed::Multiplier(multiplier) = speed
@@ -512,18 +517,18 @@ async fn run_replay(args: ReplayArgs) -> ExitCode {
         }
 
         let mut body = serde_json::json!({
-            "StreamName": record.stream,
-            "Data": record.data,
-            "PartitionKey": record.partition_key,
+            constants::STREAM_NAME: record.stream,
+            constants::DATA: record.data,
+            constants::PARTITION_KEY: record.partition_key,
         });
         if let Some(ref ehk) = record.explicit_hash_key {
-            body["ExplicitHashKey"] = serde_json::Value::String(ehk.clone());
+            body[constants::EXPLICIT_HASH_KEY] = serde_json::Value::String(ehk.clone());
         }
 
         let resp = client
             .post(&base_url)
-            .header("Content-Type", "application/x-amz-json-1.1")
-            .header("X-Amz-Target", format!("{}.PutRecord", ferrokinesis::constants::KINESIS_API))
+            .header("Content-Type", constants::CONTENT_TYPE_JSON)
+            .header("X-Amz-Target", format!("{}.PutRecord", constants::KINESIS_API))
             .header(
                 "Authorization",
                 "AWS4-HMAC-SHA256 Credential=AKID/20150101/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=abcd1234",
@@ -551,9 +556,9 @@ async fn run_replay(args: ReplayArgs) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-#[cfg(feature = "replay")]
 /// Parse a replay speed string like "1x", "10x", "0.5x", or "max".
 /// Returns `Ok(ReplaySpeed)` on success, `Err(())` on invalid input.
+#[cfg(feature = "replay")]
 fn parse_replay_speed(s: &str) -> Result<ReplaySpeed, ()> {
     if s == "max" {
         return Ok(ReplaySpeed::Max);
