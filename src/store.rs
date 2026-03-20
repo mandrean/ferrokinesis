@@ -418,17 +418,28 @@ impl Store {
 
     /// Stores multiple records in a single batch.
     pub async fn put_records_batch<R: Serialize>(&self, stream_name: &str, batch: &[(String, R)]) {
-        let shard_map = ensure_shard_map(&self.inner.stream_records, stream_name);
-        for (key, record) in batch {
-            let bytes = postcard::to_allocvec(record).unwrap();
-            let shard_hex = shard_hex_from_key(key);
-            let records_arc = shard_map
-                .entry(shard_hex.to_string())
-                .or_insert_with(|| Arc::new(RwLock::new(BTreeMap::new())))
-                .value()
-                .clone();
+        // Phase 1: collect Arc refs and serialized bytes while holding the DashMap ref.
+        let pending: Vec<_> = {
+            let shard_map = ensure_shard_map(&self.inner.stream_records, stream_name);
+            batch
+                .iter()
+                .map(|(key, record)| {
+                    let bytes = postcard::to_allocvec(record).unwrap();
+                    let shard_hex = shard_hex_from_key(key);
+                    let records_arc = shard_map
+                        .entry(shard_hex.to_string())
+                        .or_insert_with(|| Arc::new(RwLock::new(BTreeMap::new())))
+                        .value()
+                        .clone();
+                    (records_arc, key.clone(), bytes)
+                })
+                .collect()
+        }; // shard_map Ref dropped here — no DashMap lock held across await.
+
+        // Phase 2: insert records under per-shard write locks only.
+        for (records_arc, key, bytes) in pending {
             let mut records = records_arc.write().await;
-            records.insert(key.to_string(), bytes);
+            records.insert(key, bytes);
         }
     }
 
