@@ -140,8 +140,12 @@ impl Mirror {
 
         match request.body(body).send().await {
             Ok(response) => {
+                let status = response.status();
+                if status.is_client_error() || status.is_server_error() {
+                    tracing::warn!(status = status.as_u16(), "mirror endpoint returned error");
+                }
                 if self.diff {
-                    let status = response.status().as_u16();
+                    let status = status.as_u16();
                     let response_ct = response
                         .headers()
                         .get("content-type")
@@ -227,7 +231,7 @@ impl Mirror {
     ) {
         let operation = target.split('.').nth(1).unwrap_or(target);
 
-        if 200 != mirror_status {
+        if mirror_status != 200 {
             tracing::info!(
                 operation,
                 local = 200u16,
@@ -246,10 +250,8 @@ impl Mirror {
             serde_json::from_slice(mirror_body).ok()
         };
 
-        let local_value = local.clone();
-
         let volatile_keys = ["SequenceNumber"];
-        let local_stripped = local_value.map(|mut v| {
+        let local_stripped = local.clone().map(|mut v| {
             strip_volatile_keys(&mut v, &volatile_keys);
             v
         });

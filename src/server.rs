@@ -422,18 +422,45 @@ pub async fn handler(
         .instrument(span.clone())
         .await;
 
-    // Mirror write operations (fire-and-forget)
+    // Build response first (borrows result), then move result into the mirror
+    let (response, mirrorable_result) = match dispatch_result {
+        Ok(opt_result) => {
+            tracing::debug!(parent: &span, "ok");
+            let response = match &opt_result {
+                Some(result) => {
+                    send_json_response(response_headers, response_content_type, result, 200)
+                }
+                None => {
+                    response_headers.insert("Content-Type", response_content_type.parse().unwrap());
+                    response_headers.insert("Content-Length", "0".parse().unwrap());
+                    (StatusCode::OK, response_headers, "").into_response()
+                }
+            };
+            (response, Ok(opt_result))
+        }
+        Err(err) => {
+            let response =
+                log_and_send_error(&span, &response_headers, response_content_type, &err);
+            (response, Err(err))
+        }
+    };
+
+    // Write capture records after successful dispatch
+    if let (Some(writer), Some((op, stream, input))) =
+        (&store.capture_writer, capture_ctx)
+    {
+        if let Ok(Some(ref result)) = mirrorable_result {
+            write_capture_records(writer, op, &stream, &input, result);
+        }
+    }
+
+    // Mirror write operations (fire-and-forget) — result moved, not cloned
     if let Some(Extension(ref mirror)) = mirror
         && Mirror::should_mirror(&operation)
     {
-        match &dispatch_result {
+        match mirrorable_result {
             Ok(result) => {
-                mirror.spawn_forward(
-                    target.to_string(),
-                    content_type.to_string(),
-                    body.clone(),
-                    result.clone(),
-                );
+                mirror.spawn_forward(target.to_string(), content_type.to_string(), body, result);
             }
             Err(e) => {
                 tracing::debug!(
@@ -445,24 +472,7 @@ pub async fn handler(
         }
     }
 
-    match dispatch_result {
-        Ok(Some(result)) => {
-            tracing::debug!(parent: &span, "ok");
-            // Write capture records after successful dispatch
-            if let (Some(writer), Some((op, stream, input))) = (&store.capture_writer, capture_ctx)
-            {
-                write_capture_records(writer, op, &stream, &input, &result);
-            }
-            send_json_response(response_headers, response_content_type, &result, 200)
-        }
-        Ok(None) => {
-            tracing::debug!(parent: &span, "ok");
-            response_headers.insert("Content-Type", response_content_type.parse().unwrap());
-            response_headers.insert("Content-Length", "0".parse().unwrap());
-            (StatusCode::OK, response_headers, "").into_response()
-        }
-        Err(ref err) => log_and_send_error(&span, &response_headers, response_content_type, err),
-    }
+    response
 }
 
 fn send_kinesis_error(

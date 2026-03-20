@@ -36,7 +36,7 @@ async fn start_primary_with_mirror(
 /// Helper: poll until the stream is ACTIVE on the given endpoint.
 async fn wait_active(client: &reqwest::Client, url: &str, stream_name: &str) {
     for _ in 0..20 {
-        let res = signed_request(
+        let res = kinesis_request(
             client,
             url,
             "DescribeStream",
@@ -55,7 +55,7 @@ async fn wait_active(client: &reqwest::Client, url: &str, stream_name: &str) {
 }
 
 /// Helper: make a signed Kinesis API request to a given URL.
-async fn signed_request(
+async fn kinesis_request(
     client: &reqwest::Client,
     url: &str,
     target: &str,
@@ -88,7 +88,7 @@ async fn test_mirror_forwards_put_record() {
     let client = reqwest::Client::new();
 
     // Create same stream on primary
-    let res = signed_request(
+    let res = kinesis_request(
         &client,
         &primary_url,
         "CreateStream",
@@ -99,7 +99,7 @@ async fn test_mirror_forwards_put_record() {
     wait_active(&client, &primary_url, "mirror-test").await;
 
     // PutRecord to primary
-    let res = signed_request(
+    let res = kinesis_request(
         &client,
         &primary_url,
         "PutRecord",
@@ -135,7 +135,7 @@ async fn test_mirror_forwards_put_records() {
     let primary_url = format!("http://{primary_addr}");
     let client = reqwest::Client::new();
 
-    let res = signed_request(
+    let res = kinesis_request(
         &client,
         &primary_url,
         "CreateStream",
@@ -146,7 +146,7 @@ async fn test_mirror_forwards_put_records() {
     wait_active(&client, &primary_url, "mirror-batch").await;
 
     // PutRecords to primary
-    let res = signed_request(
+    let res = kinesis_request(
         &client,
         &primary_url,
         "PutRecords",
@@ -184,7 +184,7 @@ async fn test_mirror_does_not_forward_non_write_operations() {
     let client = reqwest::Client::new();
 
     // CreateStream on primary — should NOT be mirrored
-    let res = signed_request(
+    let res = kinesis_request(
         &client,
         &primary_url,
         "CreateStream",

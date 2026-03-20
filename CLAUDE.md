@@ -40,6 +40,15 @@ All JSON field names, error types, and content types live in `src/constants.rs`.
 
 Serde enums in `src/types.rs` (`EncryptionType`, `StreamMode`, `ShardIteratorType`, `StreamStatus`, etc.) — never string comparisons. All domain enum matches must be exhaustive (no wildcards).
 
+## Performance discipline
+
+Prefer zero-copy/zero-clone paths on hot paths (PutRecord, PutRecords, GetRecords, SubscribeToShard):
+
+- Prefer borrowed types with lifetimes (`&str`, `ResponseRecord<'a>`) over owned clones
+- Move values instead of cloning when the source is no longer needed after the move
+- Use iterators with `.take(limit)` instead of materializing full collections into Vec
+- Pre-size `Vec::with_capacity(n)` when the final size is known or bounded
+
 ## Error message casing
 
 Kinesis uses **dual casing** for the message field — this is intentional, not a bug:

@@ -705,7 +705,7 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
     let app = app.layer(DefaultBodyLimit::max(max_bytes));
     let app = if let Some(endpoint) = mirror_to {
         let m = ferrokinesis::mirror::Mirror::new(&endpoint, mirror_diff, &aws_region);
-        tracing::info!("Mirroring PutRecord/PutRecords to {endpoint}");
+        tracing::info!(endpoint = %endpoint, "mirroring PutRecord/PutRecords");
         app.layer(axum::Extension(std::sync::Arc::new(m)))
     } else {
         app
