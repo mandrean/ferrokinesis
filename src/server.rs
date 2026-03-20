@@ -816,3 +816,128 @@ fn json_to_cbor_impl(val: &Value, as_bytes: bool) -> ciborium::Value {
         ),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::capture::{CaptureOp, CaptureWriter};
+    use serde_json::json;
+    use tempfile::NamedTempFile;
+
+    /// Verifies that `write_capture_records` filters out PutRecords entries
+    /// whose response contains a non-null `ErrorCode`, while keeping entries
+    /// with no `ErrorCode` or a null one.
+    #[test]
+    fn write_capture_records_filters_failed_put_records_entries() {
+        let capture_file = NamedTempFile::new().unwrap();
+        let writer = CaptureWriter::new(capture_file.path(), false).unwrap();
+
+        let input = CaptureInput::Batch(vec![
+            CaptureInputEntry {
+                partition_key: "ok-key".into(),
+                data: "b2s=".into(),
+                explicit_hash_key: None,
+            },
+            CaptureInputEntry {
+                partition_key: "fail-key".into(),
+                data: "ZmFpbA==".into(),
+                explicit_hash_key: None,
+            },
+            CaptureInputEntry {
+                partition_key: "null-err-key".into(),
+                data: "bnVsbA==".into(),
+                explicit_hash_key: None,
+            },
+        ]);
+
+        // Simulate a PutRecords response where the second record failed
+        let response = json!({
+            "FailedRecordCount": 1,
+            "Records": [
+                {
+                    "SequenceNumber": "seq-1",
+                    "ShardId": "shardId-000000000000"
+                },
+                {
+                    "ErrorCode": "ProvisionedThroughputExceededException",
+                    "ErrorMessage": "Rate exceeded for shard"
+                },
+                {
+                    "SequenceNumber": "seq-3",
+                    "ShardId": "shardId-000000000000",
+                    "ErrorCode": null
+                }
+            ]
+        });
+
+        write_capture_records(
+            &writer,
+            Operation::PutRecords,
+            "test-stream",
+            &input,
+            &response,
+        );
+
+        let records = crate::capture::read_capture_file(capture_file.path()).unwrap();
+        // Only the first and third records should be captured
+        assert_eq!(records.len(), 2);
+
+        assert_eq!(records[0].op, CaptureOp::PutRecords);
+        assert_eq!(records[0].partition_key, "ok-key");
+        assert_eq!(records[0].data, "b2s=");
+        assert_eq!(records[0].sequence_number, "seq-1");
+        assert_eq!(records[0].shard_id, "shardId-000000000000");
+
+        assert_eq!(records[1].op, CaptureOp::PutRecords);
+        assert_eq!(records[1].partition_key, "null-err-key");
+        assert_eq!(records[1].data, "bnVsbA==");
+        assert_eq!(records[1].sequence_number, "seq-3");
+        assert_eq!(records[1].shard_id, "shardId-000000000000");
+    }
+
+    /// Verifies that when ALL records in a PutRecords batch fail, no capture
+    /// records are written.
+    #[test]
+    fn write_capture_records_all_failed_writes_nothing() {
+        let capture_file = NamedTempFile::new().unwrap();
+        let writer = CaptureWriter::new(capture_file.path(), false).unwrap();
+
+        let input = CaptureInput::Batch(vec![
+            CaptureInputEntry {
+                partition_key: "k1".into(),
+                data: "YQ==".into(),
+                explicit_hash_key: None,
+            },
+            CaptureInputEntry {
+                partition_key: "k2".into(),
+                data: "Yg==".into(),
+                explicit_hash_key: None,
+            },
+        ]);
+
+        let response = json!({
+            "FailedRecordCount": 2,
+            "Records": [
+                {
+                    "ErrorCode": "InternalFailure",
+                    "ErrorMessage": "Internal error"
+                },
+                {
+                    "ErrorCode": "ProvisionedThroughputExceededException",
+                    "ErrorMessage": "Rate exceeded"
+                }
+            ]
+        });
+
+        write_capture_records(
+            &writer,
+            Operation::PutRecords,
+            "test-stream",
+            &input,
+            &response,
+        );
+
+        let records = crate::capture::read_capture_file(capture_file.path()).unwrap();
+        assert_eq!(records.len(), 0);
+    }
+}
