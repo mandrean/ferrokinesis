@@ -62,15 +62,22 @@
 # CLI: --scrub | Env: FERROKINESIS_SCRUB
 # scrub = false
 
-# Mirror PutRecord/PutRecords to another Kinesis-compatible endpoint (default: disabled)
+# [mirror]
+# Mirror PutRecord/PutRecords to another Kinesis-compatible endpoint.
 # Requests are forwarded async (fire-and-forget) after local processing completes.
+
+# Kinesis-compatible endpoint to mirror to (default: disabled)
 # CLI: --mirror-to | Env: FERROKINESIS_MIRROR_TO
-# mirror_to = "https://kinesis.us-east-1.amazonaws.com"
+# to = "https://kinesis.us-east-1.amazonaws.com"
 
 # Log response divergences between local and mirror to stderr (default: false)
-# Requires mirror_to to be set.
+# Requires `to` to be set.
 # CLI: --mirror-diff | Env: FERROKINESIS_MIRROR_DIFF
-# mirror_diff = false
+# diff = false
+
+# Maximum concurrent in-flight mirror requests (default: 64)
+# CLI: --mirror-concurrency | Env: FERROKINESIS_MIRROR_CONCURRENCY
+# concurrency = 64
 
 # TLS certificate and key (requires the "tls" feature)
 # Both must be set together, or both omitted.

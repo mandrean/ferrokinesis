@@ -82,16 +82,25 @@ pub struct FileConfig {
     pub capture: Option<PathBuf>,
     /// Whether to scrub (anonymize) partition keys during capture.
     pub scrub: Option<bool>,
-    /// Kinesis-compatible endpoint to mirror PutRecord/PutRecords to.
-    pub mirror_to: Option<String>,
-    /// Log response divergences between local and mirror to stderr.
-    pub mirror_diff: Option<bool>,
+    /// Mirror configuration section.
+    pub mirror: Option<MirrorConfig>,
     /// Path to the TLS certificate file (PEM). Must be set together with `tls_key`.
     #[cfg(feature = "tls")]
     pub tls_cert: Option<PathBuf>,
     /// Path to the TLS private key file (PEM). Must be set together with `tls_cert`.
     #[cfg(feature = "tls")]
     pub tls_key: Option<PathBuf>,
+}
+
+/// Mirror configuration (`[mirror]` TOML section).
+#[derive(Deserialize, Default)]
+pub struct MirrorConfig {
+    /// Kinesis-compatible endpoint to mirror PutRecord/PutRecords to.
+    pub to: Option<String>,
+    /// Log response divergences between local and mirror to stderr.
+    pub diff: Option<bool>,
+    /// Maximum number of concurrent in-flight mirror requests (default: 64).
+    pub concurrency: Option<usize>,
 }
 
 /// Parse and validate a TOML configuration file.
@@ -135,6 +144,15 @@ pub fn load_config(path: &Path) -> Result<FileConfig, ConfigError> {
             message: format!(
                 "log_level must be one of: off, error, warn, info, debug, trace — got \"{level}\""
             ),
+        });
+    }
+    if let Some(ref mirror) = config.mirror
+        && let Some(concurrency) = mirror.concurrency
+        && concurrency < 1
+    {
+        return Err(ConfigError::Validation {
+            path: path.display().to_string(),
+            message: format!("mirror.concurrency must be at least 1, got {concurrency}"),
         });
     }
     #[cfg(feature = "tls")]

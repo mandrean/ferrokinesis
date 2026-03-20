@@ -12,7 +12,13 @@ async fn start_primary_with_mirror(
     diff: bool,
 ) -> (std::net::SocketAddr, ferrokinesis::store::Store) {
     let creds = aws_credential_types::Credentials::new("AKID", "secret", None, None, "mirror-test");
-    let mirror = Mirror::with_credentials(mirror_target_url, diff, "us-east-1", Some(creds));
+    let mirror = Mirror::with_credentials(
+        mirror_target_url,
+        diff,
+        "us-east-1",
+        Some(creds),
+        Mirror::DEFAULT_CONCURRENCY,
+    );
 
     let options = ferrokinesis::store::StoreOptions {
         create_stream_ms: 0,

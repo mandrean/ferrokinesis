@@ -33,12 +33,15 @@ impl Mirror {
     ///
     /// Looks for `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optionally
     /// `AWS_SESSION_TOKEN`. Logs a warning if credentials are not found.
-    pub fn new(endpoint: &str, diff: bool, region: &str) -> Self {
+    /// Default number of concurrent in-flight mirror requests.
+    pub const DEFAULT_CONCURRENCY: usize = 64;
+
+    pub fn new(endpoint: &str, diff: bool, region: &str, concurrency: usize) -> Self {
         let credentials = Self::load_credentials();
         if credentials.is_none() {
             tracing::warn!("no AWS credentials found, requests will be forwarded unsigned");
         }
-        Self::with_credentials(endpoint, diff, region, credentials)
+        Self::with_credentials(endpoint, diff, region, credentials, concurrency)
     }
 
     /// Create a mirror with explicit credentials.
@@ -47,6 +50,7 @@ impl Mirror {
         diff: bool,
         region: &str,
         credentials: Option<aws_credential_types::Credentials>,
+        concurrency: usize,
     ) -> Self {
         Self {
             endpoint: endpoint.trim_end_matches('/').to_string(),
@@ -57,7 +61,7 @@ impl Mirror {
                 .expect("failed to build mirror HTTP client"),
             credentials,
             region: region.to_string(),
-            semaphore: Arc::new(Semaphore::new(64)),
+            semaphore: Arc::new(Semaphore::new(concurrency)),
         }
     }
 
@@ -377,7 +381,10 @@ mod tests {
             "SequenceNumber": "12345",
             "EncryptionType": "KMS"
         });
-        strip_volatile_keys(&mut val, &[constants::SEQUENCE_NUMBER, constants::ENCRYPTION_TYPE]);
+        strip_volatile_keys(
+            &mut val,
+            &[constants::SEQUENCE_NUMBER, constants::ENCRYPTION_TYPE],
+        );
         assert_eq!(
             val,
             serde_json::json!({
@@ -396,7 +403,10 @@ mod tests {
                 {"SequenceNumber": "2", "ShardId": "shardId-000000000000", "EncryptionType": "KMS"}
             ]
         });
-        strip_volatile_keys(&mut val, &[constants::SEQUENCE_NUMBER, constants::ENCRYPTION_TYPE]);
+        strip_volatile_keys(
+            &mut val,
+            &[constants::SEQUENCE_NUMBER, constants::ENCRYPTION_TYPE],
+        );
         assert_eq!(
             val,
             serde_json::json!({

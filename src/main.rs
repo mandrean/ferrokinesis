@@ -116,6 +116,11 @@ struct ServeArgs {
           default_missing_value = "true", num_args = 0..=1)]
     mirror_diff: Option<bool>,
 
+    /// Maximum concurrent in-flight mirror requests (default: 64)
+    #[arg(long, env = "FERROKINESIS_MIRROR_CONCURRENCY", requires = "mirror_to",
+          value_parser = clap::value_parser!(u64).range(1..))]
+    mirror_concurrency: Option<u64>,
+
     /// Path to TLS certificate PEM file (enables HTTPS)
     #[cfg(feature = "tls")]
     #[arg(long, env = "FERROKINESIS_TLS_CERT", requires = "tls_key")]
@@ -697,15 +702,26 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
     let max_bytes: usize = (max_request_body_mb * 1024 * 1024)
         .try_into()
         .expect("--max-request-body-mb value overflows usize");
-    let mirror_to = args.mirror_to.or(file_cfg.mirror_to);
-    let mirror_diff = resolve(args.mirror_diff, file_cfg.mirror_diff, || false);
+    let mirror_cfg = file_cfg.mirror.unwrap_or_default();
+    let mirror_to = args.mirror_to.or(mirror_cfg.to);
+    let mirror_diff = resolve(args.mirror_diff, mirror_cfg.diff, || false);
+    let mirror_concurrency = resolve(
+        args.mirror_concurrency.map(|v| v as usize),
+        mirror_cfg.concurrency,
+        || ferrokinesis::mirror::Mirror::DEFAULT_CONCURRENCY,
+    );
     let aws_region = options.aws_region.clone();
 
     let (app, _store) = ferrokinesis::create_app_with_capture(options, capture_writer);
     let app = app.layer(DefaultBodyLimit::max(max_bytes));
     let app = if let Some(endpoint) = mirror_to {
-        let m = ferrokinesis::mirror::Mirror::new(&endpoint, mirror_diff, &aws_region);
-        tracing::info!(endpoint = %endpoint, "mirroring PutRecord/PutRecords");
+        let m = ferrokinesis::mirror::Mirror::new(
+            &endpoint,
+            mirror_diff,
+            &aws_region,
+            mirror_concurrency,
+        );
+        tracing::info!(endpoint = %endpoint, concurrency = mirror_concurrency, "mirroring PutRecord/PutRecords");
         app.layer(axum::Extension(std::sync::Arc::new(m)))
     } else {
         app
