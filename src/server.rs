@@ -348,9 +348,13 @@ pub async fn handler(
 
     // Handle SubscribeToShard separately (streaming response)
     if operation == Operation::SubscribeToShard {
-        return match actions::subscribe_to_shard::execute_streaming(&store, data)
-            .instrument(span.clone())
-            .await
+        return match actions::subscribe_to_shard::execute_streaming(
+            &store,
+            data,
+            response_content_type,
+        )
+        .instrument(span.clone())
+        .await
         {
             Ok(body) => {
                 tracing::debug!(parent: &span, "ok");
@@ -772,7 +776,7 @@ const BLOB_FIELD_KEYS: &[&str] = &["Data"];
 /// explicit path-based replacement (e.g. `"Records.*.Data"`) for constructing test
 /// requests. This function uses key-name matching because the server doesn't know
 /// the request path at serialization time.
-fn json_to_cbor_with_blob_bytes(val: &Value) -> ciborium::Value {
+pub(crate) fn json_to_cbor_with_blob_bytes(val: &Value) -> ciborium::Value {
     json_to_cbor_impl(val, false)
 }
 

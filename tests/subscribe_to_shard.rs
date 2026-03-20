@@ -238,6 +238,7 @@ async fn subscribe_empty_consumer_arn_direct() {
             "ShardId": "shardId-000000000000",
             "StartingPosition": { "Type": "TRIM_HORIZON" },
         }),
+        "application/x-amz-json-1.1",
     )
     .await;
     assert!(result.is_err());
@@ -257,6 +258,7 @@ async fn subscribe_empty_shard_id_direct() {
             "ShardId": "",
             "StartingPosition": { "Type": "TRIM_HORIZON" },
         }),
+        "application/x-amz-json-1.1",
     )
     .await;
     assert!(result.is_err());
@@ -291,6 +293,7 @@ async fn subscribe_stream_not_found_from_consumer_arn() {
             "ShardId": "shardId-000000000000",
             "StartingPosition": { "Type": "TRIM_HORIZON" },
         }),
+        "application/x-amz-json-1.1",
     )
     .await;
     assert!(result.is_err());
@@ -324,6 +327,7 @@ async fn subscribe_consumer_arn_missing_consumer_segment() {
             "ShardId": "shardId-000000000000",
             "StartingPosition": { "Type": "TRIM_HORIZON" },
         }),
+        "application/x-amz-json-1.1",
     )
     .await;
     assert!(result.is_err());
@@ -357,6 +361,7 @@ async fn subscribe_consumer_arn_unresolvable_stream_name() {
             "ShardId": "shardId-000000000000",
             "StartingPosition": { "Type": "TRIM_HORIZON" },
         }),
+        "application/x-amz-json-1.1",
     )
     .await;
     assert!(result.is_err());
@@ -495,6 +500,7 @@ async fn subscribe_unknown_position_type_direct() {
             "ShardId": "shardId-000000000000",
             "StartingPosition": { "Type": "BOGUS_TYPE" },
         }),
+        "application/x-amz-json-1.1",
     )
     .await;
     assert!(result.is_err());

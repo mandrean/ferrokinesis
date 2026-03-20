@@ -3,8 +3,8 @@ use aws_smithy_types::event_stream::{Header, HeaderValue, Message};
 use bytes::Bytes;
 
 /// Encode a SubscribeToShardEvent as an AWS event stream binary frame.
-pub fn encode_subscribe_event(json_payload: &[u8]) -> Vec<u8> {
-    let message = Message::new(Bytes::copy_from_slice(json_payload))
+pub fn encode_subscribe_event(payload: &[u8], content_type: &str) -> Vec<u8> {
+    let message = Message::new(Bytes::copy_from_slice(payload))
         .add_header(Header::new(
             ":message-type",
             HeaderValue::String("event".into()),
@@ -15,7 +15,7 @@ pub fn encode_subscribe_event(json_payload: &[u8]) -> Vec<u8> {
         ))
         .add_header(Header::new(
             ":content-type",
-            HeaderValue::String("application/json".into()),
+            HeaderValue::String(content_type.to_string().into()),
         ));
 
     let mut buf = Vec::new();

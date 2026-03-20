@@ -18,7 +18,12 @@ const POLL_INTERVAL_MS: u64 = 200;
 const SUBSCRIBE_EVENT_RECORD_LIMIT: usize = 10_000;
 
 /// Execute SubscribeToShard. Returns a streaming Body instead of JSON.
-pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, KinesisErrorResponse> {
+/// `content_type` determines whether event payloads are JSON or CBOR-encoded.
+pub async fn execute_streaming(
+    store: &Store,
+    data: Value,
+    content_type: &str,
+) -> Result<Body, KinesisErrorResponse> {
     let consumer_arn = data[constants::CONSUMER_ARN].as_str().unwrap_or("");
     let shard_id_input = data[constants::SHARD_ID].as_str().unwrap_or("");
     let starting_position = &data[constants::STARTING_POSITION];
@@ -177,6 +182,7 @@ pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, Kines
     let store = store.clone();
     let stream_name = stream_name.to_string();
     let shard_id = shard_id.to_string();
+    let is_cbor = content_type == constants::CONTENT_TYPE_CBOR;
 
     let stream = async_stream::stream! {
         let mut current_seq = start_seq;
@@ -270,8 +276,15 @@ pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, Kines
                 "ChildShards": child_shards,
             });
 
-            let payload = serde_json::to_vec(&event).unwrap();
-            yield Ok(Bytes::from(event_stream::encode_subscribe_event(&payload)));
+            let (payload, event_content_type) = if is_cbor {
+                let cbor_val = crate::server::json_to_cbor_with_blob_bytes(&event);
+                let mut buf = Vec::new();
+                ciborium::into_writer(&cbor_val, &mut buf).unwrap();
+                (buf, constants::CONTENT_TYPE_CBOR)
+            } else {
+                (serde_json::to_vec(&event).unwrap(), "application/json")
+            };
+            yield Ok(Bytes::from(event_stream::encode_subscribe_event(&payload, event_content_type)));
 
             // Update position for next poll
             current_seq = continuation_seq;
