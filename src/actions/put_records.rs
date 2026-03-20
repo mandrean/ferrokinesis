@@ -46,6 +46,8 @@ fn build_capture_refs<'a>(
 
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_name = store.resolve_stream_name(&data)?;
+    // capture_enabled gates the timestamps allocation inside the update_stream closure;
+    // the actual writer ref is re-checked below (can't borrow it through the closure).
     let capture_enabled = store.capture_writer.is_some();
 
     let records = data[constants::RECORDS].as_array().ok_or_else(|| {
@@ -247,6 +249,9 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     }
 
     tracing::trace!(stream = %stream_name, records = batch.len(), "records put");
+    // NOTE: The emulator never partially fails individual records within a batch,
+    // so FailedRecordCount is always 0. Real Kinesis can return non-zero here
+    // when per-shard throughput limits are hit.
     Ok(Some(json!({
         "FailedRecordCount": 0,
         "Records": return_records,
@@ -264,7 +269,7 @@ mod tests {
     /// response contains a non-null `ErrorCode`, while keeping entries with
     /// no `ErrorCode` or a null one.
     #[test]
-    fn write_capture_records_filters_failed_put_records_entries() {
+    fn build_capture_refs_filters_failed_entries() {
         let capture_file = NamedTempFile::new().unwrap();
         let writer = CaptureWriter::new(capture_file.path(), false).unwrap();
 
@@ -326,7 +331,7 @@ mod tests {
     /// Verifies that when ALL records in a PutRecords batch fail, no capture
     /// records are written.
     #[test]
-    fn write_capture_records_all_failed_writes_nothing() {
+    fn build_capture_refs_all_failed_writes_nothing() {
         let capture_file = NamedTempFile::new().unwrap();
         let writer = CaptureWriter::new(capture_file.path(), false).unwrap();
 
