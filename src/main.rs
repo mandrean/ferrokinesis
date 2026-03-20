@@ -172,6 +172,7 @@ struct ReplayArgs {
 }
 
 #[cfg(feature = "replay")]
+#[derive(Debug)]
 enum ReplaySpeed {
     Max,
     Multiplier(f64),
@@ -484,6 +485,8 @@ async fn run_replay(args: ReplayArgs) -> ExitCode {
     let base_url = format!("{scheme}://{}:{}", args.host, args.port);
     let client = reqwest::Client::builder()
         .danger_accept_invalid_certs(args.tls)
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
         .build()
         .expect("failed to build HTTP client");
     let total = records.len();
@@ -516,7 +519,7 @@ async fn run_replay(args: ReplayArgs) -> ExitCode {
         let resp = client
             .post(&base_url)
             .header("Content-Type", "application/x-amz-json-1.1")
-            .header("X-Amz-Target", "Kinesis_20131202.PutRecord")
+            .header("X-Amz-Target", format!("{}.PutRecord", ferrokinesis::constants::KINESIS_API))
             .header(
                 "Authorization",
                 "AWS4-HMAC-SHA256 Credential=AKID/20150101/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=abcd1234",
@@ -551,7 +554,9 @@ fn parse_replay_speed(s: &str) -> Result<ReplaySpeed, ()> {
     if s == "max" {
         return Ok(ReplaySpeed::Max);
     }
-    let s = s.strip_suffix('x').unwrap_or(s);
+    let Some(s) = s.strip_suffix('x') else {
+        return Err(());
+    };
     s.parse::<f64>()
         .ok()
         .filter(|v| *v > 0.0)

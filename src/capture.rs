@@ -50,14 +50,9 @@ impl CaptureWriter {
         })
     }
 
-    /// Returns whether scrubbing is enabled.
-    pub fn scrub(&self) -> bool {
-        self.scrub
-    }
-
     /// Writes a single capture record as one NDJSON line.
     ///
-    /// Failures are logged to stderr and never propagated — capture must not
+    /// Failures are logged via tracing and never propagated — capture must not
     /// affect the response path.
     pub fn write_record(&self, record: &CaptureRecord) {
         let Ok(mut line) = (if self.scrub {
