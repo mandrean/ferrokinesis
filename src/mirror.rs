@@ -176,7 +176,7 @@ impl Mirror {
     }
 
     /// Create a mirror with an explicit credentials provider.
-    pub fn with_provider(
+    pub(crate) fn with_provider(
         endpoint: &str,
         diff: bool,
         region: &str,
@@ -362,21 +362,30 @@ impl Mirror {
     > {
         use aws_credential_types::provider::ProvideCredentials;
 
-        // Fast path: cached credentials still valid
-        if let Some(creds) = self.cached_credentials.read().await.as_ref() {
-            let near_expiry = creds.expiry().is_some_and(|exp| {
+        let is_near_expiry = |creds: &aws_credential_types::Credentials| {
+            creds.expiry().is_some_and(|exp| {
                 exp.duration_since(std::time::SystemTime::now())
                     .unwrap_or_default()
                     < std::time::Duration::from_secs(60)
-            });
-            if !near_expiry {
+            })
+        };
+
+        // Fast path: cached credentials still valid
+        if let Some(creds) = self.cached_credentials.read().await.as_ref() {
+            if !is_near_expiry(creds) {
                 return Ok(creds.clone());
             }
         }
 
-        // Slow path: resolve fresh credentials from the provider chain
+        // Slow path: re-check under write lock to avoid thundering herd
+        let mut guard = self.cached_credentials.write().await;
+        if let Some(creds) = guard.as_ref() {
+            if !is_near_expiry(creds) {
+                return Ok(creds.clone());
+            }
+        }
         let creds = provider.provide_credentials().await?;
-        *self.cached_credentials.write().await = Some(creds.clone());
+        *guard = Some(creds.clone());
         Ok(creds)
     }
 
