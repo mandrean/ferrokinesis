@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/mandrean/ferrokinesis/compare/v0.2.1...v0.3.0) - 2026-03-20
+
+### Added
+
+- structured & configurable logging via tracing ecosystem ([#159](https://github.com/mandrean/ferrokinesis/pull/159))
+- add --host flag to health-check subcommand ([#136](https://github.com/mandrean/ferrokinesis/pull/136))
+- add constants enforcement hook for action handlers ([#135](https://github.com/mandrean/ferrokinesis/pull/135))
+- add graceful shutdown for plain HTTP serve path ([#126](https://github.com/mandrean/ferrokinesis/pull/126))
+
+### Other
+
+- centralize config defaults and add example config ([#162](https://github.com/mandrean/ferrokinesis/pull/162))
+- add `cargo test --doc` to CI ([#161](https://github.com/mandrean/ferrokinesis/pull/161))
+- update README to reflect current feature set ([#139](https://github.com/mandrean/ferrokinesis/pull/139))
+- zero-copy record path optimization ([#132](https://github.com/mandrean/ferrokinesis/pull/132))
+- add inline comments explaining protocol quirks and invariants ([#137](https://github.com/mandrean/ferrokinesis/pull/137))
+- add rustdoc coverage and #![warn(missing_docs)] ([#138](https://github.com/mandrean/ferrokinesis/pull/138))
+- add property-based tests for sequence roundtrip and error paths ([#130](https://github.com/mandrean/ferrokinesis/pull/130))
+- expand conformance tests to cover all supported Kinesis operations ([#128](https://github.com/mandrean/ferrokinesis/pull/128))
+- move SDK examples from README to examples/ directory ([#131](https://github.com/mandrean/ferrokinesis/pull/131))
+- add CODEOWNERS ([#127](https://github.com/mandrean/ferrokinesis/pull/127))
+
 ## [0.2.1](https://github.com/mandrean/ferrokinesis/compare/v0.1.2...v0.2.1) - 2026-03-19
 
 ### Added
