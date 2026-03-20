@@ -90,7 +90,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
             store.aws_region, store.aws_account_id, stream_name
         ),
         StreamStatus::Creating,
-        (create_time as f64) / 1000.0,
+        EpochSeconds((create_time / 1000) as f64),
         vec![], // Start empty while CREATING
         vec![None; (shard_count as usize).div_ceil(5)],
     )

@@ -33,14 +33,14 @@ fn encode_exception_empty_message() {
 #[test]
 fn encode_subscribe_event_produces_bytes() {
     let payload = br#"{"Records":[],"MillisBehindLatest":0}"#;
-    let bytes = encode_subscribe_event(payload);
+    let bytes = encode_subscribe_event(payload, "application/json");
     assert!(!bytes.is_empty());
     assert!(bytes.len() >= 4);
 }
 
 #[test]
 fn encode_subscribe_event_empty_payload() {
-    let bytes = encode_subscribe_event(b"{}");
+    let bytes = encode_subscribe_event(b"{}", "application/json");
     assert!(!bytes.is_empty());
 }
 

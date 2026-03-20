@@ -183,7 +183,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                         StoredRecordRef {
                             partition_key,
                             data: record_data,
-                            approximate_arrival_timestamp: now as f64 / 1000.0,
+                            approximate_arrival_timestamp: (now / 1000) as f64,
                         },
                     ));
 

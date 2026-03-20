@@ -3,7 +3,7 @@ use crate::error::KinesisErrorResponse;
 use crate::event_stream;
 use crate::sequence;
 use crate::store::Store;
-use crate::types::{ResponseRecord, ShardIteratorType, StreamStatus};
+use crate::types::{EpochSeconds, ResponseRecord, ShardIteratorType, StreamStatus};
 use crate::util::current_time_ms;
 use axum::body::Body;
 use bytes::Bytes;
@@ -18,7 +18,12 @@ const POLL_INTERVAL_MS: u64 = 200;
 const SUBSCRIBE_EVENT_RECORD_LIMIT: usize = 10_000;
 
 /// Execute SubscribeToShard. Returns a streaming Body instead of JSON.
-pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, KinesisErrorResponse> {
+/// `content_type` determines whether event payloads are JSON or CBOR-encoded.
+pub async fn execute_streaming(
+    store: &Store,
+    data: Value,
+    content_type: &str,
+) -> Result<Body, KinesisErrorResponse> {
     let consumer_arn = data[constants::CONSUMER_ARN].as_str().unwrap_or("");
     let shard_id_input = data[constants::SHARD_ID].as_str().unwrap_or("");
     let starting_position = &data[constants::STARTING_POSITION];
@@ -117,6 +122,12 @@ pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, Kines
 
     let now = current_time_ms();
 
+    tracing::trace!(
+        shard = %shard_id,
+        ?iterator_type,
+        "subscribe: starting position"
+    );
+
     let start_seq = match iterator_type {
         ShardIteratorType::TrimHorizon => shard_seq.clone(),
         ShardIteratorType::Latest => {
@@ -177,11 +188,11 @@ pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, Kines
     let store = store.clone();
     let stream_name = stream_name.to_string();
     let shard_id = shard_id.to_string();
+    let is_cbor = content_type == constants::CONTENT_TYPE_CBOR;
 
     let stream = async_stream::stream! {
         let mut current_seq = start_seq;
         let start_time = current_time_ms();
-
         // Send initial response frame
         yield Ok::<Bytes, std::io::Error>(Bytes::from(event_stream::encode_initial_response()));
 
@@ -200,7 +211,7 @@ pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, Kines
             };
 
             let cutoff_time = now - (stream_data.retention_period_hours as u64 * 60 * 60 * 1000);
-            let cutoff_timestamp = cutoff_time as f64 / 1000.0;
+            let cutoff_timestamp = (cutoff_time / 1000) as f64;
             let range_start = format!("{}/{}", sequence::shard_ix_to_hex(shard_ix), current_seq);
             let range_end = sequence::shard_ix_to_hex(shard_ix + 1);
             let range_records = store
@@ -224,7 +235,7 @@ pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, Kines
                     data: &record.data,
                     partition_key: &record.partition_key,
                     sequence_number: seq_num,
-                    approximate_arrival_timestamp: record.approximate_arrival_timestamp,
+                    approximate_arrival_timestamp: EpochSeconds(record.approximate_arrival_timestamp),
                 });
 
                 last_seq_num = Some(seq_num);
@@ -270,8 +281,15 @@ pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, Kines
                 "ChildShards": child_shards,
             });
 
-            let payload = serde_json::to_vec(&event).unwrap();
-            yield Ok(Bytes::from(event_stream::encode_subscribe_event(&payload)));
+            let (payload, event_content_type) = if is_cbor {
+                let cbor_val = crate::server::json_to_cbor_with_blob_bytes(&event);
+                let mut buf = Vec::new();
+                ciborium::into_writer(&cbor_val, &mut buf).unwrap();
+                (buf, constants::CONTENT_TYPE_CBOR)
+            } else {
+                (serde_json::to_vec(&event).unwrap(), "application/json")
+            };
+            yield Ok(Bytes::from(event_stream::encode_subscribe_event(&payload, event_content_type)));
 
             // Update position for next poll
             current_seq = continuation_seq;

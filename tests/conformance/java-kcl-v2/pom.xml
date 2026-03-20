@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>ferrokinesis</groupId>
+    <artifactId>conformance-java-kcl-v2</artifactId>
+    <version>1.0.0</version>
+
+    <properties>
+        <maven.compiler.source>11</maven.compiler.source>
+        <maven.compiler.target>11</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <dependencies>
+        <!-- KCL 3.4.1 transitively provides:
+               software.amazon.awssdk:kinesis (SDK v2 async Kinesis client)
+               software.amazon.awssdk:dynamodb + dynamodb-enhanced (SDK v2 async DynamoDB client)
+               software.amazon.awssdk:cloudwatch (SDK v2 async CloudWatch client)
+               software.amazon.awssdk:netty-nio-client (Netty HTTP client for event streaming)
+             Do NOT pin SDK v2 artifacts separately — KCL manages the BOM internally.
+             Version skew causes NoSuchMethodError / NoClassDefFoundError.
+             When upgrading KCL, check the migration guide:
+             https://docs.aws.amazon.com/streams/latest/dev/kcl-migration-from-2-3.html -->
+        <dependency>
+            <groupId>software.amazon.kinesis</groupId>
+            <artifactId>amazon-kinesis-client</artifactId>
+            <version>3.4.1</version>
+        </dependency>
+        <!-- Suppress all KCL SLF4J output (intentional — keeps CI logs clean).
+             Swap for slf4j-simple when debugging KCL issues locally. -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-nop</artifactId>
+            <version>2.0.17</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>5.11.4</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.2</version>
+            </plugin>
+        </plugins>
+    </build>
+</project>

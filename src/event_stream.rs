@@ -3,8 +3,8 @@ use aws_smithy_types::event_stream::{Header, HeaderValue, Message};
 use bytes::Bytes;
 
 /// Encode a SubscribeToShardEvent as an AWS event stream binary frame.
-pub fn encode_subscribe_event(json_payload: &[u8]) -> Vec<u8> {
-    let message = Message::new(Bytes::copy_from_slice(json_payload))
+pub fn encode_subscribe_event(payload: &[u8], content_type: &'static str) -> Vec<u8> {
+    let message = Message::new(Bytes::copy_from_slice(payload))
         .add_header(Header::new(
             ":message-type",
             HeaderValue::String("event".into()),
@@ -15,7 +15,7 @@ pub fn encode_subscribe_event(json_payload: &[u8]) -> Vec<u8> {
         ))
         .add_header(Header::new(
             ":content-type",
-            HeaderValue::String("application/json".into()),
+            HeaderValue::String(content_type.into()),
         ));
 
     let mut buf = Vec::new();
@@ -41,7 +41,7 @@ pub fn encode_initial_response() -> Vec<u8> {
 }
 
 /// Encode an exception as an AWS event stream binary frame.
-pub fn encode_exception(exception_type: &str, message_text: &str) -> Vec<u8> {
+pub fn encode_exception(exception_type: &'static str, message_text: &str) -> Vec<u8> {
     let payload = serde_json::json!({"message": message_text}).to_string();
     let message = Message::new(Bytes::from(payload))
         .add_header(Header::new(
@@ -50,7 +50,7 @@ pub fn encode_exception(exception_type: &str, message_text: &str) -> Vec<u8> {
         ))
         .add_header(Header::new(
             ":exception-type",
-            HeaderValue::String(exception_type.to_string().into()),
+            HeaderValue::String(exception_type.into()),
         ))
         .add_header(Header::new(
             ":content-type",

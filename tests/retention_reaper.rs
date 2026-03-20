@@ -34,7 +34,7 @@ async fn insert_backdated_record(
             &base64::engine::general_purpose::STANDARD,
             format!("data-{seq_ix}"),
         ),
-        approximate_arrival_timestamp: (seq_time as f64) / 1000.0,
+        approximate_arrival_timestamp: (seq_time / 1000) as f64,
     };
     server.store.put_record(stream_name, &key, &record).await;
 }

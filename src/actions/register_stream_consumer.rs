@@ -1,7 +1,7 @@
 use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::store::Store;
-use crate::types::{Consumer, ConsumerStatus};
+use crate::types::{Consumer, ConsumerStatus, EpochSeconds};
 use crate::util::current_time_ms;
 use serde_json::{Value, json};
 
@@ -40,7 +40,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     }
 
     let now = current_time_ms();
-    let creation_ts = now as f64 / 1000.0;
+    let creation_ts = EpochSeconds((now / 1000) as f64);
     let consumer_arn = format!("{}/consumer/{}:{}", stream_arn, consumer_name, now / 1000);
 
     let consumer = Consumer {

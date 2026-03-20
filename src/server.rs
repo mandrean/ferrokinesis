@@ -348,9 +348,13 @@ pub async fn handler(
 
     // Handle SubscribeToShard separately (streaming response)
     if operation == Operation::SubscribeToShard {
-        return match actions::subscribe_to_shard::execute_streaming(&store, data)
-            .instrument(span.clone())
-            .await
+        return match actions::subscribe_to_shard::execute_streaming(
+            &store,
+            data,
+            response_content_type,
+        )
+        .instrument(span.clone())
+        .await
         {
             Ok(body) => {
                 tracing::debug!(parent: &span, "ok");
@@ -772,7 +776,7 @@ const BLOB_FIELD_KEYS: &[&str] = &["Data"];
 /// explicit path-based replacement (e.g. `"Records.*.Data"`) for constructing test
 /// requests. This function uses key-name matching because the server doesn't know
 /// the request path at serialization time.
-fn json_to_cbor_with_blob_bytes(val: &Value) -> ciborium::Value {
+pub(crate) fn json_to_cbor_with_blob_bytes(val: &Value) -> ciborium::Value {
     json_to_cbor_impl(val, false)
 }
 
@@ -784,6 +788,12 @@ fn json_to_cbor_impl(val: &Value, as_bytes: bool) -> ciborium::Value {
             if let Some(i) = n.as_i64() {
                 ciborium::Value::Integer(i.into())
             } else if let Some(f) = n.as_f64() {
+                // Whole-number floats (e.g. epoch-second timestamps) must be
+                // emitted as CBOR integers to avoid Java SDK parse failures.
+                if crate::types::is_whole_epoch(f) {
+                    #[allow(clippy::cast_possible_truncation)]
+                    return ciborium::Value::Integer((f as i64).into());
+                }
                 ciborium::Value::Float(f)
             } else {
                 ciborium::Value::Null
