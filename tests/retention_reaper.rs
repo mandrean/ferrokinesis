@@ -6,7 +6,6 @@ use ferrokinesis::sequence;
 use ferrokinesis::store::StoreOptions;
 use ferrokinesis::types::StoredRecord;
 use ferrokinesis::util::current_time_ms;
-use num_bigint::BigUint;
 use serde_json::json;
 
 /// Insert a record with a fabricated sequence number at the given `seq_time`.
@@ -20,7 +19,7 @@ async fn insert_backdated_record(
 ) {
     let seq = sequence::stringify_sequence(&sequence::SeqObj {
         shard_create_time,
-        seq_ix: Some(BigUint::from(seq_ix)),
+        seq_ix: Some(seq_ix),
         seq_time: Some(seq_time),
         shard_ix,
         byte1: None,

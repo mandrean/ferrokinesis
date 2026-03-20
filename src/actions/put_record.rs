@@ -5,8 +5,6 @@ use crate::sequence;
 use crate::store::Store;
 use crate::types::StoredRecordRef;
 use crate::util::current_time_ms;
-use num_bigint::BigUint;
-use num_traits::{One, Zero};
 use serde_json::{Value, json};
 use std::borrow::Cow;
 
@@ -18,18 +16,15 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     let explicit_hash_key = data[constants::EXPLICIT_HASH_KEY].as_str();
     let seq_for_ordering = data[constants::SEQUENCE_NUMBER_FOR_ORDERING].as_str();
 
-    let hash_key = if let Some(ehk) = explicit_hash_key {
-        let hk: BigUint = ehk.parse().unwrap_or_else(|_| BigUint::zero());
-        let pow_128 = BigUint::one() << 128;
-        if hk >= pow_128 {
-            return Err(KinesisErrorResponse::client_error(
+    let hash_key: u128 = if let Some(ehk) = explicit_hash_key {
+        ehk.parse::<u128>().map_err(|_| {
+            KinesisErrorResponse::client_error(
                 constants::INVALID_ARGUMENT,
                 Some(&format!(
                     "Invalid ExplicitHashKey. ExplicitHashKey must be in the range: [0, 2^128-1]. Specified value was {ehk}"
                 )),
-            ));
-        }
-        hk
+            )
+        })?
     } else {
         sequence::partition_key_to_hash_key(partition_key)
     };

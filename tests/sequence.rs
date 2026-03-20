@@ -2,7 +2,6 @@ use ferrokinesis::sequence::{
     SeqObj, increment_sequence, parse_sequence, resolve_shard_id, shard_id_name, shard_ix_to_hex,
     stringify_sequence,
 };
-use num_bigint::BigUint;
 
 // -- Version 0 stringify/parse roundtrip --
 
@@ -49,7 +48,7 @@ fn stringify_v0_non_zero_shard() {
 fn stringify_parse_v1_roundtrip() {
     let obj = SeqObj {
         shard_create_time: 1_600_000_000_000,
-        seq_ix: Some(BigUint::from(7u64)),
+        seq_ix: Some(7),
         byte1: Some("ab".to_string()),
         seq_time: Some(1_600_000_001_000),
         seq_rand: Some("00000000000000".to_string()), // 14 chars
@@ -69,7 +68,7 @@ fn stringify_parse_v1_roundtrip() {
 fn stringify_v1_with_shard_ix_5() {
     let obj = SeqObj {
         shard_create_time: 1_600_000_000_000,
-        seq_ix: Some(BigUint::from(42u64)),
+        seq_ix: Some(42),
         byte1: Some("00".to_string()),
         seq_time: Some(1_600_000_002_000),
         seq_rand: Some("11111111111111".to_string()),
@@ -88,7 +87,7 @@ fn stringify_v1_with_shard_ix_5() {
 fn increment_sequence_with_explicit_time() {
     let obj = SeqObj {
         shard_create_time: 1_600_000_000_000,
-        seq_ix: Some(BigUint::from(0u64)),
+        seq_ix: Some(0),
         byte1: Some("00".to_string()),
         seq_time: Some(1_600_000_001_000),
         seq_rand: None,
@@ -106,7 +105,7 @@ fn increment_sequence_with_explicit_time() {
 fn increment_sequence_without_explicit_time() {
     let obj = SeqObj {
         shard_create_time: 1_600_000_000_000,
-        seq_ix: Some(BigUint::from(0u64)),
+        seq_ix: Some(0),
         byte1: Some("00".to_string()),
         seq_time: Some(1_600_000_001_000),
         seq_rand: None,
@@ -125,7 +124,7 @@ fn increment_sequence_from_parsed() {
     // Get a real sequence from a v2 stringify/parse cycle, then increment it
     let obj = SeqObj {
         shard_create_time: 1_600_000_000_000,
-        seq_ix: Some(BigUint::from(100u64)),
+        seq_ix: Some(100),
         byte1: Some("00".to_string()),
         seq_time: Some(1_600_000_010_000),
         seq_rand: None,
@@ -221,12 +220,9 @@ fn parse_sequence_empty_string() {
 
 #[test]
 fn parse_v2_negative_shard_ix() {
-    use ferrokinesis::sequence::{SeqObj, parse_sequence, stringify_sequence};
-    use num_bigint::BigUint;
-
     let obj = SeqObj {
         shard_create_time: 1_600_000_000_000,
-        seq_ix: Some(BigUint::from(0u32)),
+        seq_ix: Some(0),
         byte1: Some("00".to_string()),
         seq_time: Some(1_600_000_001_000),
         seq_rand: None,

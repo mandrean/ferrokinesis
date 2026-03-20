@@ -3,7 +3,6 @@ mod common;
 use common::*;
 use ferrokinesis::sequence::{SeqObj, stringify_sequence};
 use ferrokinesis::store::StoreOptions;
-use num_bigint::BigUint;
 use serde_json::{Value, json};
 
 #[tokio::test]
@@ -210,7 +209,7 @@ async fn put_record_seq_for_ordering_future_time() {
 
     let future_seq = stringify_sequence(&SeqObj {
         shard_create_time: 1_000_000_000,
-        seq_ix: Some(BigUint::from(0u32)),
+        seq_ix: Some(0),
         byte1: None,
         seq_time: Some(future_ms),
         seq_rand: None,

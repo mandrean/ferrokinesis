@@ -5,7 +5,7 @@ use crate::store::Store;
 use crate::types::*;
 use crate::util::current_time_ms;
 use num_bigint::BigUint;
-use num_traits::{Num, One, Zero};
+use num_traits::One;
 use serde_json::{Value, json};
 
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
@@ -55,12 +55,10 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         let _ = store_clone
             .update_stream(&stream_name_owned, |stream| {
                 let now = current_time_ms();
-                // Use the maximum possible seq_ix (0x7fffffffffffffff) for the closing
-                // sequence number. This ensures no future record written to this shard
-                // could ever produce a sequence number that compares as ≥ the ending
-                // sequence, making the shard-closed invariant unconditionally safe.
-                let max_seq_ix = BigUint::from_str_radix("7fffffffffffffff", 16)
-                    .unwrap_or_else(|_| BigUint::zero());
+                // Use the maximum possible seq_ix for the closing sequence number.
+                // This ensures no future record written to this shard could ever
+                // produce a sequence number that compares as ≥ the ending sequence,
+                // making the shard-closed invariant unconditionally safe.
 
                 // Close all current open shards
                 let open_indices: Vec<usize> = stream
@@ -86,7 +84,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                         Some(sequence::stringify_sequence(&sequence::SeqObj {
                             shard_create_time: create_time,
                             shard_ix: ix as i64,
-                            seq_ix: Some(max_seq_ix.clone()),
+                            seq_ix: Some(sequence::MAX_SEQ_IX),
                             seq_time: Some(now),
                             byte1: None,
                             seq_rand: None,
@@ -113,10 +111,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                         // no parent lineage relationship with the old shards.
                         parent_shard_id: None,
                         adjacent_parent_shard_id: None,
-                        hash_key_range: HashKeyRange {
-                            starting_hash_key: start.to_string(),
-                            ending_hash_key: end.to_string(),
-                        },
+                        hash_key_range: HashKeyRange::new(start.to_string(), end.to_string()),
                         sequence_number_range: SequenceNumberRange {
                             starting_sequence_number: sequence::stringify_sequence(
                                 &sequence::SeqObj {
