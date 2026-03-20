@@ -89,7 +89,8 @@ struct ServeArgs {
           value_parser = ["off", "error", "warn", "info", "debug", "trace"])]
     log_level: Option<String>,
 
-    /// Enable per-request access logging
+    /// Enable per-request access logging (controls tower-http traces independently of RUST_LOG)
+    #[cfg(feature = "access-log")]
     #[arg(long, env = "FERROKINESIS_ACCESS_LOG",
           default_missing_value = "true", num_args = 0..=1)]
     access_log: Option<bool>,
@@ -440,21 +441,26 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
     let port = resolve(args.port, file_cfg.port, || 4567);
     let max_request_body_mb = resolve(args.max_request_body_mb, file_cfg.max_request_body_mb, || 7);
     let log_level: String = resolve(args.log_level, file_cfg.log_level, || "info".into());
+    #[cfg(feature = "access-log")]
     let access_log = resolve(args.access_log, file_cfg.access_log, || false);
 
     // Initialize tracing subscriber.
     // RUST_LOG takes precedence when set; otherwise use the resolved log_level.
-    let mut env_filter = if std::env::var("RUST_LOG").is_ok() {
+    #[cfg_attr(not(feature = "access-log"), allow(unused_mut))]
+    let mut env_filter = if std::env::var("RUST_LOG").is_ok_and(|v| !v.is_empty()) {
         tracing_subscriber::EnvFilter::from_default_env()
     } else {
         tracing_subscriber::EnvFilter::new(&log_level)
     };
     // Always apply access-log directive, regardless of RUST_LOG.
     // Later add_directive calls override earlier ones for the same target.
-    if access_log {
-        env_filter = env_filter.add_directive("tower_http::trace=info".parse().unwrap());
-    } else {
-        env_filter = env_filter.add_directive("tower_http::trace=off".parse().unwrap());
+    #[cfg(feature = "access-log")]
+    {
+        if access_log {
+            env_filter = env_filter.add_directive("tower_http::trace=info".parse().unwrap());
+        } else {
+            env_filter = env_filter.add_directive("tower_http::trace=off".parse().unwrap());
+        }
     }
 
     tracing_subscriber::fmt()

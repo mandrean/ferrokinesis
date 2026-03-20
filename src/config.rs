@@ -78,6 +78,7 @@ pub struct FileConfig {
     /// Log level (`off`, `error`, `warn`, `info`, `debug`, `trace`). Defaults to `"info"`.
     pub log_level: Option<String>,
     /// Enable per-request access logging. Defaults to `false`.
+    #[cfg(feature = "access-log")]
     pub access_log: Option<bool>,
     /// Path to the TLS certificate file (PEM). Must be set together with `tls_key`.
     #[cfg(feature = "tls")]

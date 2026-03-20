@@ -46,6 +46,14 @@
 # CLI: --max-request-body-mb | Env: FERROKINESIS_MAX_REQUEST_BODY_MB
 # max_request_body_mb = 7
 
+# Log level (off, error, warn, info, debug, trace, default: "info")
+# CLI: --log-level | Env: FERROKINESIS_LOG_LEVEL
+# log_level = "info"
+
+# Enable per-request access logging (default: false, requires "access-log" feature)
+# CLI: --access-log | Env: FERROKINESIS_ACCESS_LOG
+# access_log = false
+
 # TLS certificate and key (requires the "tls" feature)
 # Both must be set together, or both omitted.
 # CLI: --tls-cert / --tls-key | Env: FERROKINESIS_TLS_CERT / FERROKINESIS_TLS_KEY

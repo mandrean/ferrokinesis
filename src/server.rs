@@ -221,8 +221,6 @@ pub async fn handler(
         return send_kinesis_error(&response_headers, response_content_type, &err);
     }
 
-    let span = tracing::info_span!("kinesis", %operation, %request_id);
-
     // Auth checking
     let auth_header = headers.get("authorization").and_then(|v| v.to_str().ok());
     let query_string = uri.query().unwrap_or("");
@@ -344,6 +342,8 @@ pub async fn handler(
         return send_kinesis_error(&response_headers, response_content_type, &err);
     }
 
+    let span = tracing::info_span!("kinesis", %operation, %request_id);
+
     // Handle SubscribeToShard separately (streaming response)
     if operation == Operation::SubscribeToShard {
         return match actions::subscribe_to_shard::execute_streaming(&store, data)
@@ -358,13 +358,8 @@ pub async fn handler(
                 );
                 (StatusCode::OK, response_headers, body).into_response()
             }
-            Err(ref err) if err.status_code >= 500 => {
-                tracing::error!(parent: &span, error_type = %err.body.error_type, "server error");
-                send_kinesis_error(&response_headers, response_content_type, err)
-            }
             Err(ref err) => {
-                tracing::info!(parent: &span, error_type = %err.body.error_type, "client error");
-                send_kinesis_error(&response_headers, response_content_type, err)
+                log_and_send_error(&span, &response_headers, response_content_type, err)
             }
         };
     }
@@ -384,14 +379,7 @@ pub async fn handler(
             response_headers.insert("Content-Length", "0".parse().unwrap());
             (StatusCode::OK, response_headers, "").into_response()
         }
-        Err(ref err) if err.status_code >= 500 => {
-            tracing::error!(parent: &span, error_type = %err.body.error_type, "server error");
-            send_kinesis_error(&response_headers, response_content_type, err)
-        }
-        Err(ref err) => {
-            tracing::info!(parent: &span, error_type = %err.body.error_type, "client error");
-            send_kinesis_error(&response_headers, response_content_type, err)
-        }
+        Err(ref err) => log_and_send_error(&span, &response_headers, response_content_type, err),
     }
 }
 
@@ -453,6 +441,20 @@ fn send_kinesis_error(
             .expect("error_type must be valid ASCII"),
     );
     send_json_response(headers, content_type, &err.body, err.status_code)
+}
+
+fn log_and_send_error(
+    span: &tracing::Span,
+    headers: &HeaderMap,
+    content_type: &str,
+    err: &KinesisErrorResponse,
+) -> Response {
+    if err.status_code >= 500 {
+        tracing::error!(parent: span, error_type = %err.body.error_type, "server error");
+    } else {
+        tracing::info!(parent: span, error_type = %err.body.error_type, "client error");
+    }
+    send_kinesis_error(headers, content_type, err)
 }
 
 fn send_json_response(
