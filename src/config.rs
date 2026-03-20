@@ -4,9 +4,7 @@
 //! to parse a config file path into a validated [`FileConfig`].
 
 use serde::Deserialize;
-use std::path::Path;
-#[cfg(feature = "tls")]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Errors that can occur when loading a configuration file.
 #[derive(Debug, thiserror::Error)]
@@ -80,6 +78,10 @@ pub struct FileConfig {
     /// Enable per-request access logging. Defaults to `false`.
     #[cfg(feature = "access-log")]
     pub access_log: Option<bool>,
+    /// Path to write captured PutRecord/PutRecords data (NDJSON).
+    pub capture: Option<PathBuf>,
+    /// Whether to scrub (anonymize) partition keys during capture.
+    pub scrub: Option<bool>,
     /// Path to the TLS certificate file (PEM). Must be set together with `tls_key`.
     #[cfg(feature = "tls")]
     pub tls_cert: Option<PathBuf>,

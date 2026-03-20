@@ -67,7 +67,26 @@ impl TestServer {
     }
 
     pub async fn with_options(options: StoreOptions) -> Self {
-        let (app, store) = ferrokinesis::create_app(options);
+        let (app, store) = ferrokinesis::create_app(options, None);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        TestServer {
+            addr,
+            client: Client::new(),
+            store,
+        }
+    }
+
+    pub async fn with_capture(
+        options: StoreOptions,
+        capture: ferrokinesis::capture::CaptureWriter,
+    ) -> Self {
+        let (app, store) = ferrokinesis::create_app(options, Some(capture));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
@@ -83,7 +102,7 @@ impl TestServer {
     }
 
     pub async fn with_body_limit(options: StoreOptions, max_body_bytes: usize) -> Self {
-        let (app, store) = ferrokinesis::create_app(options);
+        let (app, store) = ferrokinesis::create_app(options, None);
         let app = app.layer(DefaultBodyLimit::max(max_body_bytes));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -352,7 +371,7 @@ impl TestServer {
             shard_limit: 50,
             ..Default::default()
         };
-        let (app, store) = ferrokinesis::create_app(options);
+        let (app, store) = ferrokinesis::create_app(options, None);
 
         let cert = rcgen::generate_simple_self_signed(vec!["localhost".into(), "127.0.0.1".into()])
             .expect("failed to generate self-signed cert");

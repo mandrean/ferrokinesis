@@ -24,7 +24,7 @@ impl BenchServer {
             shard_limit,
             ..Default::default()
         };
-        let (app, _store) = ferrokinesis::create_app(options);
+        let (app, _store) = ferrokinesis::create_app(options, None);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {

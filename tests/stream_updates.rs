@@ -486,7 +486,7 @@ async fn update_warm_throughput_arn_without_slash() {
 
 #[tokio::test]
 async fn update_stream_mode_invalid_mode_direct() {
-    let store = Store::new(StoreOptions::default());
+    let store = Store::new(StoreOptions::default(), None);
     let result = ferrokinesis::actions::update_stream_mode::execute(
         &store,
         json!({
@@ -523,7 +523,7 @@ async fn update_stream_mode_stream_not_found() {
 
 #[tokio::test]
 async fn update_max_record_size_empty_arn_direct() {
-    let store = Store::new(StoreOptions::default());
+    let store = Store::new(StoreOptions::default(), None);
     let result = ferrokinesis::actions::update_max_record_size::execute(
         &store,
         json!({ "StreamARN": "", "MaxRecordSizeInKiB": 4096 }),
@@ -538,7 +538,7 @@ async fn update_max_record_size_empty_arn_direct() {
 
 #[tokio::test]
 async fn update_max_record_size_kib_not_integer_direct() {
-    let store = Store::new(StoreOptions::default());
+    let store = Store::new(StoreOptions::default(), None);
     let result = ferrokinesis::actions::update_max_record_size::execute(
         &store,
         json!({
@@ -556,7 +556,7 @@ async fn update_max_record_size_kib_not_integer_direct() {
 
 #[tokio::test]
 async fn update_max_record_size_kib_below_range_direct() {
-    let store = Store::new(StoreOptions::default());
+    let store = Store::new(StoreOptions::default(), None);
     let result = ferrokinesis::actions::update_max_record_size::execute(
         &store,
         json!({
@@ -579,7 +579,7 @@ async fn update_max_record_size_kib_below_range_direct() {
 
 #[tokio::test]
 async fn update_warm_throughput_both_empty_direct() {
-    let store = Store::new(StoreOptions::default());
+    let store = Store::new(StoreOptions::default(), None);
     let result = ferrokinesis::actions::update_stream_warm_throughput::execute(
         &store,
         json!({ "WarmThroughputMiBps": 50 }),
@@ -594,7 +594,7 @@ async fn update_warm_throughput_both_empty_direct() {
 
 #[tokio::test]
 async fn update_warm_throughput_mibps_not_integer_direct() {
-    let store = Store::new(StoreOptions::default());
+    let store = Store::new(StoreOptions::default(), None);
     let result = ferrokinesis::actions::update_stream_warm_throughput::execute(
         &store,
         json!({

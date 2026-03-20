@@ -10,9 +10,11 @@
 //! layer and rewraps them as Kinesis-shaped `SerializationException` errors.
 
 use crate::actions::{self, Operation};
+use crate::capture::{CaptureRecord, CaptureWriter};
 use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::store::Store;
+use crate::util::current_time_ms;
 use crate::validation;
 use axum::body::Bytes;
 use axum::extract::{Request, State};
@@ -363,6 +365,16 @@ pub async fn handler(
         };
     }
 
+    // Clone fields needed for capture before dispatch() moves data
+    let capture_ctx = if store.capture_writer.is_some()
+        && matches!(operation, Operation::PutRecord | Operation::PutRecords)
+    {
+        let stream = store.resolve_stream_name(&data).unwrap_or_default();
+        Some((operation, stream, data.clone()))
+    } else {
+        None
+    };
+
     // Execute action
     match actions::dispatch(&store, operation, data)
         .instrument(span.clone())
@@ -370,6 +382,11 @@ pub async fn handler(
     {
         Ok(Some(result)) => {
             tracing::debug!(parent: &span, "ok");
+            // Write capture records after successful dispatch
+            if let (Some(writer), Some((op, stream, input))) = (&store.capture_writer, capture_ctx)
+            {
+                write_capture_records(writer, op, &stream, &input, &result);
+            }
             send_json_response(response_headers, response_content_type, &result, 200)
         }
         Ok(None) => {
@@ -542,6 +559,62 @@ fn send_error_response(
             error_type.parse().expect("error_type must be valid ASCII"),
         );
         send_xml_error(headers, error_type, message, status_code)
+    }
+}
+
+/// Construct and write [`CaptureRecord`]s from the request input and dispatch response.
+fn write_capture_records(
+    writer: &CaptureWriter,
+    operation: Operation,
+    stream: &str,
+    input: &Value,
+    response: &Value,
+) {
+    let ts = current_time_ms();
+    match operation {
+        Operation::PutRecord => {
+            let record = CaptureRecord {
+                op: "PutRecord".to_string(),
+                ts,
+                stream: stream.to_string(),
+                partition_key: input[constants::PARTITION_KEY]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string(),
+                data: input[constants::DATA].as_str().unwrap_or("").to_string(),
+                explicit_hash_key: input[constants::EXPLICIT_HASH_KEY]
+                    .as_str()
+                    .map(String::from),
+                sequence_number: response["SequenceNumber"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string(),
+                shard_id: response["ShardId"].as_str().unwrap_or("").to_string(),
+            };
+            writer.write_record(&record);
+        }
+        Operation::PutRecords => {
+            let Some(input_records) = input[constants::RECORDS].as_array() else {
+                return;
+            };
+            let Some(response_records) = response["Records"].as_array() else {
+                return;
+            };
+            for (inp, resp) in input_records.iter().zip(response_records.iter()) {
+                let record = CaptureRecord {
+                    op: "PutRecords".to_string(),
+                    ts,
+                    stream: stream.to_string(),
+                    partition_key: inp["PartitionKey"].as_str().unwrap_or("").to_string(),
+                    data: inp["Data"].as_str().unwrap_or("").to_string(),
+                    explicit_hash_key: inp["ExplicitHashKey"].as_str().map(String::from),
+                    sequence_number: resp["SequenceNumber"].as_str().unwrap_or("").to_string(),
+                    shard_id: resp["ShardId"].as_str().unwrap_or("").to_string(),
+                };
+                writer.write_record(&record);
+            }
+        }
+        _ => {}
     }
 }
 

@@ -320,7 +320,7 @@ async fn untag_resource_stream_arn() {
 
 #[tokio::test]
 async fn list_tags_for_resource_empty_arn_direct() {
-    let store = Store::new(StoreOptions::default());
+    let store = Store::new(StoreOptions::default(), None);
     let result = ferrokinesis::actions::list_tags_for_resource::execute(
         &store,
         json!({ "ResourceARN": "" }),
@@ -335,7 +335,7 @@ async fn list_tags_for_resource_empty_arn_direct() {
 
 #[tokio::test]
 async fn untag_resource_empty_arn_direct() {
-    let store = Store::new(StoreOptions::default());
+    let store = Store::new(StoreOptions::default(), None);
     let result = ferrokinesis::actions::untag_resource::execute(
         &store,
         json!({ "ResourceARN": "", "TagKeys": ["key"] }),
@@ -350,7 +350,7 @@ async fn untag_resource_empty_arn_direct() {
 
 #[tokio::test]
 async fn untag_resource_tag_keys_not_array_direct() {
-    let store = Store::new(StoreOptions::default());
+    let store = Store::new(StoreOptions::default(), None);
     let result = ferrokinesis::actions::untag_resource::execute(
         &store,
         json!({
@@ -368,7 +368,7 @@ async fn untag_resource_tag_keys_not_array_direct() {
 
 #[tokio::test]
 async fn tag_resource_empty_arn_direct() {
-    let store = Store::new(StoreOptions::default());
+    let store = Store::new(StoreOptions::default(), None);
     let result = ferrokinesis::actions::tag_resource::execute(
         &store,
         json!({ "ResourceARN": "", "Tags": {"key": "value"} }),
@@ -383,7 +383,7 @@ async fn tag_resource_empty_arn_direct() {
 
 #[tokio::test]
 async fn tag_resource_tags_not_object_direct() {
-    let store = Store::new(StoreOptions::default());
+    let store = Store::new(StoreOptions::default(), None);
     let result = ferrokinesis::actions::tag_resource::execute(
         &store,
         json!({

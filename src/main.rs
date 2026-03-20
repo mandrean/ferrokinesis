@@ -29,6 +29,9 @@ enum Command {
     /// Run a health check against a running server (for Docker HEALTHCHECK)
     HealthCheck(HealthCheckArgs),
 
+    /// Replay captured PutRecord data against a running server
+    Replay(ReplayArgs),
+
     /// Generate a self-signed TLS certificate and key
     #[cfg(feature = "tls")]
     GenerateCert(GenerateCertArgs),
@@ -95,6 +98,14 @@ struct ServeArgs {
           default_missing_value = "true", num_args = 0..=1)]
     access_log: Option<bool>,
 
+    /// Path to write captured PutRecord/PutRecords data (NDJSON)
+    #[arg(long, env = "FERROKINESIS_CAPTURE")]
+    capture: Option<PathBuf>,
+
+    /// Anonymize partition keys in capture output (requires --capture)
+    #[arg(long, requires = "capture")]
+    scrub: bool,
+
     /// Path to TLS certificate PEM file (enables HTTPS)
     #[cfg(feature = "tls")]
     #[arg(long, env = "FERROKINESIS_TLS_CERT", requires = "tls_key")]
@@ -135,6 +146,25 @@ struct HealthCheckArgs {
     tls: bool,
 }
 
+#[derive(Args, Debug)]
+struct ReplayArgs {
+    /// Path to the NDJSON capture file
+    #[arg(long)]
+    file: PathBuf,
+
+    /// Host of the target server
+    #[arg(long, default_value = "127.0.0.1")]
+    host: String,
+
+    /// Port of the target server
+    #[arg(long, default_value_t = 4567)]
+    port: u16,
+
+    /// Replay speed multiplier (e.g. "1x", "10x", "max")
+    #[arg(long, default_value = "1x")]
+    replay_speed: String,
+}
+
 #[cfg(feature = "tls")]
 #[derive(Args, Debug)]
 struct GenerateCertArgs {
@@ -157,6 +187,7 @@ fn main() -> ExitCode {
     match cli.command {
         Some(Command::HealthCheck(args)) => run_health_check(&args),
         Some(Command::Serve(args)) => run_serve(*args),
+        Some(Command::Replay(args)) => run_replay(args),
         #[cfg(feature = "tls")]
         Some(Command::GenerateCert(args)) => run_generate_cert(&args),
         None => run_serve(cli.serve_args),
@@ -407,6 +438,101 @@ fn parse_health_response(reader: BufReader<impl std::io::Read>) -> ExitCode {
     }
 }
 
+#[tokio::main]
+async fn run_replay(args: ReplayArgs) -> ExitCode {
+    let speed = parse_replay_speed(&args.replay_speed);
+    if speed.is_none() && args.replay_speed != "max" {
+        eprintln!(
+            "invalid replay speed {:?}: expected \"<N>x\" (e.g. \"1x\", \"10x\") or \"max\"",
+            args.replay_speed
+        );
+        return ExitCode::FAILURE;
+    }
+
+    let mut records = match ferrokinesis::capture::read_capture_file(&args.file) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("failed to read capture file: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if records.is_empty() {
+        println!("capture file is empty, nothing to replay");
+        return ExitCode::SUCCESS;
+    }
+
+    records.sort_by_key(|r| r.ts);
+
+    let base_url = format!("http://{}:{}", args.host, args.port);
+    let client = reqwest::Client::new();
+    let total = records.len();
+    let start = std::time::Instant::now();
+
+    for (i, record) in records.iter().enumerate() {
+        // Sleep based on timestamp delta
+        if let Some(multiplier) = speed
+            && i > 0
+        {
+            let delta_ms = record.ts.saturating_sub(records[i - 1].ts);
+            if delta_ms > 0 {
+                let sleep_ms = (delta_ms as f64 / multiplier) as u64;
+                if sleep_ms > 0 {
+                    tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
+                }
+            }
+        }
+
+        let mut body = serde_json::json!({
+            "StreamName": record.stream,
+            "Data": record.data,
+            "PartitionKey": record.partition_key,
+        });
+        if let Some(ref ehk) = record.explicit_hash_key {
+            body["ExplicitHashKey"] = serde_json::Value::String(ehk.clone());
+        }
+
+        let resp = client
+            .post(&base_url)
+            .header("Content-Type", "application/x-amz-json-1.1")
+            .header("X-Amz-Target", "Kinesis_20131202.PutRecord")
+            .header(
+                "Authorization",
+                "AWS4-HMAC-SHA256 Credential=AKID/20150101/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=abcd1234",
+            )
+            .header("X-Amz-Date", "20150101T000000Z")
+            .json(&body)
+            .send()
+            .await;
+
+        match resp {
+            Ok(r) if r.status().is_success() => {}
+            Ok(r) => {
+                let status = r.status();
+                let body = r.text().await.unwrap_or_default();
+                eprintln!("record {}/{total}: HTTP {status}: {body}", i + 1);
+            }
+            Err(e) => {
+                eprintln!("record {}/{total}: request failed: {e}", i + 1);
+            }
+        }
+    }
+
+    let elapsed = start.elapsed();
+    println!("replayed {total} records in {:.2}s", elapsed.as_secs_f64());
+    ExitCode::SUCCESS
+}
+
+/// Parse a replay speed string like "1x", "10x", "0.5x", or "max".
+/// Returns `Some(multiplier)` for numeric speeds, `None` for "max".
+fn parse_replay_speed(s: &str) -> Option<f64> {
+    if s == "max" {
+        return None;
+    }
+    let s = s.strip_suffix('x').unwrap_or(s);
+    s.parse::<f64>().ok().filter(|v| *v > 0.0)
+}
+
 async fn shutdown_signal() {
     #[cfg(unix)]
     {
@@ -499,10 +625,30 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
         }),
     };
 
+    let capture_path = args.capture.or(file_cfg.capture);
+    let scrub = args.scrub || file_cfg.scrub.unwrap_or(false);
+    let capture_writer = match capture_path {
+        Some(ref path) => match ferrokinesis::capture::CaptureWriter::new(path, scrub) {
+            Ok(w) => {
+                println!(
+                    "Capture enabled: {}{}",
+                    path.display(),
+                    if scrub { " (scrub)" } else { "" }
+                );
+                Some(w)
+            }
+            Err(e) => {
+                eprintln!("failed to open capture file {}: {e}", path.display());
+                return ExitCode::FAILURE;
+            }
+        },
+        None => None,
+    };
+
     let max_bytes: usize = (max_request_body_mb * 1024 * 1024)
         .try_into()
         .expect("--max-request-body-mb value overflows usize");
-    let (app, _store) = ferrokinesis::create_app(options);
+    let (app, _store) = ferrokinesis::create_app(options, capture_writer);
     let app = app.layer(DefaultBodyLimit::max(max_bytes));
 
     let addr = format!("0.0.0.0:{port}");

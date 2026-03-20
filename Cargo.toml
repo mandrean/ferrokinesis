@@ -36,12 +36,14 @@ bytes = "1"
 ciborium = "0.2"
 clap = { version = "4", features = ["derive", "env"] }
 goose = { version = "0.18", optional = true }
+md-5 = { version = "0.10", default-features = false }
 num-bigint = "0.4"
 num-traits = "0.2"
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 rand = "0.9"
 rcgen = { version = "0.14", optional = true }
 redb = "3.1"
+reqwest = { version = "0.12", features = ["json"] }
 regex = "1"
 rustls = { version = "0.23", optional = true }
 serde = { version = "1", features = ["derive"] }
@@ -70,7 +72,6 @@ ciborium = "0.2"
 criterion = { version = "0.5", features = ["async_tokio"] }
 num-bigint = "0.4"
 proptest = "1"
-reqwest = { version = "0.12", features = ["json"] }
 tempfile = "3"
 
 [[bench]]

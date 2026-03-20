@@ -11,7 +11,7 @@
 //!
 //! #[tokio::main]
 //! async fn main() {
-//!     let (app, _store) = create_app(StoreOptions::default());
+//!     let (app, _store) = create_app(StoreOptions::default(), None);
 //!
 //!     let listener = tokio::net::TcpListener::bind("127.0.0.1:4567").await.unwrap();
 //!     axum::serve(listener, app).await.unwrap();
@@ -35,6 +35,7 @@
 #![warn(missing_docs)]
 
 pub mod actions;
+pub mod capture;
 pub mod config;
 #[doc(hidden)]
 pub mod constants;
@@ -75,6 +76,9 @@ use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 /// reaper task is spawned to periodically delete records that have exceeded the
 /// stream's retention period.
 ///
+/// Pass an optional [`capture::CaptureWriter`] to record PutRecord/PutRecords
+/// calls to an NDJSON file.
+///
 /// # Examples
 ///
 /// ```no_run
@@ -82,14 +86,17 @@ use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 ///
 /// #[tokio::main]
 /// async fn main() {
-///     let (app, _store) = create_app(StoreOptions::default());
+///     let (app, _store) = create_app(StoreOptions::default(), None);
 ///
 ///     let listener = tokio::net::TcpListener::bind("127.0.0.1:4567").await.unwrap();
 ///     axum::serve(listener, app).await.unwrap();
 /// }
 /// ```
-pub fn create_app(options: StoreOptions) -> (Router, Store) {
-    let store = Store::new(options.clone());
+pub fn create_app(
+    options: StoreOptions,
+    capture: Option<capture::CaptureWriter>,
+) -> (Router, Store) {
+    let store = Store::new(options.clone(), capture);
     let app = Router::new()
         .route("/_health", get(health::health))
         .route("/_health/live", get(health::live))

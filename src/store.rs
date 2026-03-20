@@ -98,6 +98,8 @@ pub struct Store {
     /// The simulated AWS region.
     pub aws_region: String,
     db: Arc<Database>,
+    /// Optional capture writer for recording PutRecord/PutRecords calls.
+    pub capture_writer: Option<crate::capture::CaptureWriter>,
 }
 
 /// Serialize a Stream for storage, including hidden fields (seq_ix, tags)
@@ -171,7 +173,13 @@ impl Store {
     ///
     /// Strips non-digit characters from `options.aws_account_id` and warns if
     /// the result is not exactly 12 digits.
-    pub fn new(options: StoreOptions) -> Self {
+    ///
+    /// Pass an optional [`crate::capture::CaptureWriter`] to record
+    /// PutRecord/PutRecords calls to an NDJSON file.
+    pub fn new(
+        options: StoreOptions,
+        capture_writer: Option<crate::capture::CaptureWriter>,
+    ) -> Self {
         let aws_account_id: String = options
             .aws_account_id
             .chars()
@@ -206,6 +214,7 @@ impl Store {
             aws_account_id,
             aws_region,
             db: Arc::new(db),
+            capture_writer,
         }
     }
 
