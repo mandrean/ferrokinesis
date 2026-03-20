@@ -36,7 +36,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         .await?;
 
     tracing::trace!(
-        stream = stream_name,
+        stream = %stream_name,
         retention_hours,
         "retention period decreased"
     );

@@ -74,6 +74,6 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         })
         .await?;
 
-    tracing::trace!(stream = stream_name, tags = tags.len(), "tags added");
+    tracing::trace!(stream = %stream_name, tags = tags.len(), "tags added");
     Ok(None)
 }

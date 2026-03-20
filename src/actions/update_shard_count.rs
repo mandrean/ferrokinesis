@@ -145,10 +145,10 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     });
 
     tracing::trace!(
-        stream = stream_name,
+        stream = %stream_name,
         current_count,
         target_shard_count,
-        "shard count updated"
+        "shard count update initiated"
     );
     Ok(Some(json!({
         "StreamName": stream_name,

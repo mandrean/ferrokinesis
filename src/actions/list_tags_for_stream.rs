@@ -30,7 +30,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         .collect();
 
     tracing::trace!(
-        stream = stream_name,
+        stream = %stream_name,
         tags = tags.len(),
         has_more_tags,
         "stream tags listed"
