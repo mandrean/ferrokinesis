@@ -1,10 +1,10 @@
 [package]
 name = "ferrokinesis-core"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 description = "Core protocol logic for the ferrokinesis AWS Kinesis emulator"
-license = "MIT"
-rust-version = "1.87"
+license.workspace = true
+rust-version.workspace = true
 
 [features]
 default = ["std"]

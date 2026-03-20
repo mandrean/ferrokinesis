@@ -1,13 +1,19 @@
 [workspace]
 members = [".", "crates/ferrokinesis-core"]
 
-[package]
-name = "ferrokinesis"
+[workspace.package]
 version = "0.3.0"
 edition = "2024"
 rust-version = "1.87"
-description = "A local AWS Kinesis mock server for testing, written in Rust"
 license = "MIT"
+
+[package]
+name = "ferrokinesis"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "A local AWS Kinesis mock server for testing, written in Rust"
+license.workspace = true
 
 [[bin]]
 name = "ferrokinesis"
