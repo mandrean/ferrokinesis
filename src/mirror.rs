@@ -20,7 +20,7 @@ pub type MirrorableResponse = Option<Value>;
 
 /// Async traffic mirror that forwards write operations to a remote endpoint.
 pub struct Mirror {
-    endpoint: String,
+    url: String,
     diff: bool,
     client: reqwest::Client,
     credentials: Option<aws_credential_types::Credentials>,
@@ -52,8 +52,9 @@ impl Mirror {
         credentials: Option<aws_credential_types::Credentials>,
         concurrency: usize,
     ) -> Self {
+        let url = format!("{}/", endpoint.trim_end_matches('/'));
         Self {
-            endpoint: endpoint.trim_end_matches('/').to_string(),
+            url,
             diff,
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(10))
@@ -121,16 +122,14 @@ impl Mirror {
         body: Bytes,
         local_result: MirrorableResponse,
     ) {
-        let url = format!("{}/", self.endpoint);
-
         let mut request = self
             .client
-            .post(&url)
+            .post(&self.url)
             .header("Content-Type", content_type)
             .header("X-Amz-Target", target);
 
         if let Some(ref credentials) = self.credentials {
-            match self.sign_headers(&url, content_type, target, &body, credentials) {
+            match self.sign_headers(&self.url, content_type, target, &body, credentials) {
                 Ok(headers) => {
                     for (name, value) in headers {
                         request = request.header(name, value);
