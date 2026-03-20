@@ -10,9 +10,11 @@
 //! layer and rewraps them as Kinesis-shaped `SerializationException` errors.
 
 use crate::actions::{self, Operation};
+use crate::capture::{CaptureOp, CaptureRecordRef, CaptureWriter};
 use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::store::Store;
+use crate::util::current_time_ms;
 use crate::validation;
 use axum::body::Bytes;
 use axum::extract::{Request, State};
@@ -22,6 +24,7 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use serde::Serialize;
 use serde_json::{Value, json};
+use std::borrow::Cow;
 use tracing::Instrument;
 
 /// Axum fallback handler implementing the Kinesis wire protocol.
@@ -363,6 +366,50 @@ pub async fn handler(
         };
     }
 
+    // Extract only the fields needed for capture before dispatch() moves data.
+    // Uses direct &str extraction (not json!() cloning) to stay on the zero-copy path.
+    let capture_ctx = if store.capture_writer.is_some()
+        && matches!(operation, Operation::PutRecord | Operation::PutRecords)
+    {
+        let stream = store.resolve_stream_name(&data).unwrap_or_default();
+        let input = match operation {
+            Operation::PutRecord => CaptureInput::Single {
+                partition_key: data[constants::PARTITION_KEY]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_owned(),
+                data: data[constants::DATA].as_str().unwrap_or("").to_owned(),
+                explicit_hash_key: data[constants::EXPLICIT_HASH_KEY]
+                    .as_str()
+                    .map(str::to_owned),
+            },
+            Operation::PutRecords => {
+                let entries = data[constants::RECORDS]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .map(|r| CaptureInputEntry {
+                                partition_key: r[constants::PARTITION_KEY]
+                                    .as_str()
+                                    .unwrap_or("")
+                                    .to_owned(),
+                                data: r[constants::DATA].as_str().unwrap_or("").to_owned(),
+                                explicit_hash_key: r[constants::EXPLICIT_HASH_KEY]
+                                    .as_str()
+                                    .map(str::to_owned),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                CaptureInput::Batch(entries)
+            }
+            _ => unreachable!(),
+        };
+        Some((operation, stream, input))
+    } else {
+        None
+    };
+
     // Execute action
     match actions::dispatch(&store, operation, data)
         .instrument(span.clone())
@@ -370,6 +417,11 @@ pub async fn handler(
     {
         Ok(Some(result)) => {
             tracing::debug!(parent: &span, "ok");
+            // Write capture records after successful dispatch
+            if let (Some(writer), Some((op, stream, input))) = (&store.capture_writer, capture_ctx)
+            {
+                write_capture_records(writer, op, &stream, &input, &result);
+            }
             send_json_response(response_headers, response_content_type, &result, 200)
         }
         Ok(None) => {
@@ -545,6 +597,117 @@ fn send_error_response(
     }
 }
 
+/// Pre-extracted input fields for capture (avoids cloning entire `Value` trees).
+enum CaptureInput {
+    Single {
+        partition_key: String,
+        data: String,
+        explicit_hash_key: Option<String>,
+    },
+    Batch(Vec<CaptureInputEntry>),
+}
+
+struct CaptureInputEntry {
+    partition_key: String,
+    data: String,
+    explicit_hash_key: Option<String>,
+}
+
+/// Construct and write [`CaptureRecordRef`]s from pre-extracted input and dispatch response.
+fn write_capture_records(
+    writer: &CaptureWriter,
+    operation: Operation,
+    stream: &str,
+    input: &CaptureInput,
+    response: &Value,
+) {
+    let ts = current_time_ms();
+    match operation {
+        Operation::PutRecord => {
+            let CaptureInput::Single {
+                partition_key,
+                data,
+                explicit_hash_key,
+            } = input
+            else {
+                return;
+            };
+            let record = CaptureRecordRef {
+                op: CaptureOp::PutRecord,
+                ts,
+                stream,
+                partition_key: Cow::Borrowed(partition_key),
+                data,
+                explicit_hash_key: explicit_hash_key.as_deref(),
+                sequence_number: response[constants::SEQUENCE_NUMBER].as_str().unwrap_or(""),
+                shard_id: response[constants::SHARD_ID].as_str().unwrap_or(""),
+            };
+            writer.write_record(&record);
+        }
+        Operation::PutRecords => {
+            let CaptureInput::Batch(entries) = input else {
+                return;
+            };
+            let Some(response_records) = response[constants::RECORDS].as_array() else {
+                return;
+            };
+            let records: Vec<CaptureRecordRef<'_>> = entries
+                .iter()
+                .zip(response_records.iter())
+                .filter(|(_, resp)| resp.get(constants::ERROR_CODE).is_none_or(|v| v.is_null()))
+                .map(|(entry, resp)| CaptureRecordRef {
+                    op: CaptureOp::PutRecords,
+                    ts,
+                    stream,
+                    partition_key: Cow::Borrowed(&entry.partition_key),
+                    data: &entry.data,
+                    explicit_hash_key: entry.explicit_hash_key.as_deref(),
+                    sequence_number: resp[constants::SEQUENCE_NUMBER].as_str().unwrap_or(""),
+                    shard_id: resp[constants::SHARD_ID].as_str().unwrap_or(""),
+                })
+                .collect();
+            writer.write_records(&records);
+        }
+        Operation::AddTagsToStream
+        | Operation::CreateStream
+        | Operation::DecreaseStreamRetentionPeriod
+        | Operation::DeleteResourcePolicy
+        | Operation::DeleteStream
+        | Operation::DeregisterStreamConsumer
+        | Operation::DescribeAccountSettings
+        | Operation::DescribeLimits
+        | Operation::DescribeStream
+        | Operation::DescribeStreamConsumer
+        | Operation::DescribeStreamSummary
+        | Operation::DisableEnhancedMonitoring
+        | Operation::EnableEnhancedMonitoring
+        | Operation::GetRecords
+        | Operation::GetResourcePolicy
+        | Operation::GetShardIterator
+        | Operation::IncreaseStreamRetentionPeriod
+        | Operation::ListShards
+        | Operation::ListStreamConsumers
+        | Operation::ListStreams
+        | Operation::ListTagsForResource
+        | Operation::ListTagsForStream
+        | Operation::MergeShards
+        | Operation::PutResourcePolicy
+        | Operation::RegisterStreamConsumer
+        | Operation::RemoveTagsFromStream
+        | Operation::SplitShard
+        | Operation::StartStreamEncryption
+        | Operation::StopStreamEncryption
+        | Operation::SubscribeToShard
+        | Operation::TagResource
+        | Operation::UntagResource
+        | Operation::UpdateAccountSettings
+        | Operation::UpdateMaxRecordSize
+        | Operation::UpdateShardCount
+        | Operation::UpdateStreamMode
+        | Operation::UpdateStreamWarmThroughput => {}
+    }
+}
+
 /// Convert ciborium::Value to serde_json::Value.
 /// CBOR byte strings (major type 2) are converted to base64-encoded strings,
 /// so the rest of the pipeline can treat all data uniformly.
@@ -651,5 +814,130 @@ fn json_to_cbor_impl(val: &Value, as_bytes: bool) -> ciborium::Value {
                 })
                 .collect(),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::capture::{CaptureOp, CaptureWriter};
+    use serde_json::json;
+    use tempfile::NamedTempFile;
+
+    /// Verifies that `write_capture_records` filters out PutRecords entries
+    /// whose response contains a non-null `ErrorCode`, while keeping entries
+    /// with no `ErrorCode` or a null one.
+    #[test]
+    fn write_capture_records_filters_failed_put_records_entries() {
+        let capture_file = NamedTempFile::new().unwrap();
+        let writer = CaptureWriter::new(capture_file.path(), false).unwrap();
+
+        let input = CaptureInput::Batch(vec![
+            CaptureInputEntry {
+                partition_key: "ok-key".into(),
+                data: "b2s=".into(),
+                explicit_hash_key: None,
+            },
+            CaptureInputEntry {
+                partition_key: "fail-key".into(),
+                data: "ZmFpbA==".into(),
+                explicit_hash_key: None,
+            },
+            CaptureInputEntry {
+                partition_key: "null-err-key".into(),
+                data: "bnVsbA==".into(),
+                explicit_hash_key: None,
+            },
+        ]);
+
+        // Simulate a PutRecords response where the second record failed
+        let response = json!({
+            "FailedRecordCount": 1,
+            "Records": [
+                {
+                    "SequenceNumber": "seq-1",
+                    "ShardId": "shardId-000000000000"
+                },
+                {
+                    "ErrorCode": "ProvisionedThroughputExceededException",
+                    "ErrorMessage": "Rate exceeded for shard"
+                },
+                {
+                    "SequenceNumber": "seq-3",
+                    "ShardId": "shardId-000000000000",
+                    "ErrorCode": null
+                }
+            ]
+        });
+
+        write_capture_records(
+            &writer,
+            Operation::PutRecords,
+            "test-stream",
+            &input,
+            &response,
+        );
+
+        let records = crate::capture::read_capture_file(capture_file.path()).unwrap();
+        // Only the first and third records should be captured
+        assert_eq!(records.len(), 2);
+
+        assert_eq!(records[0].op, CaptureOp::PutRecords);
+        assert_eq!(records[0].partition_key, "ok-key");
+        assert_eq!(records[0].data, "b2s=");
+        assert_eq!(records[0].sequence_number, "seq-1");
+        assert_eq!(records[0].shard_id, "shardId-000000000000");
+
+        assert_eq!(records[1].op, CaptureOp::PutRecords);
+        assert_eq!(records[1].partition_key, "null-err-key");
+        assert_eq!(records[1].data, "bnVsbA==");
+        assert_eq!(records[1].sequence_number, "seq-3");
+        assert_eq!(records[1].shard_id, "shardId-000000000000");
+    }
+
+    /// Verifies that when ALL records in a PutRecords batch fail, no capture
+    /// records are written.
+    #[test]
+    fn write_capture_records_all_failed_writes_nothing() {
+        let capture_file = NamedTempFile::new().unwrap();
+        let writer = CaptureWriter::new(capture_file.path(), false).unwrap();
+
+        let input = CaptureInput::Batch(vec![
+            CaptureInputEntry {
+                partition_key: "k1".into(),
+                data: "YQ==".into(),
+                explicit_hash_key: None,
+            },
+            CaptureInputEntry {
+                partition_key: "k2".into(),
+                data: "Yg==".into(),
+                explicit_hash_key: None,
+            },
+        ]);
+
+        let response = json!({
+            "FailedRecordCount": 2,
+            "Records": [
+                {
+                    "ErrorCode": "InternalFailure",
+                    "ErrorMessage": "Internal error"
+                },
+                {
+                    "ErrorCode": "ProvisionedThroughputExceededException",
+                    "ErrorMessage": "Rate exceeded"
+                }
+            ]
+        });
+
+        write_capture_records(
+            &writer,
+            Operation::PutRecords,
+            "test-stream",
+            &input,
+            &response,
+        );
+
+        let records = crate::capture::read_capture_file(capture_file.path()).unwrap();
+        assert_eq!(records.len(), 0);
     }
 }

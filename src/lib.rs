@@ -35,6 +35,7 @@
 #![warn(missing_docs)]
 
 pub mod actions;
+pub mod capture;
 pub mod config;
 #[doc(hidden)]
 pub mod constants;
@@ -89,7 +90,16 @@ use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 /// }
 /// ```
 pub fn create_app(options: StoreOptions) -> (Router, Store) {
-    let store = Store::new(options.clone());
+    create_app_with_capture(options, None)
+}
+
+/// Like [`create_app`], but accepts an optional [`capture::CaptureWriter`] to record
+/// PutRecord/PutRecords calls to an NDJSON file.
+pub fn create_app_with_capture(
+    options: StoreOptions,
+    capture: Option<capture::CaptureWriter>,
+) -> (Router, Store) {
+    let store = Store::with_capture(options.clone(), capture);
     let app = Router::new()
         .route("/_health", get(health::health))
         .route("/_health/live", get(health::live))

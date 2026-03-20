@@ -22,6 +22,7 @@ required-features = ["loadtest"]
 default = ["access-log"]
 access-log = ["dep:tower-http"]
 loadtest = ["dep:goose"]
+replay = ["dep:reqwest"]
 tls = ["dep:axum-server", "dep:rcgen", "dep:rustls"]
 
 [dependencies]
@@ -36,12 +37,14 @@ bytes = "1"
 ciborium = "0.2"
 clap = { version = "4", features = ["derive", "env"] }
 goose = { version = "0.18", optional = true }
+md-5 = { version = "0.10", default-features = false }
 num-bigint = "0.4"
 num-traits = "0.2"
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 rand = "0.9"
 rcgen = { version = "0.14", optional = true }
 redb = "3.1"
+reqwest = { version = "0.12", features = ["json"], optional = true }
 regex = "1"
 rustls = { version = "0.23", optional = true }
 serde = { version = "1", features = ["derive"] }
@@ -62,6 +65,7 @@ panic = "abort"
 
 [dev-dependencies]
 aes = "0.8"
+reqwest = { version = "0.12", features = ["json"] }
 aws-credential-types = { version = "1", features = ["test-util"] }
 aws-sdk-kinesis = "1"
 base64 = "0.22"
@@ -70,7 +74,6 @@ ciborium = "0.2"
 criterion = { version = "0.5", features = ["async_tokio"] }
 num-bigint = "0.4"
 proptest = "1"
-reqwest = { version = "0.12", features = ["json"] }
 tempfile = "3"
 
 [[bench]]

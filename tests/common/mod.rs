@@ -82,6 +82,25 @@ impl TestServer {
         }
     }
 
+    pub async fn with_capture(
+        options: StoreOptions,
+        capture: ferrokinesis::capture::CaptureWriter,
+    ) -> Self {
+        let (app, store) = ferrokinesis::create_app_with_capture(options, Some(capture));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        TestServer {
+            addr,
+            client: Client::new(),
+            store,
+        }
+    }
+
     pub async fn with_body_limit(options: StoreOptions, max_body_bytes: usize) -> Self {
         let (app, store) = ferrokinesis::create_app(options);
         let app = app.layer(DefaultBodyLimit::max(max_body_bytes));
