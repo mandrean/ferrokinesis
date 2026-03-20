@@ -275,12 +275,22 @@ impl Mirror {
     }
 }
 
-fn extract_host(url: &str) -> String {
-    let without_proto = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))
-        .unwrap_or(url);
-    without_proto.split('/').next().unwrap_or("").to_string()
+fn extract_host(url_str: &str) -> String {
+    match url::Url::parse(url_str) {
+        Ok(parsed) => {
+            let raw = parsed.host_str().unwrap_or(url_str);
+            let host = if raw.contains(':') && !raw.starts_with('[') {
+                format!("[{raw}]")
+            } else {
+                raw.to_string()
+            };
+            match parsed.port() {
+                Some(port) => format!("{host}:{port}"),
+                None => host,
+            }
+        }
+        Err(_) => url_str.to_string(),
+    }
 }
 
 fn strip_volatile_keys(val: &mut Value, keys: &[&str]) {
@@ -418,5 +428,15 @@ mod tests {
             extract_host("https://kinesis.us-east-1.amazonaws.com/"),
             "kinesis.us-east-1.amazonaws.com"
         );
+    }
+
+    #[test]
+    fn extract_host_ipv6() {
+        assert_eq!(extract_host("http://[::1]:4567"), "[::1]:4567");
+    }
+
+    #[test]
+    fn extract_host_ipv6_no_port() {
+        assert_eq!(extract_host("http://[::1]"), "[::1]");
     }
 }
