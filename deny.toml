@@ -6,10 +6,11 @@ feature-depth = 1
 
 [advisories]
 ignore = [
-    # atomic-polyfill is only pulled in when --all-features enables postcard's
-    # heapless-cas feature (which we don't use: default-features = false).
-    # No upgrade path exists (postcard v2 not released). Not a runtime dependency.
-    { id = "RUSTSEC-2023-0089", reason = "transitive dep only under --all-features via postcard/heapless-cas; not used at runtime" },
+    # rustls-webpki 0.101.7 is pulled in by rustls 0.21 via aws-sdk-kinesis (dev dep only).
+    # The fix (>=0.103.10) is in the 0.103.x series; there is no patched 0.101.x release.
+    # aws-sdk-kinesis cannot upgrade to a rustls 0.22+ compatible version without raising our
+    # MSRV above Rust 1.87. Not a runtime dependency — test-only.
+    { id = "RUSTSEC-2026-0049", reason = "rustls-webpki 0.101.7 via rustls 0.21/aws-sdk-kinesis dev dep; no patched 0.101.x; test-only" },
 ]
 
 [licenses]
