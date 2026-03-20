@@ -206,12 +206,33 @@ impl Mirror {
     ///
     /// Covers env vars, `~/.aws/credentials`, IMDS, ECS task roles — all with
     /// automatic refresh, so STS temporary credentials are never stale.
+    #[cfg(feature = "mirror-aws-config")]
     async fn build_credentials_provider()
     -> Option<aws_credential_types::provider::SharedCredentialsProvider> {
         let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
             .load()
             .await;
         config.credentials_provider()
+    }
+
+    /// Build a credentials provider from environment variables.
+    ///
+    /// Reads `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optionally
+    /// `AWS_SESSION_TOKEN`. Returns `None` if the required variables are unset.
+    #[cfg(not(feature = "mirror-aws-config"))]
+    async fn build_credentials_provider()
+    -> Option<aws_credential_types::provider::SharedCredentialsProvider> {
+        let access_key = std::env::var("AWS_ACCESS_KEY_ID").ok()?;
+        let secret_key = std::env::var("AWS_SECRET_ACCESS_KEY").ok()?;
+        let session_token = std::env::var("AWS_SESSION_TOKEN").ok();
+        let credentials = aws_credential_types::Credentials::new(
+            access_key,
+            secret_key,
+            session_token,
+            None,
+            "environment",
+        );
+        Some(aws_credential_types::provider::SharedCredentialsProvider::new(credentials))
     }
 
     /// Returns `true` if this operation should be mirrored.
