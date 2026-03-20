@@ -1,3 +1,4 @@
+use crate::capture::{CaptureOp, CaptureRecordRef};
 use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::sequence;
@@ -7,6 +8,7 @@ use crate::util::current_time_ms;
 use num_bigint::BigUint;
 use num_traits::{One, Zero};
 use serde_json::{Value, json};
+use std::borrow::Cow;
 
 struct SeqPiece {
     shard_ix: i64,
@@ -202,9 +204,166 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
 
     store.put_records_batch(&stream_name, &batch).await;
 
+    if let Some(ref writer) = store.capture_writer {
+        let ts = current_time_ms();
+        let capture_refs: Vec<CaptureRecordRef<'_>> = records
+            .iter()
+            .zip(return_records.iter())
+            .filter(|(_, resp)| resp.get(constants::ERROR_CODE).is_none_or(|v| v.is_null()))
+            .map(|(req, resp)| CaptureRecordRef {
+                op: CaptureOp::PutRecords,
+                ts,
+                stream: &stream_name,
+                partition_key: Cow::Borrowed(req[constants::PARTITION_KEY].as_str().unwrap_or("")),
+                data: req[constants::DATA].as_str().unwrap_or(""),
+                explicit_hash_key: req[constants::EXPLICIT_HASH_KEY].as_str(),
+                sequence_number: resp[constants::SEQUENCE_NUMBER].as_str().unwrap_or(""),
+                shard_id: resp[constants::SHARD_ID].as_str().unwrap_or(""),
+            })
+            .collect();
+        writer.write_records(&capture_refs);
+    }
+
     tracing::trace!(stream = %stream_name, records = batch.len(), "records put");
     Ok(Some(json!({
         "FailedRecordCount": 0,
         "Records": return_records,
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::capture::{CaptureOp, CaptureWriter, read_capture_file};
+    use serde_json::json;
+    use tempfile::NamedTempFile;
+
+    /// Verifies that the PutRecords capture path filters out entries whose
+    /// response contains a non-null `ErrorCode`, while keeping entries with
+    /// no `ErrorCode` or a null one.
+    #[test]
+    fn write_capture_records_filters_failed_put_records_entries() {
+        let capture_file = NamedTempFile::new().unwrap();
+        let writer = CaptureWriter::new(capture_file.path(), false).unwrap();
+
+        let stream_name = "test-stream";
+        let ts = 1_234_567_890u64;
+
+        let records: Vec<Value> = vec![
+            json!({
+                constants::PARTITION_KEY: "ok-key",
+                constants::DATA: "b2s=",
+            }),
+            json!({
+                constants::PARTITION_KEY: "fail-key",
+                constants::DATA: "ZmFpbA==",
+            }),
+            json!({
+                constants::PARTITION_KEY: "null-err-key",
+                constants::DATA: "bnVsbA==",
+            }),
+        ];
+
+        let return_records: Vec<Value> = vec![
+            json!({
+                "SequenceNumber": "seq-1",
+                "ShardId": "shardId-000000000000"
+            }),
+            json!({
+                "ErrorCode": "ProvisionedThroughputExceededException",
+                "ErrorMessage": "Rate exceeded for shard"
+            }),
+            json!({
+                "SequenceNumber": "seq-3",
+                "ShardId": "shardId-000000000000",
+                "ErrorCode": null
+            }),
+        ];
+
+        let capture_refs: Vec<CaptureRecordRef<'_>> = records
+            .iter()
+            .zip(return_records.iter())
+            .filter(|(_, resp)| resp.get(constants::ERROR_CODE).is_none_or(|v| v.is_null()))
+            .map(|(req, resp)| CaptureRecordRef {
+                op: CaptureOp::PutRecords,
+                ts,
+                stream: stream_name,
+                partition_key: Cow::Borrowed(req[constants::PARTITION_KEY].as_str().unwrap_or("")),
+                data: req[constants::DATA].as_str().unwrap_or(""),
+                explicit_hash_key: req[constants::EXPLICIT_HASH_KEY].as_str(),
+                sequence_number: resp[constants::SEQUENCE_NUMBER].as_str().unwrap_or(""),
+                shard_id: resp[constants::SHARD_ID].as_str().unwrap_or(""),
+            })
+            .collect();
+        writer.write_records(&capture_refs);
+
+        let captured = read_capture_file(capture_file.path()).unwrap();
+        // Only the first and third records should be captured
+        assert_eq!(captured.len(), 2);
+
+        assert_eq!(captured[0].op, CaptureOp::PutRecords);
+        assert_eq!(captured[0].partition_key, "ok-key");
+        assert_eq!(captured[0].data, "b2s=");
+        assert_eq!(captured[0].sequence_number, "seq-1");
+        assert_eq!(captured[0].shard_id, "shardId-000000000000");
+
+        assert_eq!(captured[1].op, CaptureOp::PutRecords);
+        assert_eq!(captured[1].partition_key, "null-err-key");
+        assert_eq!(captured[1].data, "bnVsbA==");
+        assert_eq!(captured[1].sequence_number, "seq-3");
+        assert_eq!(captured[1].shard_id, "shardId-000000000000");
+    }
+
+    /// Verifies that when ALL records in a PutRecords batch fail, no capture
+    /// records are written.
+    #[test]
+    fn write_capture_records_all_failed_writes_nothing() {
+        let capture_file = NamedTempFile::new().unwrap();
+        let writer = CaptureWriter::new(capture_file.path(), false).unwrap();
+
+        let stream_name = "test-stream";
+        let ts = 1_234_567_890u64;
+
+        let records: Vec<Value> = vec![
+            json!({
+                constants::PARTITION_KEY: "k1",
+                constants::DATA: "YQ==",
+            }),
+            json!({
+                constants::PARTITION_KEY: "k2",
+                constants::DATA: "Yg==",
+            }),
+        ];
+
+        let return_records: Vec<Value> = vec![
+            json!({
+                "ErrorCode": "InternalFailure",
+                "ErrorMessage": "Internal error"
+            }),
+            json!({
+                "ErrorCode": "ProvisionedThroughputExceededException",
+                "ErrorMessage": "Rate exceeded"
+            }),
+        ];
+
+        let capture_refs: Vec<CaptureRecordRef<'_>> = records
+            .iter()
+            .zip(return_records.iter())
+            .filter(|(_, resp)| resp.get(constants::ERROR_CODE).is_none_or(|v| v.is_null()))
+            .map(|(req, resp)| CaptureRecordRef {
+                op: CaptureOp::PutRecords,
+                ts,
+                stream: stream_name,
+                partition_key: Cow::Borrowed(req[constants::PARTITION_KEY].as_str().unwrap_or("")),
+                data: req[constants::DATA].as_str().unwrap_or(""),
+                explicit_hash_key: req[constants::EXPLICIT_HASH_KEY].as_str(),
+                sequence_number: resp[constants::SEQUENCE_NUMBER].as_str().unwrap_or(""),
+                shard_id: resp[constants::SHARD_ID].as_str().unwrap_or(""),
+            })
+            .collect();
+        writer.write_records(&capture_refs);
+
+        let captured = read_capture_file(capture_file.path()).unwrap();
+        assert_eq!(captured.len(), 0);
+    }
 }

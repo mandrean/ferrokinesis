@@ -1,3 +1,4 @@
+use crate::capture::{CaptureOp, CaptureRecordRef};
 use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::sequence;
@@ -7,6 +8,7 @@ use crate::util::current_time_ms;
 use num_bigint::BigUint;
 use num_traits::{One, Zero};
 use serde_json::{Value, json};
+use std::borrow::Cow;
 
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_name = store.resolve_stream_name(&data)?;
@@ -147,6 +149,20 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     };
 
     store.put_record(&stream_name, &stream_key, &record).await;
+
+    if let Some(ref writer) = store.capture_writer {
+        let capture_record = CaptureRecordRef {
+            op: CaptureOp::PutRecord,
+            ts: now,
+            stream: &stream_name,
+            partition_key: Cow::Borrowed(partition_key),
+            data: record_data,
+            explicit_hash_key,
+            sequence_number: &seq_num,
+            shard_id: &shard_id,
+        };
+        writer.write_record(&capture_record);
+    }
 
     tracing::trace!(stream = %stream_name, shard = %shard_id, partition_key, "record put");
     Ok(Some(json!({
