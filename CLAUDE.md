@@ -59,6 +59,7 @@ Use `tracing` macros (`tracing::info!`, `tracing::error!`, etc.) — **never `pr
 - `ERROR` — 5xx server errors, fatal startup failures
 - `WARN` — configuration warnings
 - `DEBUG` — successful request completion, routine maintenance (retention reaper)
+- `TRACE` — per-action detail in non-lifecycle handlers (PutRecord, GetRecords, ListShards, etc.)
 
 **Structured fields over format strings:** prefer `tracing::info!(stream = name, "created")` over `tracing::info!("created stream {name}")`.
 

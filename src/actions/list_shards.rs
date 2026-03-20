@@ -51,5 +51,11 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         }
     }
 
+    tracing::trace!(
+        stream = name,
+        shards = output_shards.len(),
+        has_more,
+        "shards listed"
+    );
     Ok(Some(result))
 }

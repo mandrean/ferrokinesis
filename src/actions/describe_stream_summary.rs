@@ -18,6 +18,12 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         .await
         .len();
 
+    tracing::trace!(
+        stream = stream_name,
+        open_shard_count,
+        consumer_count,
+        "stream summary described"
+    );
     Ok(Some(json!({
         "StreamDescriptionSummary": {
             "RetentionPeriodHours": stream.retention_period_hours,

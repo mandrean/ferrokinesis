@@ -37,6 +37,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
 
     store.put_account_settings(&settings).await;
 
+    tracing::trace!("account settings updated");
     Ok(Some(json!({
         constants::MINIMUM_THROUGHPUT_BILLING_COMMITMENT: settings
     })))

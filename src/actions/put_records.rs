@@ -202,6 +202,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
 
     store.put_records_batch(&stream_name, &batch).await;
 
+    tracing::trace!(stream = %stream_name, records = batch.len(), "records put");
     Ok(Some(json!({
         "FailedRecordCount": 0,
         "Records": return_records,

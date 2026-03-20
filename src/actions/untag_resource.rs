@@ -38,6 +38,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                 Ok(())
             })
             .await?;
+        tracing::trace!(resource_arn, tags = tag_keys.len(), "resource untagged");
         return Ok(None);
     }
 
@@ -48,5 +49,6 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     }
     store.put_resource_tags(resource_arn, &existing).await;
 
+    tracing::trace!(resource_arn, tags = tag_keys.len(), "resource untagged");
     Ok(None)
 }

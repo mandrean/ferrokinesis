@@ -171,6 +171,8 @@ pub async fn execute_streaming(store: &Store, data: Value) -> Result<Body, Kines
         }
     };
 
+    tracing::trace!(consumer_arn, shard = %shard_id, stream = %stream_name, "shard subscription started");
+
     // Spawn the streaming task
     let store = store.clone();
     let stream_name = stream_name.to_string();

@@ -51,5 +51,6 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         })
         .await?;
 
+    tracing::trace!(stream = %name, max_record_size_kib, "max record size updated");
     Ok(None)
 }

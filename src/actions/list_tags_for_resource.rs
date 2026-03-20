@@ -33,6 +33,11 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         .map(|(k, v)| json!({"Key": k, "Value": v}))
         .collect();
 
+    tracing::trace!(
+        resource_arn,
+        tags = tags_array.len(),
+        "resource tags listed"
+    );
     Ok(Some(json!({
         "Tags": tags_array,
     })))

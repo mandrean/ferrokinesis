@@ -174,6 +174,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         result["NextShardIterator"] = json!(iter);
     }
 
+    tracing::trace!(stream = %stream_name, shard = %shard_id, records = items.len(), millis_behind, "records retrieved");
     Ok(Some(result))
 }
 

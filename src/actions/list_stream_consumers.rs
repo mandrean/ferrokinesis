@@ -24,5 +24,6 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         result["NextToken"] = json!("next");
     }
 
+    tracing::trace!(stream = %stream_name, consumers = output.len(), has_more, "consumers listed");
     Ok(Some(result))
 }

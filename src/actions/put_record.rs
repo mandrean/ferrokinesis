@@ -148,6 +148,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
 
     store.put_record(&stream_name, &stream_key, &record).await;
 
+    tracing::trace!(stream = %stream_name, shard = %shard_id, partition_key, "record put");
     Ok(Some(json!({
         "ShardId": shard_id,
         "SequenceNumber": seq_num,

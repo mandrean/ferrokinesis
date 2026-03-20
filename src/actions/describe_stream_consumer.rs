@@ -26,6 +26,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         )
     })?;
 
+    tracing::trace!("consumer described");
     Ok(Some(json!({
         "ConsumerDescription": consumer,
     })))
