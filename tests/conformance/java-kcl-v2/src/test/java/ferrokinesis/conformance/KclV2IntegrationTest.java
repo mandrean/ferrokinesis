@@ -25,6 +25,7 @@ import software.amazon.awssdk.services.kinesis.model.DescribeStreamSummaryRespon
 import software.amazon.awssdk.services.kinesis.model.PutRecordRequest;
 import software.amazon.awssdk.services.kinesis.model.StreamStatus;
 import software.amazon.kinesis.common.ConfigsBuilder;
+import software.amazon.kinesis.coordinator.ClientVersionConfig;
 import software.amazon.kinesis.coordinator.Scheduler;
 import software.amazon.kinesis.metrics.MetricsLevel;
 import software.amazon.kinesis.retrieval.fanout.FanOutConfig;
@@ -157,7 +158,12 @@ public class KclV2IntegrationTest {
 
         Scheduler localScheduler = new Scheduler(
                 configsBuilder.checkpointConfig(),
-                configsBuilder.coordinatorConfig(),
+                // CLIENT_VERSION_CONFIG_COMPATIBLE_WITH_2X: use KCL 2.x lease assignment algorithm.
+                // KCL 3.x's default algorithm creates WorkerMetricStats and CoordinatorState DynamoDB
+                // tables and uses a new load balancer that causes immediate lease loss in single-worker
+                // test scenarios. The 2.x-compatible mode avoids this without sacrificing fan-out coverage.
+                configsBuilder.coordinatorConfig()
+                        .clientVersionConfig(ClientVersionConfig.CLIENT_VERSION_CONFIG_COMPATIBLE_WITH_2X),
                 configsBuilder.leaseManagementConfig(),
                 configsBuilder.lifecycleConfig(),
                 configsBuilder.metricsConfig()
