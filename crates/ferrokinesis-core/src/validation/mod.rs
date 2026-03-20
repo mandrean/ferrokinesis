@@ -668,13 +668,7 @@ pub fn check_validations(
                     for (child_name, child_def) in children {
                         let null = Value::Null;
                         let child_val = data.get(child_name).unwrap_or(&null);
-                        check_non_required(
-                            child_name,
-                            child_val,
-                            child_def,
-                            &child_parent,
-                            errors,
-                        );
+                        check_non_required(child_name, child_val, child_def, &child_parent, errors);
                     }
                 }
             }
