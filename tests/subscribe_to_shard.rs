@@ -1,9 +1,12 @@
 mod common;
 
+use aws_smithy_eventstream::frame::read_message_from;
+use aws_smithy_types::event_stream::Message;
 use common::*;
 use ferrokinesis::store::{Store, StoreOptions};
 use ferrokinesis::types::{Consumer, ConsumerStatus};
 use serde_json::{Value, json};
+use std::io::Cursor;
 
 const ACCOUNT: &str = "000000000000";
 const REGION: &str = "us-east-1";
@@ -931,4 +934,195 @@ async fn subscribe_to_updating_stream_returns_error() {
     assert_eq!(res.status(), 400);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["__type"], "ResourceInUseException");
+}
+
+// -- CBOR event-stream tests --
+
+/// Parse `count` event-stream frames from raw bytes.
+fn parse_event_frames(data: &[u8], count: usize) -> Vec<Message> {
+    let mut cursor = Cursor::new(data);
+    let mut messages = Vec::with_capacity(count);
+    for _ in 0..count {
+        let msg = read_message_from(&mut cursor).expect("failed to parse event-stream frame");
+        messages.push(msg);
+    }
+    messages
+}
+
+/// Find a header value by name in a Message.
+fn header_value(msg: &Message, name: &str) -> Option<String> {
+    msg.headers()
+        .iter()
+        .find(|h| h.name().as_str() == name)
+        .and_then(|h| match h.value() {
+            aws_smithy_types::event_stream::HeaderValue::String(s) => Some(s.as_str().to_string()),
+            _ => None,
+        })
+}
+
+#[tokio::test]
+async fn subscribe_cbor_returns_cbor_event_frames() {
+    let server = TestServer::new().await;
+    let name = "se-cbor-frames";
+    server.create_stream(name, 1).await;
+    let arn = stream_arn(name);
+
+    server.put_record(name, "QUJDRA==", "pk-cbor").await;
+
+    let consumer_arn = register_and_activate(&server, &arn, "c-cbor-frames").await;
+
+    // Build CBOR-encoded request body
+    let request = json!({
+        "ConsumerARN": consumer_arn,
+        "ShardId": "shardId-000000000000",
+        "StartingPosition": { "Type": "TRIM_HORIZON" },
+    });
+    let mut cbor_body = Vec::new();
+    ciborium::into_writer(&request, &mut cbor_body).unwrap();
+
+    let mut response = server
+        .client
+        .post(server.url())
+        .header("Content-Type", AMZ_CBOR)
+        .header("X-Amz-Target", format!("{VERSION}.SubscribeToShard"))
+        .header(
+            "Authorization",
+            "AWS4-HMAC-SHA256 Credential=AKID/20150101/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=abcd1234",
+        )
+        .header("X-Amz-Date", "20150101T000000Z")
+        .body(cbor_body)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+
+    // Collect initial-response frame
+    let chunk1 = response.chunk().await.unwrap();
+    assert!(chunk1.is_some(), "expected initial-response frame");
+    let initial_bytes = chunk1.unwrap();
+    let initial_frames = parse_event_frames(&initial_bytes, 1);
+    assert_eq!(
+        header_value(&initial_frames[0], ":event-type").as_deref(),
+        Some("initial-response")
+    );
+
+    // Collect first event frame
+    let chunk2 = tokio::time::timeout(tokio::time::Duration::from_secs(2), response.chunk())
+        .await
+        .expect("timed out waiting for event frame")
+        .unwrap();
+    assert!(chunk2.is_some(), "expected event frame");
+    let event_bytes = chunk2.unwrap();
+    let event_frames = parse_event_frames(&event_bytes, 1);
+
+    // Assert content-type is CBOR
+    assert_eq!(
+        header_value(&event_frames[0], ":content-type").as_deref(),
+        Some(AMZ_CBOR),
+    );
+
+    // Decode CBOR payload
+    let payload = event_frames[0].payload().as_ref();
+    let cbor_val: ciborium::Value = ciborium::from_reader(payload).expect("invalid CBOR payload");
+    let decoded = ferrokinesis::server::cbor_to_json(&cbor_val);
+
+    let records = decoded["Records"]
+        .as_array()
+        .expect("expected Records array");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["PartitionKey"], "pk-cbor");
+    assert!(
+        records[0]["SequenceNumber"].as_str().is_some(),
+        "expected non-empty SequenceNumber"
+    );
+}
+
+#[tokio::test]
+async fn subscribe_cbor_json_equivalence() {
+    let server = TestServer::new().await;
+    let name = "se-cbor-equiv";
+    server.create_stream(name, 1).await;
+    let arn = stream_arn(name);
+
+    server.put_record(name, "QUJDRA==", "pk-equiv").await;
+
+    let consumer_arn = register_and_activate(&server, &arn, "c-cbor-equiv").await;
+
+    // -- JSON subscription --
+    let json_request = json!({
+        "ConsumerARN": consumer_arn,
+        "ShardId": "shardId-000000000000",
+        "StartingPosition": { "Type": "TRIM_HORIZON" },
+    });
+
+    let mut json_response = server
+        .client
+        .post(server.url())
+        .header("Content-Type", AMZ_JSON)
+        .header("X-Amz-Target", format!("{VERSION}.SubscribeToShard"))
+        .header(
+            "Authorization",
+            "AWS4-HMAC-SHA256 Credential=AKID/20150101/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=abcd1234",
+        )
+        .header("X-Amz-Date", "20150101T000000Z")
+        .body(serde_json::to_vec(&json_request).unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(json_response.status(), 200);
+
+    // Skip initial-response
+    json_response.chunk().await.unwrap();
+    let json_chunk =
+        tokio::time::timeout(tokio::time::Duration::from_secs(2), json_response.chunk())
+            .await
+            .expect("timed out waiting for JSON event")
+            .unwrap()
+            .expect("expected JSON event frame");
+
+    let json_frames = parse_event_frames(&json_chunk, 1);
+    let json_payload: Value =
+        serde_json::from_slice(json_frames[0].payload().as_ref()).expect("invalid JSON payload");
+
+    // -- CBOR subscription --
+    let mut cbor_body = Vec::new();
+    ciborium::into_writer(&json_request, &mut cbor_body).unwrap();
+
+    let mut cbor_response = server
+        .client
+        .post(server.url())
+        .header("Content-Type", AMZ_CBOR)
+        .header("X-Amz-Target", format!("{VERSION}.SubscribeToShard"))
+        .header(
+            "Authorization",
+            "AWS4-HMAC-SHA256 Credential=AKID/20150101/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=abcd1234",
+        )
+        .header("X-Amz-Date", "20150101T000000Z")
+        .body(cbor_body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cbor_response.status(), 200);
+
+    // Skip initial-response
+    cbor_response.chunk().await.unwrap();
+    let cbor_chunk =
+        tokio::time::timeout(tokio::time::Duration::from_secs(2), cbor_response.chunk())
+            .await
+            .expect("timed out waiting for CBOR event")
+            .unwrap()
+            .expect("expected CBOR event frame");
+
+    let cbor_frames = parse_event_frames(&cbor_chunk, 1);
+    let cbor_val: ciborium::Value =
+        ciborium::from_reader(cbor_frames[0].payload().as_ref()).expect("invalid CBOR payload");
+    let cbor_payload = ferrokinesis::server::cbor_to_json(&cbor_val);
+
+    // Compare, ignoring volatile fields
+    assert_values_equivalent(
+        &json_payload,
+        &cbor_payload,
+        &["ContinuationSequenceNumber", "MillisBehindLatest"],
+    );
 }

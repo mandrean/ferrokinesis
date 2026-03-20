@@ -45,6 +45,10 @@ import java.util.concurrent.TimeoutException;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+// Naming convention: the directory is "java-kcl-v2" referring to the KCL API
+// generation (v2 = enhanced fan-out / SubscribeToShard). The library itself is
+// amazon-kinesis-client 3.x (KCL 3.x), which is the latest implementation of
+// that API generation.
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 public class KclV2IntegrationTest {
 
