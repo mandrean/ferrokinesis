@@ -13,10 +13,14 @@ use crate::actions::{self, Operation};
 use crate::capture::{CaptureOp, CaptureRecordRef, CaptureWriter};
 use crate::constants;
 use crate::error::KinesisErrorResponse;
+#[cfg(feature = "mirror")]
+use crate::mirror::Mirror;
 use crate::store::Store;
 use crate::util::current_time_ms;
 use crate::validation;
 use axum::body::Bytes;
+#[cfg(feature = "mirror")]
+use axum::extract::Extension;
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::middleware::Next;
@@ -25,7 +29,14 @@ use base64::Engine;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::borrow::Cow;
+#[cfg(feature = "mirror")]
+use std::sync::Arc;
 use tracing::Instrument;
+
+#[cfg(feature = "mirror")]
+type MirrorExt = Option<Extension<Arc<Mirror>>>;
+#[cfg(not(feature = "mirror"))]
+type MirrorExt = ();
 
 /// Axum fallback handler implementing the Kinesis wire protocol.
 ///
@@ -48,6 +59,7 @@ pub async fn handler(
     uri: Uri,
     headers: HeaderMap,
     State(store): State<Store>,
+    mirror: MirrorExt,
     body: Bytes,
 ) -> Response {
     let request_id = uuid::Uuid::new_v4().to_string();
@@ -415,27 +427,64 @@ pub async fn handler(
     };
 
     // Execute action
-    match actions::dispatch(&store, operation, data)
+    let dispatch_result = actions::dispatch(&store, operation, data)
         .instrument(span.clone())
-        .await
-    {
-        Ok(Some(result)) => {
+        .await;
+
+    // Build response first (borrows result), then move result into the mirror
+    let (response, mirrorable_result) = match dispatch_result {
+        Ok(opt_result) => {
             tracing::debug!(parent: &span, "ok");
-            // Write capture records after successful dispatch
-            if let (Some(writer), Some((op, stream, input))) = (&store.capture_writer, capture_ctx)
-            {
-                write_capture_records(writer, op, &stream, &input, &result);
-            }
-            send_json_response(response_headers, response_content_type, &result, 200)
+            let response = match &opt_result {
+                Some(result) => {
+                    send_json_response(response_headers, response_content_type, result, 200)
+                }
+                None => {
+                    response_headers.insert("Content-Type", response_content_type.parse().unwrap());
+                    response_headers.insert("Content-Length", "0".parse().unwrap());
+                    (StatusCode::OK, response_headers, "").into_response()
+                }
+            };
+            (response, Ok(opt_result))
         }
-        Ok(None) => {
-            tracing::debug!(parent: &span, "ok");
-            response_headers.insert("Content-Type", response_content_type.parse().unwrap());
-            response_headers.insert("Content-Length", "0".parse().unwrap());
-            (StatusCode::OK, response_headers, "").into_response()
+        Err(err) => {
+            let response =
+                log_and_send_error(&span, &response_headers, response_content_type, &err);
+            (response, Err(err))
         }
-        Err(ref err) => log_and_send_error(&span, &response_headers, response_content_type, err),
+    };
+
+    // Write capture records after successful dispatch
+    if let (Some(writer), Some((op, stream, input))) = (&store.capture_writer, capture_ctx) {
+        if let Ok(Some(ref result)) = mirrorable_result {
+            write_capture_records(writer, op, &stream, &input, result);
+        }
     }
+
+    // Mirror write operations (fire-and-forget) — result moved, not cloned
+    #[cfg(feature = "mirror")]
+    if let Some(Extension(ref mirror)) = mirror
+        && Mirror::should_mirror(&operation)
+    {
+        match mirrorable_result {
+            Ok(result) => {
+                mirror.spawn_forward(target.to_string(), content_type.to_string(), body, result);
+            }
+            Err(e) => {
+                tracing::debug!(
+                    parent: &span,
+                    error_type = %e.body.error_type,
+                    "skipping mirror: local dispatch failed"
+                );
+            }
+        }
+    }
+    #[cfg(not(feature = "mirror"))]
+    {
+        let _ = (mirror, mirrorable_result);
+    }
+
+    response
 }
 
 fn send_kinesis_error(

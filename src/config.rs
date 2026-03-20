@@ -82,12 +82,33 @@ pub struct FileConfig {
     pub capture: Option<PathBuf>,
     /// Whether to scrub (anonymize) partition keys during capture.
     pub scrub: Option<bool>,
+    /// Mirror configuration section.
+    #[cfg(feature = "mirror")]
+    pub mirror: Option<MirrorConfig>,
     /// Path to the TLS certificate file (PEM). Must be set together with `tls_key`.
     #[cfg(feature = "tls")]
     pub tls_cert: Option<PathBuf>,
     /// Path to the TLS private key file (PEM). Must be set together with `tls_cert`.
     #[cfg(feature = "tls")]
     pub tls_key: Option<PathBuf>,
+}
+
+/// Mirror configuration (`[mirror]` TOML section).
+#[cfg(feature = "mirror")]
+#[derive(Deserialize, Default)]
+pub struct MirrorConfig {
+    /// Kinesis-compatible endpoint to mirror PutRecord/PutRecords to.
+    pub to: Option<String>,
+    /// Log response divergences between local and mirror to stderr.
+    pub diff: Option<bool>,
+    /// Maximum number of concurrent in-flight mirror requests (default: 64).
+    pub concurrency: Option<usize>,
+    /// Maximum number of retries for failed mirror requests (default: 3, 0 = no retries).
+    pub max_retries: Option<usize>,
+    /// Initial backoff delay between retries in milliseconds (default: 100).
+    pub initial_backoff_ms: Option<u64>,
+    /// Maximum backoff delay between retries in milliseconds (default: 5000).
+    pub max_backoff_ms: Option<u64>,
 }
 
 /// Parse and validate a TOML configuration file.
@@ -130,6 +151,39 @@ pub fn load_config(path: &Path) -> Result<FileConfig, ConfigError> {
             path: path.display().to_string(),
             message: format!(
                 "log_level must be one of: off, error, warn, info, debug, trace — got \"{level}\""
+            ),
+        });
+    }
+    #[cfg(feature = "mirror")]
+    if let Some(ref mirror) = config.mirror
+        && let Some(concurrency) = mirror.concurrency
+        && concurrency == 0
+    {
+        return Err(ConfigError::Validation {
+            path: path.display().to_string(),
+            message: format!("mirror.concurrency must be at least 1, got {concurrency}"),
+        });
+    }
+    #[cfg(feature = "mirror")]
+    if let Some(ref mirror) = config.mirror
+        && let Some(initial) = mirror.initial_backoff_ms
+        && initial == 0
+    {
+        return Err(ConfigError::Validation {
+            path: path.display().to_string(),
+            message: format!("mirror.initial_backoff_ms must be at least 1, got {initial}"),
+        });
+    }
+    #[cfg(feature = "mirror")]
+    if let Some(ref mirror) = config.mirror
+        && let Some(initial) = mirror.initial_backoff_ms
+        && let Some(max) = mirror.max_backoff_ms
+        && max < initial
+    {
+        return Err(ConfigError::Validation {
+            path: path.display().to_string(),
+            message: format!(
+                "mirror.max_backoff_ms ({max}) must be >= mirror.initial_backoff_ms ({initial})"
             ),
         });
     }
