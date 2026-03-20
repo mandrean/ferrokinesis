@@ -3,5 +3,6 @@
 extern crate alloc;
 
 pub mod constants;
+pub mod error;
 pub mod types;
 pub mod util;
