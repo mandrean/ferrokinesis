@@ -11,7 +11,7 @@ A local AWS Kinesis mock server for testing, written in Rust.
 ## Features
 
 - Pure Rust implementation
-- Uses [redb](https://github.com/cberner/redb) for in-memory storage (ACID, zero-copy reads)
+- Fully in-memory storage using [DashMap](https://github.com/xacrimon/dashmap) + per-stream `RwLock` with lock-free per-shard sequence generation
 - Implements all 39 Kinesis Data Streams API operations
 - Supports both JSON and CBOR content types
 - Health check endpoints (`/_health`, `/_health/ready`, `/_health/live`) for Docker/K8s

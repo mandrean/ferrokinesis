@@ -4,7 +4,7 @@ A local AWS Kinesis emulator written in Rust (edition 2024). Aims to exactly mat
 
 ## Architecture
 
-HTTP POST → `src/server.rs` parses `X-Amz-Target` header → `Operation` enum → deserialize JSON/CBOR body → `check_types()` validates field types → `check_validations()` validates constraints → `dispatch()` routes to `src/actions/*.rs::execute()` → `Store` (redb) → JSON/CBOR response.
+HTTP POST → `src/server.rs` parses `X-Amz-Target` header → `Operation` enum → deserialize JSON/CBOR body → `check_types()` validates field types → `check_validations()` validates constraints → `dispatch()` routes to `src/actions/*.rs::execute()` → `Store` (DashMap + per-stream RwLock) → JSON/CBOR response.
 
 **Exception:** `SubscribeToShard` bypasses `dispatch()` and uses `execute_streaming()` for HTTP/2 event-stream responses.
 
