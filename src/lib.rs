@@ -44,6 +44,8 @@ pub mod error;
 pub mod event_stream;
 pub mod health;
 #[doc(hidden)]
+pub mod mirror;
+#[doc(hidden)]
 pub mod retention;
 #[doc(hidden)]
 pub mod sequence;

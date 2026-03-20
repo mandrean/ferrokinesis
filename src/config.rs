@@ -82,6 +82,10 @@ pub struct FileConfig {
     pub capture: Option<PathBuf>,
     /// Whether to scrub (anonymize) partition keys during capture.
     pub scrub: Option<bool>,
+    /// Kinesis-compatible endpoint to mirror PutRecord/PutRecords to.
+    pub mirror_to: Option<String>,
+    /// Log response divergences between local and mirror to stderr.
+    pub mirror_diff: Option<bool>,
     /// Path to the TLS certificate file (PEM). Must be set together with `tls_key`.
     #[cfg(feature = "tls")]
     pub tls_cert: Option<PathBuf>,

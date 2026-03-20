@@ -107,6 +107,14 @@ struct ServeArgs {
     #[arg(long, requires = "capture", env = "FERROKINESIS_SCRUB")]
     scrub: bool,
 
+    /// Forward PutRecord/PutRecords to this Kinesis-compatible endpoint (async, best-effort)
+    #[arg(long, env = "FERROKINESIS_MIRROR_TO")]
+    mirror_to: Option<String>,
+
+    /// Log response divergences between local and mirror to stderr
+    #[arg(long, env = "FERROKINESIS_MIRROR_DIFF", requires = "mirror_to")]
+    mirror_diff: bool,
+
     /// Path to TLS certificate PEM file (enables HTTPS)
     #[cfg(feature = "tls")]
     #[arg(long, env = "FERROKINESIS_TLS_CERT", requires = "tls_key")]
@@ -688,8 +696,19 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
     let max_bytes: usize = (max_request_body_mb * 1024 * 1024)
         .try_into()
         .expect("--max-request-body-mb value overflows usize");
+    let mirror_to = args.mirror_to.or(file_cfg.mirror_to);
+    let mirror_diff = args.mirror_diff || file_cfg.mirror_diff.unwrap_or(false);
+    let aws_region = options.aws_region.clone();
+
     let (app, _store) = ferrokinesis::create_app_with_capture(options, capture_writer);
     let app = app.layer(DefaultBodyLimit::max(max_bytes));
+    let app = if let Some(endpoint) = mirror_to {
+        let m = ferrokinesis::mirror::Mirror::new(&endpoint, mirror_diff, &aws_region);
+        tracing::info!("Mirroring PutRecord/PutRecords to {endpoint}");
+        app.layer(axum::Extension(std::sync::Arc::new(m)))
+    } else {
+        app
+    };
 
     let addr = format!("0.0.0.0:{port}");
 

@@ -34,7 +34,10 @@ tls = ["dep:axum-server", "dep:rcgen", "dep:rustls"]
 [dependencies]
 ferrokinesis-core = { path = "crates/ferrokinesis-core" }
 async-stream = "0.3"
+aws-credential-types = "1"
+aws-sigv4 = "1"
 aws-smithy-eventstream = "0.60"
+aws-smithy-runtime-api = { version = "1", features = ["client"] }
 aws-smithy-types = "1.4"
 axum = "0.8"
 axum-server = { version = "0.8", features = ["tls-rustls"], optional = true }

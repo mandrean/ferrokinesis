@@ -62,6 +62,16 @@
 # CLI: --scrub | Env: FERROKINESIS_SCRUB
 # scrub = false
 
+# Mirror PutRecord/PutRecords to another Kinesis-compatible endpoint (default: disabled)
+# Requests are forwarded async (fire-and-forget) after local processing completes.
+# CLI: --mirror-to | Env: FERROKINESIS_MIRROR_TO
+# mirror_to = "https://kinesis.us-east-1.amazonaws.com"
+
+# Log response divergences between local and mirror to stderr (default: false)
+# Requires mirror_to to be set.
+# CLI: --mirror-diff | Env: FERROKINESIS_MIRROR_DIFF
+# mirror_diff = false
+
 # TLS certificate and key (requires the "tls" feature)
 # Both must be set together, or both omitted.
 # CLI: --tls-cert / --tls-key | Env: FERROKINESIS_TLS_CERT / FERROKINESIS_TLS_KEY

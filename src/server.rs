@@ -13,11 +13,12 @@ use crate::actions::{self, Operation};
 use crate::capture::{CaptureOp, CaptureRecordRef, CaptureWriter};
 use crate::constants;
 use crate::error::KinesisErrorResponse;
+use crate::mirror::{Mirror, MirrorableResponse};
 use crate::store::Store;
 use crate::util::current_time_ms;
 use crate::validation;
 use axum::body::Bytes;
-use axum::extract::{Request, State};
+use axum::extract::{Extension, Request, State};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -25,6 +26,7 @@ use base64::Engine;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::borrow::Cow;
+use std::sync::Arc;
 use tracing::Instrument;
 
 /// Axum fallback handler implementing the Kinesis wire protocol.
@@ -48,6 +50,7 @@ pub async fn handler(
     uri: Uri,
     headers: HeaderMap,
     State(store): State<Store>,
+    mirror: Option<Extension<Arc<Mirror>>>,
     body: Bytes,
 ) -> Response {
     let request_id = uuid::Uuid::new_v4().to_string();
@@ -415,10 +418,37 @@ pub async fn handler(
     };
 
     // Execute action
-    match actions::dispatch(&store, operation, data)
+    let dispatch_result = actions::dispatch(&store, operation, data)
         .instrument(span.clone())
-        .await
+        .await;
+
+    // Mirror write operations (fire-and-forget)
+    if let Some(Extension(ref mirror)) = mirror
+        && Mirror::should_mirror(&operation)
     {
+        let local_result = match &dispatch_result {
+            Ok(Some(v)) => MirrorableResponse::Success {
+                status: 200,
+                body: Some(v.clone()),
+            },
+            Ok(None) => MirrorableResponse::Success {
+                status: 200,
+                body: None,
+            },
+            Err(e) => MirrorableResponse::Error {
+                status: e.status_code,
+                body: serde_json::to_value(&e.body).unwrap_or_default(),
+            },
+        };
+        mirror.spawn_forward(
+            target.to_string(),
+            content_type.to_string(),
+            body.clone(),
+            local_result,
+        );
+    }
+
+    match dispatch_result {
         Ok(Some(result)) => {
             tracing::debug!(parent: &span, "ok");
             // Write capture records after successful dispatch
