@@ -20,8 +20,33 @@ fn is_capture_eligible(resp: &Value) -> bool {
     resp.get(constants::ERROR_CODE).is_none_or(|v| v.is_null())
 }
 
+fn build_capture_refs<'a>(
+    records: &'a [Value],
+    return_records: &'a [Value],
+    timestamps: &'a [u64],
+    stream: &'a str,
+) -> Vec<CaptureRecordRef<'a>> {
+    records
+        .iter()
+        .zip(return_records.iter())
+        .zip(timestamps.iter())
+        .filter(|((_, resp), _)| is_capture_eligible(resp))
+        .map(|((req, resp), &ts)| CaptureRecordRef {
+            op: CaptureOp::PutRecords,
+            ts,
+            stream,
+            partition_key: Cow::Borrowed(req[constants::PARTITION_KEY].as_str().unwrap_or("")),
+            data: req[constants::DATA].as_str().unwrap_or(""),
+            explicit_hash_key: req[constants::EXPLICIT_HASH_KEY].as_str(),
+            sequence_number: resp[constants::SEQUENCE_NUMBER].as_str().unwrap_or(""),
+            shard_id: resp[constants::SHARD_ID].as_str().unwrap_or(""),
+        })
+        .collect()
+}
+
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_name = store.resolve_stream_name(&data)?;
+    let capture_enabled = store.capture_writer.is_some();
 
     let records = data[constants::RECORDS].as_array().ok_or_else(|| {
         KinesisErrorResponse::client_error(constants::SERIALIZATION_EXCEPTION, None)
@@ -135,7 +160,11 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
             let mut batch_ops: Vec<Option<(String, StoredRecordRef<'_>)>> =
                 (0..records.len()).map(|_| None).collect();
             let mut return_records: Vec<Value> = vec![json!(null); records.len()];
-            let mut timestamps: Vec<u64> = vec![0u64; records.len()];
+            let mut timestamps: Vec<u64> = if capture_enabled {
+                vec![0u64; records.len()]
+            } else {
+                Vec::new()
+            };
 
             for shard_ix in 0..stream.shards.len() as i64 {
                 for (i, record) in records.iter().enumerate() {
@@ -185,7 +214,9 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                     let partition_key = record["PartitionKey"].as_str().unwrap_or("");
                     let record_data = record["Data"].as_str().unwrap_or("");
 
-                    timestamps[i] = now;
+                    if capture_enabled {
+                        timestamps[i] = now;
+                    }
                     batch_ops[i] = Some((
                         stream_key,
                         StoredRecordRef {
@@ -211,22 +242,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     store.put_records_batch(&stream_name, &batch).await;
 
     if let Some(ref writer) = store.capture_writer {
-        let capture_refs: Vec<CaptureRecordRef<'_>> = records
-            .iter()
-            .zip(return_records.iter())
-            .zip(timestamps.iter())
-            .filter(|((_, resp), _)| is_capture_eligible(resp))
-            .map(|((req, resp), &ts)| CaptureRecordRef {
-                op: CaptureOp::PutRecords,
-                ts,
-                stream: &stream_name,
-                partition_key: Cow::Borrowed(req[constants::PARTITION_KEY].as_str().unwrap_or("")),
-                data: req[constants::DATA].as_str().unwrap_or(""),
-                explicit_hash_key: req[constants::EXPLICIT_HASH_KEY].as_str(),
-                sequence_number: resp[constants::SEQUENCE_NUMBER].as_str().unwrap_or(""),
-                shard_id: resp[constants::SHARD_ID].as_str().unwrap_or(""),
-            })
-            .collect();
+        let capture_refs = build_capture_refs(records, &return_records, &timestamps, &stream_name);
         writer.write_records(&capture_refs);
     }
 
@@ -286,21 +302,8 @@ mod tests {
             }),
         ];
 
-        let capture_refs: Vec<CaptureRecordRef<'_>> = records
-            .iter()
-            .zip(return_records.iter())
-            .filter(|(_, resp)| is_capture_eligible(resp))
-            .map(|(req, resp)| CaptureRecordRef {
-                op: CaptureOp::PutRecords,
-                ts,
-                stream: stream_name,
-                partition_key: Cow::Borrowed(req[constants::PARTITION_KEY].as_str().unwrap_or("")),
-                data: req[constants::DATA].as_str().unwrap_or(""),
-                explicit_hash_key: req[constants::EXPLICIT_HASH_KEY].as_str(),
-                sequence_number: resp[constants::SEQUENCE_NUMBER].as_str().unwrap_or(""),
-                shard_id: resp[constants::SHARD_ID].as_str().unwrap_or(""),
-            })
-            .collect();
+        let timestamps = vec![ts; records.len()];
+        let capture_refs = build_capture_refs(&records, &return_records, &timestamps, stream_name);
         writer.write_records(&capture_refs);
 
         let captured = read_capture_file(capture_file.path()).unwrap();
@@ -352,21 +355,8 @@ mod tests {
             }),
         ];
 
-        let capture_refs: Vec<CaptureRecordRef<'_>> = records
-            .iter()
-            .zip(return_records.iter())
-            .filter(|(_, resp)| is_capture_eligible(resp))
-            .map(|(req, resp)| CaptureRecordRef {
-                op: CaptureOp::PutRecords,
-                ts,
-                stream: stream_name,
-                partition_key: Cow::Borrowed(req[constants::PARTITION_KEY].as_str().unwrap_or("")),
-                data: req[constants::DATA].as_str().unwrap_or(""),
-                explicit_hash_key: req[constants::EXPLICIT_HASH_KEY].as_str(),
-                sequence_number: resp[constants::SEQUENCE_NUMBER].as_str().unwrap_or(""),
-                shard_id: resp[constants::SHARD_ID].as_str().unwrap_or(""),
-            })
-            .collect();
+        let timestamps = vec![ts; records.len()];
+        let capture_refs = build_capture_refs(&records, &return_records, &timestamps, stream_name);
         writer.write_records(&capture_refs);
 
         let captured = read_capture_file(capture_file.path()).unwrap();
