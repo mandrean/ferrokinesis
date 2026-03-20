@@ -604,6 +604,12 @@ fn write_capture_records(
                 return;
             };
             for (inp, resp) in input_records.iter().zip(response_records.iter()) {
+                if resp
+                    .get(constants::ERROR_CODE)
+                    .is_some_and(|v| !v.is_null())
+                {
+                    continue;
+                }
                 let record = CaptureRecord {
                     op: "PutRecords".to_string(),
                     ts,

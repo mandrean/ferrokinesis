@@ -173,10 +173,16 @@ impl Store {
     ///
     /// Strips non-digit characters from `options.aws_account_id` and warns if
     /// the result is not exactly 12 digits.
+    pub fn new(options: StoreOptions) -> Self {
+        Self::with_capture(options, None)
+    }
+
+    /// Creates a new store with an optional [`crate::capture::CaptureWriter`]
+    /// to record PutRecord/PutRecords calls to an NDJSON file.
     ///
-    /// Pass an optional [`crate::capture::CaptureWriter`] to record
-    /// PutRecord/PutRecords calls to an NDJSON file.
-    pub fn new(
+    /// Strips non-digit characters from `options.aws_account_id` and warns if
+    /// the result is not exactly 12 digits.
+    pub fn with_capture(
         options: StoreOptions,
         capture_writer: Option<crate::capture::CaptureWriter>,
     ) -> Self {

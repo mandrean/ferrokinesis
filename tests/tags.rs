@@ -404,7 +404,7 @@ async fn remove_tags_percent_in_key_hits_regex() {
 
 #[tokio::test]
 async fn remove_tags_tag_keys_not_array_direct() {
-    let store = Store::new(StoreOptions::default(), None);
+    let store = Store::new(StoreOptions::default());
     let result = ferrokinesis::actions::remove_tags_from_stream::execute(
         &store,
         json!({ "StreamName": "test", "TagKeys": "not-an-array" }),
@@ -417,7 +417,7 @@ async fn remove_tags_tag_keys_not_array_direct() {
 
 #[tokio::test]
 async fn add_tags_tags_not_object_direct() {
-    let store = Store::new(StoreOptions::default(), None);
+    let store = Store::new(StoreOptions::default());
     let result = ferrokinesis::actions::add_tags_to_stream::execute(
         &store,
         json!({ "StreamName": "test", "Tags": "not-an-object" }),

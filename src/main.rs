@@ -165,6 +165,16 @@ struct ReplayArgs {
     /// Replay speed multiplier (e.g. "1x", "10x", "max")
     #[arg(long, default_value = "1x")]
     replay_speed: String,
+
+    /// Use TLS when connecting (accepts self-signed certificates)
+    #[arg(long)]
+    tls: bool,
+}
+
+#[cfg(feature = "replay")]
+enum ReplaySpeed {
+    Max,
+    Multiplier(f64),
 }
 
 #[cfg(feature = "tls")]
@@ -444,14 +454,16 @@ fn parse_health_response(reader: BufReader<impl std::io::Read>) -> ExitCode {
 #[cfg(feature = "replay")]
 #[tokio::main]
 async fn run_replay(args: ReplayArgs) -> ExitCode {
-    let speed = parse_replay_speed(&args.replay_speed);
-    if speed.is_none() && args.replay_speed != "max" {
-        eprintln!(
-            "invalid replay speed {:?}: expected \"<N>x\" (e.g. \"1x\", \"10x\") or \"max\"",
-            args.replay_speed
-        );
-        return ExitCode::FAILURE;
-    }
+    let speed = match parse_replay_speed(&args.replay_speed) {
+        Ok(s) => s,
+        Err(()) => {
+            eprintln!(
+                "invalid replay speed {:?}: expected \"<N>x\" (e.g. \"1x\", \"10x\") or \"max\"",
+                args.replay_speed
+            );
+            return ExitCode::FAILURE;
+        }
+    };
 
     let mut records = match ferrokinesis::capture::read_capture_file(&args.file) {
         Ok(r) => r,
@@ -468,18 +480,23 @@ async fn run_replay(args: ReplayArgs) -> ExitCode {
 
     records.sort_by_key(|r| r.ts);
 
-    let base_url = format!("http://{}:{}", args.host, args.port);
-    let client = reqwest::Client::new();
+    let scheme = if args.tls { "https" } else { "http" };
+    let base_url = format!("{scheme}://{}:{}", args.host, args.port);
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(args.tls)
+        .build()
+        .expect("failed to build HTTP client");
     let total = records.len();
     let start = std::time::Instant::now();
 
     for (i, record) in records.iter().enumerate() {
         // Sleep based on timestamp delta
-        if let Some(multiplier) = speed
+        if let ReplaySpeed::Multiplier(multiplier) = speed
             && i > 0
         {
             let delta_ms = record.ts.saturating_sub(records[i - 1].ts);
             if delta_ms > 0 {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 let sleep_ms = (delta_ms as f64 / multiplier) as u64;
                 if sleep_ms > 0 {
                     tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
@@ -529,13 +546,17 @@ async fn run_replay(args: ReplayArgs) -> ExitCode {
 
 #[cfg(feature = "replay")]
 /// Parse a replay speed string like "1x", "10x", "0.5x", or "max".
-/// Returns `Some(multiplier)` for numeric speeds, `None` for "max".
-fn parse_replay_speed(s: &str) -> Option<f64> {
+/// Returns `Ok(ReplaySpeed)` on success, `Err(())` on invalid input.
+fn parse_replay_speed(s: &str) -> Result<ReplaySpeed, ()> {
     if s == "max" {
-        return None;
+        return Ok(ReplaySpeed::Max);
     }
     let s = s.strip_suffix('x').unwrap_or(s);
-    s.parse::<f64>().ok().filter(|v| *v > 0.0)
+    s.parse::<f64>()
+        .ok()
+        .filter(|v| *v > 0.0)
+        .map(ReplaySpeed::Multiplier)
+        .ok_or(())
 }
 
 async fn shutdown_signal() {
@@ -653,7 +674,7 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
     let max_bytes: usize = (max_request_body_mb * 1024 * 1024)
         .try_into()
         .expect("--max-request-body-mb value overflows usize");
-    let (app, _store) = ferrokinesis::create_app(options, capture_writer);
+    let (app, _store) = ferrokinesis::create_app_with_capture(options, capture_writer);
     let app = app.layer(DefaultBodyLimit::max(max_bytes));
 
     let addr = format!("0.0.0.0:{port}");

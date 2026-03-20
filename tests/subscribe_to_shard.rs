@@ -230,7 +230,7 @@ async fn subscribe_success_returns_event_stream() {
 
 #[tokio::test]
 async fn subscribe_empty_consumer_arn_direct() {
-    let store = Store::new(StoreOptions::default(), None);
+    let store = Store::new(StoreOptions::default());
     let result = ferrokinesis::actions::subscribe_to_shard::execute_streaming(
         &store,
         json!({
@@ -249,7 +249,7 @@ async fn subscribe_empty_consumer_arn_direct() {
 
 #[tokio::test]
 async fn subscribe_empty_shard_id_direct() {
-    let store = Store::new(StoreOptions::default(), None);
+    let store = Store::new(StoreOptions::default());
     let result = ferrokinesis::actions::subscribe_to_shard::execute_streaming(
         &store,
         json!({
@@ -268,7 +268,7 @@ async fn subscribe_empty_shard_id_direct() {
 
 #[tokio::test]
 async fn subscribe_stream_not_found_from_consumer_arn() {
-    let store = Store::new(StoreOptions::default(), None);
+    let store = Store::new(StoreOptions::default());
 
     let consumer_arn =
         "arn:aws:kinesis:us-east-1:000000000000:stream/ghost-stream/consumer/c:1700000000";
@@ -302,7 +302,7 @@ async fn subscribe_stream_not_found_from_consumer_arn() {
 
 #[tokio::test]
 async fn subscribe_consumer_arn_missing_consumer_segment() {
-    let store = Store::new(StoreOptions::default(), None);
+    let store = Store::new(StoreOptions::default());
 
     let malformed_arn = "arn-without-consumer-path-segment";
     store
@@ -335,7 +335,7 @@ async fn subscribe_consumer_arn_missing_consumer_segment() {
 
 #[tokio::test]
 async fn subscribe_consumer_arn_unresolvable_stream_name() {
-    let store = Store::new(StoreOptions::default(), None);
+    let store = Store::new(StoreOptions::default());
 
     let consumer_arn = "foo/consumer/c:1700000000";
     store
@@ -456,16 +456,13 @@ async fn subscribe_at_timestamp_no_records_fallback() {
 
 #[tokio::test]
 async fn subscribe_unknown_position_type_direct() {
-    let store = Store::new(
-        StoreOptions {
-            create_stream_ms: 0,
-            delete_stream_ms: 0,
-            update_stream_ms: 0,
-            shard_limit: 10,
-            ..Default::default()
-        },
-        None,
-    );
+    let store = Store::new(StoreOptions {
+        create_stream_ms: 0,
+        delete_stream_ms: 0,
+        update_stream_ms: 0,
+        shard_limit: 10,
+        ..Default::default()
+    });
     let stream_name = "test-sub-unknown-pos";
 
     // Create stream via action and let it become ACTIVE

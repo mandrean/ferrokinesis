@@ -11,7 +11,7 @@
 //!
 //! #[tokio::main]
 //! async fn main() {
-//!     let (app, _store) = create_app(StoreOptions::default(), None);
+//!     let (app, _store) = create_app(StoreOptions::default());
 //!
 //!     let listener = tokio::net::TcpListener::bind("127.0.0.1:4567").await.unwrap();
 //!     axum::serve(listener, app).await.unwrap();
@@ -76,9 +76,6 @@ use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 /// reaper task is spawned to periodically delete records that have exceeded the
 /// stream's retention period.
 ///
-/// Pass an optional [`capture::CaptureWriter`] to record PutRecord/PutRecords
-/// calls to an NDJSON file.
-///
 /// # Examples
 ///
 /// ```no_run
@@ -86,17 +83,23 @@ use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 ///
 /// #[tokio::main]
 /// async fn main() {
-///     let (app, _store) = create_app(StoreOptions::default(), None);
+///     let (app, _store) = create_app(StoreOptions::default());
 ///
 ///     let listener = tokio::net::TcpListener::bind("127.0.0.1:4567").await.unwrap();
 ///     axum::serve(listener, app).await.unwrap();
 /// }
 /// ```
-pub fn create_app(
+pub fn create_app(options: StoreOptions) -> (Router, Store) {
+    create_app_with_capture(options, None)
+}
+
+/// Like [`create_app`], but accepts an optional [`capture::CaptureWriter`] to record
+/// PutRecord/PutRecords calls to an NDJSON file.
+pub fn create_app_with_capture(
     options: StoreOptions,
     capture: Option<capture::CaptureWriter>,
 ) -> (Router, Store) {
-    let store = Store::new(options.clone(), capture);
+    let store = Store::with_capture(options.clone(), capture);
     let app = Router::new()
         .route("/_health", get(health::health))
         .route("/_health/live", get(health::live))

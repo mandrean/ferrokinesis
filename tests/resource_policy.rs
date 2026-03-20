@@ -218,7 +218,7 @@ async fn resource_policy_full_lifecycle() {
 
 #[tokio::test]
 async fn delete_resource_policy_empty_arn_direct() {
-    let store = Store::new(StoreOptions::default(), None);
+    let store = Store::new(StoreOptions::default());
     let result = ferrokinesis::actions::delete_resource_policy::execute(
         &store,
         json!({ "ResourceARN": "" }),
@@ -231,7 +231,7 @@ async fn delete_resource_policy_empty_arn_direct() {
 
 #[tokio::test]
 async fn get_resource_policy_empty_arn_direct() {
-    let store = Store::new(StoreOptions::default(), None);
+    let store = Store::new(StoreOptions::default());
     let result =
         ferrokinesis::actions::get_resource_policy::execute(&store, json!({ "ResourceARN": "" }))
             .await;
@@ -244,7 +244,7 @@ async fn get_resource_policy_empty_arn_direct() {
 
 #[tokio::test]
 async fn put_resource_policy_empty_arn_direct() {
-    let store = Store::new(StoreOptions::default(), None);
+    let store = Store::new(StoreOptions::default());
     let result = ferrokinesis::actions::put_resource_policy::execute(
         &store,
         json!({ "ResourceARN": "", "Policy": "{}" }),

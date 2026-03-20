@@ -30,7 +30,7 @@ async fn store_get_records_range_direct() {
     use ferrokinesis::store::Store;
     use ferrokinesis::types::StoredRecord;
 
-    let store = Store::new(StoreOptions::default(), None);
+    let store = Store::new(StoreOptions::default());
     store
         .put_record(
             "test-grr",
@@ -58,7 +58,7 @@ async fn store_get_records_range_direct() {
 async fn store_with_streams_write_direct() {
     use ferrokinesis::store::Store;
 
-    let store = Store::new(StoreOptions::default(), None);
+    let store = Store::new(StoreOptions::default());
     let count = store
         .with_streams_write(|streams, _opts, _account, _region| streams.len())
         .await;

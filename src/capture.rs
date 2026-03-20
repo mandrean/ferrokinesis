@@ -60,11 +60,13 @@ impl CaptureWriter {
     /// Failures are logged to stderr and never propagated — capture must not
     /// affect the response path.
     pub fn write_record(&self, record: &CaptureRecord) {
-        let mut record = record.clone();
-        if self.scrub {
-            record.partition_key = scrub_partition_key(&record.partition_key);
-        }
-        let Ok(mut line) = serde_json::to_vec(&record) else {
+        let Ok(mut line) = (if self.scrub {
+            let mut scrubbed = record.clone();
+            scrubbed.partition_key = scrub_partition_key(&scrubbed.partition_key);
+            serde_json::to_vec(&scrubbed)
+        } else {
+            serde_json::to_vec(record)
+        }) else {
             tracing::warn!("capture: failed to serialize record");
             return;
         };
@@ -81,7 +83,7 @@ impl CaptureWriter {
 
 /// Reads an NDJSON capture file into a `Vec<CaptureRecord>`.
 ///
-/// Blank lines and lines that fail to parse are silently skipped.
+/// Blank lines are silently skipped. Malformed lines are logged to stderr and skipped.
 pub fn read_capture_file(path: &Path) -> io::Result<Vec<CaptureRecord>> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
