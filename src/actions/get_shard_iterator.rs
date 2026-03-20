@@ -191,7 +191,8 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                     .and_then(|(key, _)| key.split('/').nth(1).map(|s| s.to_string()));
 
                 let seq = found_seq.unwrap_or_else(|| shard_seq.clone());
-                let result = shard_iterator::create_shard_iterator(stream_name, &shard_id, &seq);
+                let result =
+                    shard_iterator::create_shard_iterator(stream_name, &shard_id, &seq, now);
                 tracing::trace!(stream = %stream_name, shard = %shard_id, iterator_type = %iterator_type_raw, "shard iterator created");
                 return Ok(Some(json!({ "ShardIterator": result })));
             }
@@ -209,7 +210,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         }
     }
 
-    let result = shard_iterator::create_shard_iterator(stream_name, &shard_id, &iterator_seq);
+    let result = shard_iterator::create_shard_iterator(stream_name, &shard_id, &iterator_seq, now);
     tracing::trace!(stream = %stream_name, shard = %shard_id, iterator_type = %iterator_type_raw, "shard iterator created");
     Ok(Some(json!({ "ShardIterator": result })))
 }

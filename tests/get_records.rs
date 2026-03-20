@@ -526,7 +526,7 @@ async fn get_records_shard_out_of_range() {
     server.create_stream(name, 1).await;
 
     let seq = "49590338271490256608559692538361571095921575989136588898";
-    let iter = create_shard_iterator(name, "shardId-000000000099", seq);
+    let iter = create_shard_iterator(name, "shardId-000000000099", seq, 0);
 
     let res = server
         .request("GetRecords", &json!({ "ShardIterator": iter }))
