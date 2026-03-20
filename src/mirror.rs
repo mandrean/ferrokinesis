@@ -8,6 +8,9 @@
 
 use crate::actions::Operation;
 use crate::constants;
+use aws_credential_types::Credentials;
+use aws_credential_types::provider::SharedCredentialsProvider;
+use aws_credential_types::provider::error::CredentialsError;
 use bytes::Bytes;
 use serde_json::Value;
 use std::sync::Arc;
@@ -80,7 +83,8 @@ pub struct Mirror {
     host: String,
     diff: bool,
     client: reqwest::Client,
-    credentials: Option<aws_credential_types::Credentials>,
+    provider: Option<SharedCredentialsProvider>,
+    cached_credentials: tokio::sync::RwLock<Option<Credentials>>,
     region: String,
     semaphore: Arc<Semaphore>,
     retry_config: RetryConfig,
@@ -93,6 +97,8 @@ pub enum SignError {
     Build(aws_sigv4::sign::v4::signing_params::BuildError),
     /// Failed to sign the request.
     Signing(aws_sigv4::http_request::SigningError),
+    /// Failed to resolve credentials from the provider.
+    Credentials(CredentialsError),
 }
 
 impl std::fmt::Display for SignError {
@@ -100,6 +106,7 @@ impl std::fmt::Display for SignError {
         match self {
             Self::Build(e) => write!(f, "failed to build signing params: {e}"),
             Self::Signing(e) => write!(f, "signing failed: {e}"),
+            Self::Credentials(e) => write!(f, "failed to resolve credentials: {e}"),
         }
     }
 }
@@ -109,6 +116,7 @@ impl std::error::Error for SignError {
         match self {
             Self::Build(e) => Some(e),
             Self::Signing(e) => Some(e),
+            Self::Credentials(e) => Some(e),
         }
     }
 }
@@ -125,41 +133,56 @@ impl From<aws_sigv4::http_request::SigningError> for SignError {
     }
 }
 
+impl From<CredentialsError> for SignError {
+    fn from(e: CredentialsError) -> Self {
+        Self::Credentials(e)
+    }
+}
+
 impl Mirror {
     /// Default number of concurrent in-flight mirror requests.
     pub const DEFAULT_CONCURRENCY: usize = 64;
 
-    /// Create a mirror that loads AWS credentials from environment variables.
+    /// Create a mirror using the AWS default credential provider chain.
     ///
-    /// Looks for `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optionally
-    /// `AWS_SESSION_TOKEN`. Logs a warning if credentials are not found.
-    pub fn new(
+    /// Resolves credentials via `aws-config`'s default chain (env vars,
+    /// `~/.aws/credentials`, IMDS, ECS task roles, etc.) with automatic
+    /// refresh on every signing call. Logs a warning if no provider is found.
+    pub async fn new(
         endpoint: &str,
         diff: bool,
         region: &str,
         concurrency: usize,
         retry_config: RetryConfig,
     ) -> Self {
-        let credentials = Self::load_credentials();
-        if credentials.is_none() {
-            tracing::warn!("no AWS credentials found, requests will be forwarded unsigned");
+        let provider = Self::build_credentials_provider().await;
+        if provider.is_none() {
+            tracing::warn!(
+                "no AWS credentials provider found, requests will be forwarded unsigned"
+            );
         }
-        Self::with_credentials(
-            endpoint,
-            diff,
-            region,
-            credentials,
-            concurrency,
-            retry_config,
-        )
+        Self::with_provider(endpoint, diff, region, provider, concurrency, retry_config)
     }
 
-    /// Create a mirror with explicit credentials.
+    /// Create a mirror with explicit static credentials (used in tests).
     pub fn with_credentials(
         endpoint: &str,
         diff: bool,
         region: &str,
-        credentials: Option<aws_credential_types::Credentials>,
+        credentials: Option<Credentials>,
+        concurrency: usize,
+        retry_config: RetryConfig,
+    ) -> Self {
+        let provider = credentials.map(SharedCredentialsProvider::new);
+        Self::with_provider(endpoint, diff, region, provider, concurrency, retry_config)
+    }
+
+    /// Create a mirror with an explicit credentials provider.
+    pub(crate) fn with_provider(
+        endpoint: &str,
+        diff: bool,
+        region: &str,
+        provider: Option<SharedCredentialsProvider>,
         concurrency: usize,
         retry_config: RetryConfig,
     ) -> Self {
@@ -173,29 +196,39 @@ impl Mirror {
                 .timeout(Duration::from_secs(10))
                 .build()
                 .expect("failed to build mirror HTTP client"),
-            credentials,
+            provider,
+            cached_credentials: tokio::sync::RwLock::new(None),
             region: region.to_string(),
             semaphore: Arc::new(Semaphore::new(concurrency)),
             retry_config,
         }
     }
 
-    /// Load AWS credentials from environment variables once at startup.
+    /// Build a credentials provider using the AWS default provider chain.
     ///
-    /// Credentials are captured at construction time and not refreshed. If the
-    /// underlying env vars change (e.g. STS temporary credentials expire), the
-    /// mirror will continue using the original values.
-    fn load_credentials() -> Option<aws_credential_types::Credentials> {
+    /// Covers env vars, `~/.aws/credentials`, IMDS, ECS task roles — all with
+    /// automatic refresh, so STS temporary credentials are never stale.
+    #[cfg(feature = "mirror-aws-config")]
+    async fn build_credentials_provider() -> Option<SharedCredentialsProvider> {
+        let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+            .load()
+            .await;
+        config.credentials_provider()
+    }
+
+    /// Build a credentials provider from environment variables.
+    ///
+    /// Reads `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optionally
+    /// `AWS_SESSION_TOKEN`. Returns `None` if the required variables are unset.
+    #[cfg(not(feature = "mirror-aws-config"))]
+    #[allow(clippy::unused_async)]
+    async fn build_credentials_provider() -> Option<SharedCredentialsProvider> {
         let access_key = std::env::var("AWS_ACCESS_KEY_ID").ok()?;
         let secret_key = std::env::var("AWS_SECRET_ACCESS_KEY").ok()?;
         let session_token = std::env::var("AWS_SESSION_TOKEN").ok();
-        Some(aws_credential_types::Credentials::new(
-            access_key,
-            secret_key,
-            session_token,
-            None,
-            "env",
-        ))
+        let credentials =
+            Credentials::new(access_key, secret_key, session_token, None, "environment");
+        Some(SharedCredentialsProvider::new(credentials))
     }
 
     /// Returns `true` if this operation should be mirrored.
@@ -236,10 +269,14 @@ impl Mirror {
         body: Bytes,
         local_result: MirrorableResponse,
     ) {
-        // Sign headers once before the retry loop.
-        // SigV4 signatures are valid for 5 minutes — retries stay well within that window.
-        let signed_headers = if let Some(ref credentials) = self.credentials {
-            match self.sign_headers(content_type, target, &body, credentials) {
+        // Resolve credentials (cached with expiry-aware refresh) and sign once
+        // before the retry loop. SigV4 signatures are valid for 5 minutes —
+        // retries stay well within that window.
+        let signed_headers = if let Some(ref provider) = self.provider {
+            match self
+                .sign_headers(content_type, target, &body, provider)
+                .await
+            {
                 Ok(headers) => Some(headers),
                 Err(e) => {
                     tracing::error!(error = %e, "signing failed");
@@ -331,19 +368,54 @@ impl Mirror {
         }
     }
 
-    fn sign_headers(
+    /// Resolve credentials, using the cache if they haven't expired yet.
+    /// Refreshes proactively 60 seconds before expiry.
+    async fn resolve_credentials(
+        &self,
+        provider: &SharedCredentialsProvider,
+    ) -> Result<Credentials, CredentialsError> {
+        use aws_credential_types::provider::ProvideCredentials;
+
+        let is_near_expiry = |creds: &Credentials| {
+            creds.expiry().is_some_and(|exp| {
+                exp.duration_since(std::time::SystemTime::now())
+                    .unwrap_or_default()
+                    < std::time::Duration::from_secs(60)
+            })
+        };
+
+        // Fast path: cached credentials still valid
+        if let Some(creds) = self.cached_credentials.read().await.as_ref() {
+            if !is_near_expiry(creds) {
+                return Ok(creds.clone());
+            }
+        }
+
+        // Slow path: re-check under write lock to avoid thundering herd
+        let mut guard = self.cached_credentials.write().await;
+        if let Some(creds) = guard.as_ref() {
+            if !is_near_expiry(creds) {
+                return Ok(creds.clone());
+            }
+        }
+        let creds = provider.provide_credentials().await?;
+        *guard = Some(creds.clone());
+        Ok(creds)
+    }
+
+    async fn sign_headers(
         &self,
         content_type: &str,
         target: &str,
         body: &[u8],
-        credentials: &aws_credential_types::Credentials,
+        provider: &SharedCredentialsProvider,
     ) -> Result<Vec<(String, String)>, SignError> {
         use aws_sigv4::http_request::{SignableBody, SignableRequest, SigningSettings, sign};
         use aws_sigv4::sign::v4;
         use std::time::SystemTime;
 
-        let identity =
-            aws_smithy_runtime_api::client::identity::Identity::from(credentials.clone());
+        let credentials = self.resolve_credentials(provider).await?;
+        let identity = aws_smithy_runtime_api::client::identity::Identity::from(credentials);
 
         let params = v4::SigningParams::builder()
             .identity(&identity)
@@ -610,5 +682,91 @@ mod tests {
         assert_eq!(config.max_retries, 3);
         assert_eq!(config.initial_backoff, Duration::from_millis(100));
         assert_eq!(config.max_backoff, Duration::from_millis(5000));
+    }
+
+    // --- resolve_credentials tests ---
+
+    #[derive(Debug)]
+    struct CountingProvider {
+        counter: std::sync::atomic::AtomicUsize,
+        expiry: Option<std::time::SystemTime>,
+    }
+
+    impl CountingProvider {
+        fn new(expiry: Option<std::time::SystemTime>) -> Self {
+            Self {
+                counter: std::sync::atomic::AtomicUsize::new(0),
+                expiry,
+            }
+        }
+    }
+
+    impl aws_credential_types::provider::ProvideCredentials for CountingProvider {
+        fn provide_credentials<'a>(
+            &'a self,
+        ) -> aws_credential_types::provider::future::ProvideCredentials<'a>
+        where
+            Self: 'a,
+        {
+            let n = self
+                .counter
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            aws_credential_types::provider::future::ProvideCredentials::ready(Ok(Credentials::new(
+                format!("AKID-{n}"),
+                "secret",
+                None,
+                self.expiry,
+                "test",
+            )))
+        }
+    }
+
+    fn test_mirror_with_provider(provider: SharedCredentialsProvider) -> Mirror {
+        Mirror::with_provider(
+            "http://localhost:4567",
+            false,
+            "us-east-1",
+            Some(provider),
+            1,
+            RetryConfig::default(),
+        )
+    }
+
+    #[tokio::test]
+    async fn resolve_credentials_caches_static() {
+        let provider = SharedCredentialsProvider::new(CountingProvider::new(None));
+        let mirror = test_mirror_with_provider(provider.clone());
+
+        let c1 = mirror.resolve_credentials(&provider).await.unwrap();
+        let c2 = mirror.resolve_credentials(&provider).await.unwrap();
+
+        assert_eq!(c1.access_key_id(), "AKID-0");
+        assert_eq!(c2.access_key_id(), "AKID-0");
+    }
+
+    #[tokio::test]
+    async fn resolve_credentials_refreshes_near_expiry() {
+        let expiry = std::time::SystemTime::now() + std::time::Duration::from_secs(30);
+        let provider = SharedCredentialsProvider::new(CountingProvider::new(Some(expiry)));
+        let mirror = test_mirror_with_provider(provider.clone());
+
+        let c1 = mirror.resolve_credentials(&provider).await.unwrap();
+        let c2 = mirror.resolve_credentials(&provider).await.unwrap();
+
+        assert_eq!(c1.access_key_id(), "AKID-0");
+        assert_eq!(c2.access_key_id(), "AKID-1");
+    }
+
+    #[tokio::test]
+    async fn resolve_credentials_uses_cache_when_not_expired() {
+        let expiry = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+        let provider = SharedCredentialsProvider::new(CountingProvider::new(Some(expiry)));
+        let mirror = test_mirror_with_provider(provider.clone());
+
+        let c1 = mirror.resolve_credentials(&provider).await.unwrap();
+        let c2 = mirror.resolve_credentials(&provider).await.unwrap();
+
+        assert_eq!(c1.access_key_id(), "AKID-0");
+        assert_eq!(c2.access_key_id(), "AKID-0");
     }
 }

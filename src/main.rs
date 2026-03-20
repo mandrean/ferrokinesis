@@ -763,7 +763,8 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
                 &aws_region,
                 mirror_concurrency,
                 retry_config,
-            );
+            )
+            .await;
             tracing::info!(
                 endpoint = %endpoint,
                 concurrency = mirror_concurrency,
