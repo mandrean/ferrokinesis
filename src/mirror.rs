@@ -6,6 +6,7 @@
 //! response divergences for differential validation.
 
 use crate::actions::Operation;
+use crate::constants;
 use bytes::Bytes;
 use serde_json::Value;
 use std::sync::Arc;
@@ -250,7 +251,7 @@ impl Mirror {
             serde_json::from_slice(mirror_body).ok()
         };
 
-        let volatile_keys = ["SequenceNumber"];
+        let volatile_keys = [constants::SEQUENCE_NUMBER, constants::ENCRYPTION_TYPE];
         let local_stripped = local.clone().map(|mut v| {
             strip_volatile_keys(&mut v, &volatile_keys);
             v
@@ -354,6 +355,45 @@ mod tests {
                 "Records": [
                     {"Data": "abc"},
                     {"Data": "def"}
+                ]
+            })
+        );
+    }
+
+    #[test]
+    fn strip_volatile_keys_removes_encryption_type() {
+        let mut val = serde_json::json!({
+            "ShardId": "shardId-000000000000",
+            "SequenceNumber": "12345",
+            "EncryptionType": "KMS"
+        });
+        strip_volatile_keys(&mut val, &[constants::SEQUENCE_NUMBER, constants::ENCRYPTION_TYPE]);
+        assert_eq!(
+            val,
+            serde_json::json!({
+                "ShardId": "shardId-000000000000"
+            })
+        );
+    }
+
+    #[test]
+    fn strip_volatile_keys_removes_encryption_type_in_records() {
+        let mut val = serde_json::json!({
+            "FailedRecordCount": 0,
+            "EncryptionType": "KMS",
+            "Records": [
+                {"SequenceNumber": "1", "ShardId": "shardId-000000000000", "EncryptionType": "KMS"},
+                {"SequenceNumber": "2", "ShardId": "shardId-000000000000", "EncryptionType": "KMS"}
+            ]
+        });
+        strip_volatile_keys(&mut val, &[constants::SEQUENCE_NUMBER, constants::ENCRYPTION_TYPE]);
+        assert_eq!(
+            val,
+            serde_json::json!({
+                "FailedRecordCount": 0,
+                "Records": [
+                    {"ShardId": "shardId-000000000000"},
+                    {"ShardId": "shardId-000000000000"}
                 ]
             })
         );
