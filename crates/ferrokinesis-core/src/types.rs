@@ -178,14 +178,9 @@ pub struct Stream {
 }
 
 impl Stream {
-    /// Creates a new `Stream` with all fields specified.
-    ///
-    /// This is the only way to construct a `Stream` from outside the crate
-    /// because the struct is `#[non_exhaustive]`.
-    ///
-    /// Prefer [`StreamBuilder`] for a more ergonomic construction API.
+    /// Internal constructor used by [`StreamBuilder::build()`].
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(crate) fn new(
         retention_period_hours: u32,
         enhanced_monitoring: Vec<EnhancedMonitoring>,
         encryption_type: EncryptionType,

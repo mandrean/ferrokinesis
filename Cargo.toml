@@ -5,6 +5,7 @@ members = [".", "crates/ferrokinesis-core"]
 name = "ferrokinesis"
 version = "0.3.0"
 edition = "2024"
+rust-version = "1.87"
 description = "A local AWS Kinesis mock server for testing, written in Rust"
 license = "MIT"
 

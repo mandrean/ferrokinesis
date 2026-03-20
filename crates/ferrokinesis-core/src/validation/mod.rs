@@ -41,8 +41,8 @@ fn is_regex_match(pattern: &str, s: &str) -> bool {
     {
         let anchored = format!("^{pattern}$");
         regex::Regex::new(&anchored)
-            .map(|re| re.is_match(s))
-            .unwrap_or(false)
+            .unwrap_or_else(|e| panic!("invalid regex pattern '{pattern}': {e}"))
+            .is_match(s)
     }
 }
 
