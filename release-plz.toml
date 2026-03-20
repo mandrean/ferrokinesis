@@ -1,5 +1,4 @@
-[[package]]
-name = "ferrokinesis"
+[workspace]
 # Use simple v{version} tag format instead of the workspace default {crate_name}-v{version}
 # so that the release.yml workflow (which gates on startsWith tag 'v') picks it up correctly.
 tag_name_template = "v{{version}}"
