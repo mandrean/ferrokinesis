@@ -60,34 +60,34 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     }
 
     let alloc = store.allocate_sequence(&stream_name, &hash_key).await?;
-    let (shard_id, seq_num, stream_key, now) =
-        (alloc.shard_id, alloc.seq_num, alloc.stream_key, alloc.now);
 
     let record = StoredRecordRef {
         partition_key,
         data: record_data,
-        approximate_arrival_timestamp: (now / 1000) as f64,
+        approximate_arrival_timestamp: (alloc.now / 1000) as f64,
     };
 
-    store.put_record(&stream_name, &stream_key, &record).await;
+    store
+        .put_record(&stream_name, &alloc.stream_key, &record)
+        .await;
 
     if let Some(ref writer) = store.capture_writer {
         let capture_record = CaptureRecordRef {
             op: CaptureOp::PutRecord,
-            ts: now,
+            ts: alloc.now,
             stream: &stream_name,
             partition_key: Cow::Borrowed(partition_key),
             data: record_data,
             explicit_hash_key,
-            sequence_number: &seq_num,
-            shard_id: &shard_id,
+            sequence_number: &alloc.seq_num,
+            shard_id: &alloc.shard_id,
         };
         writer.write_record(&capture_record);
     }
 
-    tracing::trace!(stream = %stream_name, shard = %shard_id, partition_key, "record put");
+    tracing::trace!(stream = %stream_name, shard = %alloc.shard_id, partition_key, "record put");
     Ok(Some(json!({
-        "ShardId": shard_id,
-        "SequenceNumber": seq_num,
+        "ShardId": alloc.shard_id,
+        "SequenceNumber": alloc.seq_num,
     })))
 }

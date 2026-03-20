@@ -96,8 +96,6 @@ impl Default for StoreOptions {
 struct ShardSeqState {
     /// Atomic counter — `fetch_add(1)` returns the next seq_ix to use.
     counter: AtomicU64,
-    /// Shard creation time in milliseconds (from starting_sequence_number).
-    _create_time_ms: u64,
 }
 
 /// Per-stream entry holding metadata and per-shard sequence state.
@@ -830,19 +828,12 @@ fn build_shard_seq(stream: &Stream) -> Vec<ShardSeqState> {
     stream
         .shards
         .iter()
-        .map(|shard| {
-            let create_time_ms =
-                sequence::parse_sequence(&shard.sequence_number_range.starting_sequence_number)
-                    .map(|s| s.shard_create_time)
-                    .unwrap_or(0);
-            ShardSeqState {
-                // Skip index 0: the shard's starting_sequence_number is generated with
-                // seq_ix=0. If the first PutRecord lands in the same millisecond as shard
-                // creation, seq_time would also match, so seq_ix must be ≥1 to guarantee
-                // every record's sequence number is strictly greater than the starting one.
-                counter: AtomicU64::new(1),
-                _create_time_ms: create_time_ms,
-            }
+        .map(|_| ShardSeqState {
+            // Skip index 0: the shard's starting_sequence_number is generated with
+            // seq_ix=0. If the first PutRecord lands in the same millisecond as shard
+            // creation, seq_time would also match, so seq_ix must be ≥1 to guarantee
+            // every record's sequence number is strictly greater than the starting one.
+            counter: AtomicU64::new(1),
         })
         .collect()
 }
@@ -851,19 +842,12 @@ fn build_shard_seq(stream: &Stream) -> Vec<ShardSeqState> {
 async fn sync_shard_seq(entry: &StreamEntry, stream: &Stream) {
     let mut shard_seq = entry.shard_seq.write().await;
     while shard_seq.len() < stream.shards.len() {
-        let idx = shard_seq.len();
-        let shard = &stream.shards[idx];
-        let create_time_ms =
-            sequence::parse_sequence(&shard.sequence_number_range.starting_sequence_number)
-                .map(|s| s.shard_create_time)
-                .unwrap_or(0);
         shard_seq.push(ShardSeqState {
             // Skip index 0: the shard's starting_sequence_number is generated with
             // seq_ix=0. If the first PutRecord lands in the same millisecond as shard
             // creation, seq_time would also match, so seq_ix must be ≥1 to guarantee
             // every record's sequence number is strictly greater than the starting one.
             counter: AtomicU64::new(1),
-            _create_time_ms: create_time_ms,
         });
     }
 }
