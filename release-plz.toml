@@ -4,3 +4,4 @@ name = "ferrokinesis-core"
 # but no separate GitHub release or git tag (e.g. ferrokinesis-core-v0.x.x)
 git_release_enable = false
 git_tag_enable = false
+changelog_update = false

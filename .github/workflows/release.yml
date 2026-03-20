@@ -85,7 +85,7 @@ jobs:
   upload-assets:
     name: Upload Assets
     needs: build
-    if: github.event_name == 'release' && startsWith(github.event.release.tag_name, 'v')
+    if: startsWith(github.event.release.tag_name, 'v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
