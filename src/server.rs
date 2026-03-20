@@ -390,7 +390,7 @@ pub async fn handler(
             tracing::debug!(parent: &span, "ok");
             let response = match &opt_result {
                 Some(result) => {
-                    send_json_response(response_headers, response_content_type, result, 200)
+                    send_value_response(response_headers, response_content_type, result, 200)
                 }
                 None => {
                     response_headers.insert("Content-Type", response_content_type.parse().unwrap());
@@ -470,13 +470,8 @@ fn send_json_response(
     status_code: u16,
 ) -> Response {
     let body_bytes = if content_type == constants::CONTENT_TYPE_CBOR {
-        // Convert to ciborium::Value so Blob fields (Data) become CBOR byte strings
-        // (major type 2) instead of text strings, matching real AWS Kinesis behavior.
-        let json_val =
-            serde_json::to_value(data).expect("response type must be serializable to JSON");
-        let cbor_val = json_to_cbor_with_blob_bytes(&json_val);
         let mut buf = Vec::new();
-        let _ = ciborium::into_writer(&cbor_val, &mut buf);
+        let _ = ciborium::into_writer(data, &mut buf);
         buf
     } else {
         serde_json::to_vec(data).unwrap_or_default()
@@ -494,6 +489,106 @@ fn send_json_response(
         body_bytes,
     )
         .into_response()
+}
+
+/// Serialize a `serde_json::Value` action-handler result as either JSON or CBOR.
+///
+/// For CBOR, wraps the value in [`BlobAwareValue`] so that "Data" fields are
+/// emitted as CBOR byte strings (major type 2) rather than text strings,
+/// matching real AWS Kinesis CBOR behavior. Avoids the intermediate
+/// `serde_json::to_value` clone and `ciborium::Value` tree of the old path.
+fn send_value_response(
+    mut headers: HeaderMap,
+    content_type: &str,
+    data: &Value,
+    status_code: u16,
+) -> Response {
+    let body_bytes = if content_type == constants::CONTENT_TYPE_CBOR {
+        let mut buf = Vec::new();
+        let _ = ciborium::into_writer(&BlobAwareValue::new(data), &mut buf);
+        buf
+    } else {
+        serde_json::to_vec(data).unwrap_or_default()
+    };
+
+    headers.insert("Content-Type", content_type.parse().unwrap());
+    headers.insert(
+        "Content-Length",
+        body_bytes.len().to_string().parse().unwrap(),
+    );
+
+    (
+        StatusCode::from_u16(status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+        headers,
+        body_bytes,
+    )
+        .into_response()
+}
+
+/// Newtype wrapper around `&serde_json::Value` that serializes "Data" fields as
+/// CBOR byte strings (major type 2) rather than text strings.
+///
+/// Used only in the CBOR response path. When the serializer encounters a key
+/// named `"Data"`, the corresponding base64-encoded string value is decoded
+/// and emitted via `serialize_bytes`, which ciborium maps to CBOR major type 2.
+/// All other values are forwarded to the standard `serde_json::Value` serializer.
+///
+/// This eliminates the need for an intermediate `ciborium::Value` tree when
+/// serializing action-handler responses.
+pub(crate) struct BlobAwareValue<'a> {
+    val: &'a Value,
+    is_blob: bool,
+}
+
+impl<'a> BlobAwareValue<'a> {
+    pub(crate) fn new(val: &'a Value) -> Self {
+        Self {
+            val,
+            is_blob: false,
+        }
+    }
+}
+
+impl Serialize for BlobAwareValue<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self.val {
+            Value::String(st) if self.is_blob => {
+                match base64::engine::general_purpose::STANDARD.decode(st) {
+                    Ok(bytes) => s.serialize_bytes(&bytes),
+                    Err(_) => s.serialize_str(st), // fallback: emit as text
+                }
+            }
+            Value::Object(map) => {
+                use serde::ser::SerializeMap;
+                let mut m = s.serialize_map(Some(map.len()))?;
+                for (k, v) in map {
+                    m.serialize_entry(
+                        k,
+                        &BlobAwareValue {
+                            val: v,
+                            is_blob: k == constants::DATA,
+                        },
+                    )?;
+                }
+                m.end()
+            }
+            Value::Array(arr) => {
+                use serde::ser::SerializeSeq;
+                // Blob fields are always scalar in Kinesis — never arrays.
+                // is_blob is not propagated into array elements.
+                let mut seq = s.serialize_seq(Some(arr.len()))?;
+                for v in arr {
+                    seq.serialize_element(&BlobAwareValue {
+                        val: v,
+                        is_blob: false,
+                    })?;
+                }
+                seq.end()
+            }
+            // Non-blob strings, numbers, bools, nulls — delegate to serde_json::Value.
+            other => other.serialize(s),
+        }
+    }
 }
 
 fn send_xml_error(
@@ -647,66 +742,109 @@ pub fn cbor_to_json(val: &ciborium::Value) -> Value {
     }
 }
 
-/// Keys whose values are Blob fields — base64 strings in JSON that must become
-/// CBOR byte strings (major type 2) in CBOR responses.
-/// Matches at any nesting depth, which is correct for Kinesis where `Data` is
-/// always a blob. Would need path-aware matching if non-blob `Data` fields existed.
-const BLOB_FIELD_KEYS: &[&str] = &["Data"];
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::Engine;
+    use serde_json::json;
 
-/// Convert serde_json::Value to ciborium::Value for CBOR response serialization.
-/// Values under known Blob keys are decoded from base64 and emitted as CBOR byte strings.
-///
-/// Note: `tests/common/mod.rs` has a similar `json_to_cbor_with_bytes` that uses
-/// explicit path-based replacement (e.g. `"Records.*.Data"`) for constructing test
-/// requests. This function uses key-name matching because the server doesn't know
-/// the request path at serialization time.
-pub(crate) fn json_to_cbor_with_blob_bytes(val: &Value) -> ciborium::Value {
-    json_to_cbor_impl(val, false)
-}
+    /// Helper: serialize a BlobAwareValue to CBOR bytes, then decode back to
+    /// ciborium::Value so we can inspect the CBOR structure.
+    fn to_cbor_value(bav: &BlobAwareValue<'_>) -> ciborium::Value {
+        let mut buf = Vec::new();
+        ciborium::into_writer(bav, &mut buf).expect("CBOR serialization failed");
+        ciborium::from_reader(&buf[..]).expect("CBOR deserialization failed")
+    }
 
-fn json_to_cbor_impl(val: &Value, as_bytes: bool) -> ciborium::Value {
-    match val {
-        Value::Null => ciborium::Value::Null,
-        Value::Bool(b) => ciborium::Value::Bool(*b),
-        Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                ciborium::Value::Integer(i.into())
-            } else if let Some(f) = n.as_f64() {
-                // Whole-number floats (e.g. epoch-second timestamps) must be
-                // emitted as CBOR integers to avoid Java SDK parse failures.
-                if crate::types::is_whole_epoch(f) {
-                    #[allow(clippy::cast_possible_truncation)]
-                    return ciborium::Value::Integer((f as i64).into());
+    #[test]
+    fn blob_valid_base64_emits_bytes() {
+        let raw = b"hello world";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(raw);
+        let val = Value::String(b64);
+        let bav = BlobAwareValue {
+            val: &val,
+            is_blob: true,
+        };
+        let cbor = to_cbor_value(&bav);
+        assert_eq!(cbor, ciborium::Value::Bytes(raw.to_vec()));
+    }
+
+    #[test]
+    fn blob_invalid_base64_falls_back_to_text() {
+        let val = Value::String("NOT!VALID!BASE64".to_string());
+        let bav = BlobAwareValue {
+            val: &val,
+            is_blob: true,
+        };
+        let cbor = to_cbor_value(&bav);
+        assert_eq!(cbor, ciborium::Value::Text("NOT!VALID!BASE64".to_string()));
+    }
+
+    #[test]
+    fn non_blob_string_emits_text() {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"bytes");
+        let val = Value::String(b64.clone());
+        let bav = BlobAwareValue {
+            val: &val,
+            is_blob: false,
+        };
+        let cbor = to_cbor_value(&bav);
+        // Even though it's valid base64, is_blob=false → text string
+        assert_eq!(cbor, ciborium::Value::Text(b64));
+    }
+
+    #[test]
+    fn object_with_data_key_decodes_blob() {
+        let raw = b"payload";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(raw);
+        let val = json!({"Data": b64, "PartitionKey": "pk"});
+        let bav = BlobAwareValue::new(&val);
+        let cbor = to_cbor_value(&bav);
+
+        // Data should be CBOR bytes, PartitionKey should be CBOR text
+        if let ciborium::Value::Map(entries) = cbor {
+            for (k, v) in &entries {
+                match k {
+                    ciborium::Value::Text(key) if key == "Data" => {
+                        assert_eq!(v, &ciborium::Value::Bytes(raw.to_vec()));
+                    }
+                    ciborium::Value::Text(key) if key == "PartitionKey" => {
+                        assert_eq!(v, &ciborium::Value::Text("pk".to_string()));
+                    }
+                    _ => panic!("unexpected key: {k:?}"),
                 }
-                ciborium::Value::Float(f)
-            } else {
-                ciborium::Value::Null
             }
+        } else {
+            panic!("expected CBOR map, got {cbor:?}");
         }
-        Value::String(s) => {
-            if as_bytes {
-                // Decode base64 and emit as CBOR byte string
-                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(s) {
-                    return ciborium::Value::Bytes(bytes);
-                }
-            }
-            ciborium::Value::Text(s.clone())
+    }
+
+    #[test]
+    fn array_does_not_propagate_is_blob() {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"data");
+        let val = json!([b64]);
+        let bav = BlobAwareValue {
+            val: &val,
+            is_blob: true, // should not propagate into array elements
+        };
+        let cbor = to_cbor_value(&bav);
+
+        if let ciborium::Value::Array(items) = cbor {
+            // Array element should be text, not bytes
+            assert_eq!(items[0], ciborium::Value::Text(b64));
+        } else {
+            panic!("expected CBOR array");
         }
-        Value::Array(arr) => {
-            // as_bytes is not propagated: Kinesis Blob fields are always scalar strings,
-            // never arrays, so array elements are always emitted as text.
-            ciborium::Value::Array(arr.iter().map(|v| json_to_cbor_impl(v, false)).collect())
-        }
-        Value::Object(map) => ciborium::Value::Map(
-            map.iter()
-                .map(|(k, v)| {
-                    let is_blob = BLOB_FIELD_KEYS.contains(&k.as_str());
-                    (
-                        ciborium::Value::Text(k.clone()),
-                        json_to_cbor_impl(v, is_blob),
-                    )
-                })
-                .collect(),
-        ),
+    }
+
+    #[test]
+    fn blob_empty_base64_emits_empty_bytes() {
+        let val = Value::String(String::new());
+        let bav = BlobAwareValue {
+            val: &val,
+            is_blob: true,
+        };
+        let cbor = to_cbor_value(&bav);
+        assert_eq!(cbor, ciborium::Value::Bytes(vec![]));
     }
 }
