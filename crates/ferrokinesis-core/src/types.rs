@@ -182,6 +182,8 @@ impl Stream {
     ///
     /// This is the only way to construct a `Stream` from outside the crate
     /// because the struct is `#[non_exhaustive]`.
+    ///
+    /// Prefer [`StreamBuilder`] for a more ergonomic construction API.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         retention_period_hours: u32,
@@ -217,6 +219,156 @@ impl Stream {
             warm_throughput_mibps,
             max_record_size_kib,
         }
+    }
+}
+
+/// Ergonomic builder for [`Stream`].
+///
+/// Required parameters are supplied via [`new()`](StreamBuilder::new);
+/// optional fields have sensible defaults matching `CreateStream` behaviour
+/// and can be overridden with setter methods.
+///
+/// # Example
+///
+/// ```
+/// # use ferrokinesis_core::types::*;
+/// let stream = StreamBuilder::new(
+///     "my-stream".into(),
+///     "arn:aws:kinesis:us-east-1:123456789012:stream/my-stream".into(),
+///     StreamStatus::Creating,
+///     1700000000.0,
+///     vec![],
+///     vec![None],
+/// )
+/// .retention_period_hours(48)
+/// .build();
+///
+/// assert_eq!(stream.retention_period_hours, 48);
+/// ```
+pub struct StreamBuilder {
+    stream_name: String,
+    stream_arn: String,
+    stream_status: StreamStatus,
+    stream_creation_timestamp: f64,
+    shards: Vec<Shard>,
+    seq_ix: Vec<Option<u64>>,
+    retention_period_hours: u32,
+    enhanced_monitoring: Vec<EnhancedMonitoring>,
+    encryption_type: EncryptionType,
+    has_more_shards: bool,
+    stream_mode_details: StreamModeDetails,
+    tags: BTreeMap<String, String>,
+    key_id: Option<String>,
+    warm_throughput_mibps: u32,
+    max_record_size_kib: u32,
+}
+
+impl StreamBuilder {
+    /// Create a new builder with all required fields.
+    pub fn new(
+        stream_name: String,
+        stream_arn: String,
+        stream_status: StreamStatus,
+        stream_creation_timestamp: f64,
+        shards: Vec<Shard>,
+        seq_ix: Vec<Option<u64>>,
+    ) -> Self {
+        Self {
+            stream_name,
+            stream_arn,
+            stream_status,
+            stream_creation_timestamp,
+            shards,
+            seq_ix,
+            retention_period_hours: 24,
+            enhanced_monitoring: alloc::vec![EnhancedMonitoring {
+                shard_level_metrics: alloc::vec![],
+            }],
+            encryption_type: EncryptionType::None,
+            has_more_shards: false,
+            stream_mode_details: StreamModeDetails {
+                stream_mode: StreamMode::Provisioned,
+            },
+            tags: BTreeMap::new(),
+            key_id: None,
+            warm_throughput_mibps: 0,
+            max_record_size_kib: 1024,
+        }
+    }
+
+    /// Set the retention period in hours (default: 24).
+    pub fn retention_period_hours(mut self, hours: u32) -> Self {
+        self.retention_period_hours = hours;
+        self
+    }
+
+    /// Set enhanced monitoring configuration.
+    pub fn enhanced_monitoring(mut self, monitoring: Vec<EnhancedMonitoring>) -> Self {
+        self.enhanced_monitoring = monitoring;
+        self
+    }
+
+    /// Set the encryption type (default: `None`).
+    pub fn encryption_type(mut self, encryption_type: EncryptionType) -> Self {
+        self.encryption_type = encryption_type;
+        self
+    }
+
+    /// Set whether the stream has more shards (default: `false`).
+    pub fn has_more_shards(mut self, has_more: bool) -> Self {
+        self.has_more_shards = has_more;
+        self
+    }
+
+    /// Set stream mode details (default: `Provisioned`).
+    pub fn stream_mode_details(mut self, details: StreamModeDetails) -> Self {
+        self.stream_mode_details = details;
+        self
+    }
+
+    /// Set initial tags (default: empty).
+    pub fn tags(mut self, tags: BTreeMap<String, String>) -> Self {
+        self.tags = tags;
+        self
+    }
+
+    /// Set KMS key ID for encryption (default: `None`).
+    pub fn key_id(mut self, key_id: Option<String>) -> Self {
+        self.key_id = key_id;
+        self
+    }
+
+    /// Set warm throughput in MiB/s (default: 0).
+    pub fn warm_throughput_mibps(mut self, mibps: u32) -> Self {
+        self.warm_throughput_mibps = mibps;
+        self
+    }
+
+    /// Set maximum record size in KiB (default: 1024).
+    pub fn max_record_size_kib(mut self, kib: u32) -> Self {
+        self.max_record_size_kib = kib;
+        self
+    }
+
+    /// Consume the builder and produce a [`Stream`].
+    pub fn build(self) -> Stream {
+        Stream::new(
+            self.retention_period_hours,
+            self.enhanced_monitoring,
+            self.encryption_type,
+            self.has_more_shards,
+            self.shards,
+            self.stream_arn,
+            self.stream_name,
+            self.stream_status,
+            self.stream_creation_timestamp,
+            self.stream_mode_details,
+            self.seq_ix,
+            self.tags,
+            self.key_id,
+            self.warm_throughput_mibps,
+            self.max_record_size_kib,
+        )
     }
 }
 

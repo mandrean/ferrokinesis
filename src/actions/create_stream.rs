@@ -7,7 +7,6 @@ use crate::util::current_time_ms;
 use num_bigint::BigUint;
 use num_traits::One;
 use serde_json::Value;
-use std::collections::BTreeMap;
 
 // Backdate the shard creation timestamp by 2 seconds (kinesalite compatibility).
 // This guarantees shard_create_time < now when the first record is written, so
@@ -84,30 +83,18 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         });
     }
 
-    let stream = Stream::new(
-        24, // retention_period_hours
-        vec![EnhancedMonitoring {
-            shard_level_metrics: vec![],
-        }],
-        EncryptionType::None,
-        false,  // has_more_shards
-        vec![], // Start empty while CREATING
+    let stream = StreamBuilder::new(
+        stream_name.to_string(),
         format!(
             "arn:aws:kinesis:{}:{}:stream/{}",
             store.aws_region, store.aws_account_id, stream_name
         ),
-        stream_name.to_string(),
         StreamStatus::Creating,
         (create_time as f64) / 1000.0,
-        StreamModeDetails {
-            stream_mode: StreamMode::Provisioned,
-        },
+        vec![], // Start empty while CREATING
         vec![None; (shard_count as usize).div_ceil(5)],
-        BTreeMap::new(),
-        None, // key_id
-        0,    // warm_throughput_mibps
-        1024, // max_record_size_kib
-    );
+    )
+    .build();
 
     store.put_stream(stream_name, stream).await;
     tracing::info!(stream = stream_name, shards = shard_count, "stream created");
