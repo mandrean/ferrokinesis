@@ -10,7 +10,7 @@
 //! layer and rewraps them as Kinesis-shaped `SerializationException` errors.
 
 use crate::actions::{self, Operation};
-use crate::capture::{CaptureOp, CaptureRecord, CaptureWriter};
+use crate::capture::{CaptureOp, CaptureRecordRef, CaptureWriter};
 use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::store::Store;
@@ -24,6 +24,7 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use serde::Serialize;
 use serde_json::{Value, json};
+use std::borrow::Cow;
 use tracing::Instrument;
 
 /// Axum fallback handler implementing the Kinesis wire protocol.
@@ -365,23 +366,46 @@ pub async fn handler(
         };
     }
 
-    // Extract only the fields needed for capture before dispatch() moves data
+    // Extract only the fields needed for capture before dispatch() moves data.
+    // Uses direct &str extraction (not json!() cloning) to stay on the zero-copy path.
     let capture_ctx = if store.capture_writer.is_some()
         && matches!(operation, Operation::PutRecord | Operation::PutRecords)
     {
         let stream = store.resolve_stream_name(&data).unwrap_or_default();
-        let capture_data = match operation {
-            Operation::PutRecord => json!({
-                constants::PARTITION_KEY: data[constants::PARTITION_KEY],
-                constants::DATA: data[constants::DATA],
-                constants::EXPLICIT_HASH_KEY: data[constants::EXPLICIT_HASH_KEY],
-            }),
-            Operation::PutRecords => json!({
-                constants::RECORDS: data[constants::RECORDS],
-            }),
+        let input = match operation {
+            Operation::PutRecord => CaptureInput::Single {
+                partition_key: data[constants::PARTITION_KEY]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_owned(),
+                data: data[constants::DATA].as_str().unwrap_or("").to_owned(),
+                explicit_hash_key: data[constants::EXPLICIT_HASH_KEY]
+                    .as_str()
+                    .map(str::to_owned),
+            },
+            Operation::PutRecords => {
+                let entries = data[constants::RECORDS]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .map(|r| CaptureInputEntry {
+                                partition_key: r[constants::PARTITION_KEY]
+                                    .as_str()
+                                    .unwrap_or("")
+                                    .to_owned(),
+                                data: r[constants::DATA].as_str().unwrap_or("").to_owned(),
+                                explicit_hash_key: r[constants::EXPLICIT_HASH_KEY]
+                                    .as_str()
+                                    .map(str::to_owned),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                CaptureInput::Batch(entries)
+            }
             _ => unreachable!(),
         };
-        Some((operation, stream, capture_data))
+        Some((operation, stream, input))
     } else {
         None
     };
@@ -573,69 +597,73 @@ fn send_error_response(
     }
 }
 
-/// Construct and write [`CaptureRecord`]s from the request input and dispatch response.
+/// Pre-extracted input fields for capture (avoids cloning entire `Value` trees).
+enum CaptureInput {
+    Single {
+        partition_key: String,
+        data: String,
+        explicit_hash_key: Option<String>,
+    },
+    Batch(Vec<CaptureInputEntry>),
+}
+
+struct CaptureInputEntry {
+    partition_key: String,
+    data: String,
+    explicit_hash_key: Option<String>,
+}
+
+/// Construct and write [`CaptureRecordRef`]s from pre-extracted input and dispatch response.
 fn write_capture_records(
     writer: &CaptureWriter,
     operation: Operation,
     stream: &str,
-    input: &Value,
+    input: &CaptureInput,
     response: &Value,
 ) {
     let ts = current_time_ms();
     match operation {
         Operation::PutRecord => {
-            let record = CaptureRecord {
+            let CaptureInput::Single {
+                partition_key,
+                data,
+                explicit_hash_key,
+            } = input
+            else {
+                return;
+            };
+            let record = CaptureRecordRef {
                 op: CaptureOp::PutRecord,
                 ts,
-                stream: stream.to_string(),
-                partition_key: input[constants::PARTITION_KEY]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string(),
-                data: input[constants::DATA].as_str().unwrap_or("").to_string(),
-                explicit_hash_key: input[constants::EXPLICIT_HASH_KEY]
-                    .as_str()
-                    .map(String::from),
-                sequence_number: response[constants::SEQUENCE_NUMBER]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string(),
-                shard_id: response[constants::SHARD_ID]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string(),
+                stream,
+                partition_key: Cow::Borrowed(partition_key),
+                data,
+                explicit_hash_key: explicit_hash_key.as_deref(),
+                sequence_number: response[constants::SEQUENCE_NUMBER].as_str().unwrap_or(""),
+                shard_id: response[constants::SHARD_ID].as_str().unwrap_or(""),
             };
             writer.write_record(&record);
         }
         Operation::PutRecords => {
-            let Some(input_records) = input[constants::RECORDS].as_array() else {
+            let CaptureInput::Batch(entries) = input else {
                 return;
             };
             let Some(response_records) = response[constants::RECORDS].as_array() else {
                 return;
             };
-            let records: Vec<CaptureRecord> = input_records
+            let records: Vec<CaptureRecordRef<'_>> = entries
                 .iter()
                 .zip(response_records.iter())
-                .filter(|(_, resp)| {
-                    resp.get(constants::ERROR_CODE)
-                        .is_none_or(|v| v.is_null())
-                })
-                .map(|(inp, resp)| CaptureRecord {
+                .filter(|(_, resp)| resp.get(constants::ERROR_CODE).is_none_or(|v| v.is_null()))
+                .map(|(entry, resp)| CaptureRecordRef {
                     op: CaptureOp::PutRecords,
                     ts,
-                    stream: stream.to_string(),
-                    partition_key: inp[constants::PARTITION_KEY]
-                        .as_str()
-                        .unwrap_or("")
-                        .to_string(),
-                    data: inp[constants::DATA].as_str().unwrap_or("").to_string(),
-                    explicit_hash_key: inp[constants::EXPLICIT_HASH_KEY].as_str().map(String::from),
-                    sequence_number: resp[constants::SEQUENCE_NUMBER]
-                        .as_str()
-                        .unwrap_or("")
-                        .to_string(),
-                    shard_id: resp[constants::SHARD_ID].as_str().unwrap_or("").to_string(),
+                    stream,
+                    partition_key: Cow::Borrowed(&entry.partition_key),
+                    data: &entry.data,
+                    explicit_hash_key: entry.explicit_hash_key.as_deref(),
+                    sequence_number: resp[constants::SEQUENCE_NUMBER].as_str().unwrap_or(""),
+                    shard_id: resp[constants::SHARD_ID].as_str().unwrap_or(""),
                 })
                 .collect();
             writer.write_records(&records);
