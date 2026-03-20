@@ -122,6 +122,12 @@ pub async fn execute_streaming(
 
     let now = current_time_ms();
 
+    tracing::info!(
+        shard = %shard_id,
+        ?iterator_type,
+        "subscribe: starting position type"
+    );
+
     let start_seq = match iterator_type {
         ShardIteratorType::TrimHorizon => shard_seq.clone(),
         ShardIteratorType::Latest => {
