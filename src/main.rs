@@ -30,6 +30,7 @@ enum Command {
     HealthCheck(HealthCheckArgs),
 
     /// Replay captured PutRecord data against a running server
+    #[cfg(feature = "replay")]
     Replay(ReplayArgs),
 
     /// Generate a self-signed TLS certificate and key
@@ -103,7 +104,7 @@ struct ServeArgs {
     capture: Option<PathBuf>,
 
     /// Anonymize partition keys in capture output (requires --capture)
-    #[arg(long, requires = "capture")]
+    #[arg(long, requires = "capture", env = "FERROKINESIS_SCRUB")]
     scrub: bool,
 
     /// Path to TLS certificate PEM file (enables HTTPS)
@@ -146,6 +147,7 @@ struct HealthCheckArgs {
     tls: bool,
 }
 
+#[cfg(feature = "replay")]
 #[derive(Args, Debug)]
 struct ReplayArgs {
     /// Path to the NDJSON capture file
@@ -187,6 +189,7 @@ fn main() -> ExitCode {
     match cli.command {
         Some(Command::HealthCheck(args)) => run_health_check(&args),
         Some(Command::Serve(args)) => run_serve(*args),
+        #[cfg(feature = "replay")]
         Some(Command::Replay(args)) => run_replay(args),
         #[cfg(feature = "tls")]
         Some(Command::GenerateCert(args)) => run_generate_cert(&args),
@@ -438,6 +441,7 @@ fn parse_health_response(reader: BufReader<impl std::io::Read>) -> ExitCode {
     }
 }
 
+#[cfg(feature = "replay")]
 #[tokio::main]
 async fn run_replay(args: ReplayArgs) -> ExitCode {
     let speed = parse_replay_speed(&args.replay_speed);
@@ -523,6 +527,7 @@ async fn run_replay(args: ReplayArgs) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+#[cfg(feature = "replay")]
 /// Parse a replay speed string like "1x", "10x", "0.5x", or "max".
 /// Returns `Some(multiplier)` for numeric speeds, `None` for "max".
 fn parse_replay_speed(s: &str) -> Option<f64> {
@@ -630,15 +635,15 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
     let capture_writer = match capture_path {
         Some(ref path) => match ferrokinesis::capture::CaptureWriter::new(path, scrub) {
             Ok(w) => {
-                println!(
-                    "Capture enabled: {}{}",
-                    path.display(),
-                    if scrub { " (scrub)" } else { "" }
+                tracing::info!(
+                    path = %path.display(),
+                    scrub,
+                    "capture enabled",
                 );
                 Some(w)
             }
             Err(e) => {
-                eprintln!("failed to open capture file {}: {e}", path.display());
+                tracing::error!(path = %path.display(), "failed to open capture file: {e}");
                 return ExitCode::FAILURE;
             }
         },

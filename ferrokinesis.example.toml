@@ -59,7 +59,7 @@
 # capture = "/tmp/capture.ndjson"
 
 # Anonymize partition keys in capture output (requires capture)
-# CLI: --scrub
+# CLI: --scrub | Env: FERROKINESIS_SCRUB
 # scrub = false
 
 # TLS certificate and key (requires the "tls" feature)

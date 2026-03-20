@@ -585,11 +585,14 @@ fn write_capture_records(
                 explicit_hash_key: input[constants::EXPLICIT_HASH_KEY]
                     .as_str()
                     .map(String::from),
-                sequence_number: response["SequenceNumber"]
+                sequence_number: response[constants::SEQUENCE_NUMBER]
                     .as_str()
                     .unwrap_or("")
                     .to_string(),
-                shard_id: response["ShardId"].as_str().unwrap_or("").to_string(),
+                shard_id: response[constants::SHARD_ID]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string(),
             };
             writer.write_record(&record);
         }
@@ -597,7 +600,7 @@ fn write_capture_records(
             let Some(input_records) = input[constants::RECORDS].as_array() else {
                 return;
             };
-            let Some(response_records) = response["Records"].as_array() else {
+            let Some(response_records) = response[constants::RECORDS].as_array() else {
                 return;
             };
             for (inp, resp) in input_records.iter().zip(response_records.iter()) {
@@ -605,16 +608,58 @@ fn write_capture_records(
                     op: "PutRecords".to_string(),
                     ts,
                     stream: stream.to_string(),
-                    partition_key: inp["PartitionKey"].as_str().unwrap_or("").to_string(),
-                    data: inp["Data"].as_str().unwrap_or("").to_string(),
-                    explicit_hash_key: inp["ExplicitHashKey"].as_str().map(String::from),
-                    sequence_number: resp["SequenceNumber"].as_str().unwrap_or("").to_string(),
-                    shard_id: resp["ShardId"].as_str().unwrap_or("").to_string(),
+                    partition_key: inp[constants::PARTITION_KEY]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string(),
+                    data: inp[constants::DATA].as_str().unwrap_or("").to_string(),
+                    explicit_hash_key: inp[constants::EXPLICIT_HASH_KEY].as_str().map(String::from),
+                    sequence_number: resp[constants::SEQUENCE_NUMBER]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string(),
+                    shard_id: resp[constants::SHARD_ID].as_str().unwrap_or("").to_string(),
                 };
                 writer.write_record(&record);
             }
         }
-        _ => {}
+        Operation::AddTagsToStream
+        | Operation::CreateStream
+        | Operation::DecreaseStreamRetentionPeriod
+        | Operation::DeleteResourcePolicy
+        | Operation::DeleteStream
+        | Operation::DeregisterStreamConsumer
+        | Operation::DescribeAccountSettings
+        | Operation::DescribeLimits
+        | Operation::DescribeStream
+        | Operation::DescribeStreamConsumer
+        | Operation::DescribeStreamSummary
+        | Operation::DisableEnhancedMonitoring
+        | Operation::EnableEnhancedMonitoring
+        | Operation::GetRecords
+        | Operation::GetResourcePolicy
+        | Operation::GetShardIterator
+        | Operation::IncreaseStreamRetentionPeriod
+        | Operation::ListShards
+        | Operation::ListStreamConsumers
+        | Operation::ListStreams
+        | Operation::ListTagsForResource
+        | Operation::ListTagsForStream
+        | Operation::MergeShards
+        | Operation::PutResourcePolicy
+        | Operation::RegisterStreamConsumer
+        | Operation::RemoveTagsFromStream
+        | Operation::SplitShard
+        | Operation::StartStreamEncryption
+        | Operation::StopStreamEncryption
+        | Operation::SubscribeToShard
+        | Operation::TagResource
+        | Operation::UntagResource
+        | Operation::UpdateAccountSettings
+        | Operation::UpdateMaxRecordSize
+        | Operation::UpdateShardCount
+        | Operation::UpdateStreamMode
+        | Operation::UpdateStreamWarmThroughput => {}
     }
 }
 

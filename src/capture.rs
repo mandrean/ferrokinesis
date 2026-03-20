@@ -65,16 +65,16 @@ impl CaptureWriter {
             record.partition_key = scrub_partition_key(&record.partition_key);
         }
         let Ok(mut line) = serde_json::to_vec(&record) else {
-            eprintln!("capture: failed to serialize record");
+            tracing::warn!("capture: failed to serialize record");
             return;
         };
         line.push(b'\n');
         let Ok(mut writer) = self.inner.lock() else {
-            eprintln!("capture: failed to acquire lock");
+            tracing::error!("capture: failed to acquire lock");
             return;
         };
         if let Err(e) = writer.write_all(&line).and_then(|()| writer.flush()) {
-            eprintln!("capture: write error: {e}");
+            tracing::warn!("capture: write error: {e}");
         }
     }
 }

@@ -22,6 +22,7 @@ required-features = ["loadtest"]
 default = ["access-log"]
 access-log = ["dep:tower-http"]
 loadtest = ["dep:goose"]
+replay = ["dep:reqwest"]
 tls = ["dep:axum-server", "dep:rcgen", "dep:rustls"]
 
 [dependencies]
@@ -43,7 +44,7 @@ postcard = { version = "1", default-features = false, features = ["alloc"] }
 rand = "0.9"
 rcgen = { version = "0.14", optional = true }
 redb = "3.1"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json"], optional = true }
 regex = "1"
 rustls = { version = "0.23", optional = true }
 serde = { version = "1", features = ["derive"] }
@@ -64,6 +65,7 @@ panic = "abort"
 
 [dev-dependencies]
 aes = "0.8"
+reqwest = { version = "0.12", features = ["json"] }
 aws-credential-types = { version = "1", features = ["test-util"] }
 aws-sdk-kinesis = "1"
 base64 = "0.22"
