@@ -1,3 +1,4 @@
+use crate::capture::{CaptureOp, CaptureRecordRef};
 use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::sequence;
@@ -7,6 +8,7 @@ use crate::util::current_time_ms;
 use num_bigint::BigUint;
 use num_traits::{One, Zero};
 use serde_json::{Value, json};
+use std::borrow::Cow;
 
 struct SeqPiece {
     shard_ix: i64,
@@ -14,8 +16,39 @@ struct SeqPiece {
     shard_create_time: u64,
 }
 
+fn is_capture_eligible(resp: &Value) -> bool {
+    resp.get(constants::ERROR_CODE).is_none_or(|v| v.is_null())
+}
+
+fn build_capture_refs<'a>(
+    records: &'a [Value],
+    return_records: &'a [Value],
+    timestamps: &'a [u64],
+    stream: &'a str,
+) -> Vec<CaptureRecordRef<'a>> {
+    records
+        .iter()
+        .zip(return_records.iter())
+        .zip(timestamps.iter())
+        .filter(|((_, resp), _)| is_capture_eligible(resp))
+        .map(|((req, resp), &ts)| CaptureRecordRef {
+            op: CaptureOp::PutRecords,
+            ts,
+            stream,
+            partition_key: Cow::Borrowed(req[constants::PARTITION_KEY].as_str().unwrap_or("")),
+            data: req[constants::DATA].as_str().unwrap_or(""),
+            explicit_hash_key: req[constants::EXPLICIT_HASH_KEY].as_str(),
+            sequence_number: resp[constants::SEQUENCE_NUMBER].as_str().unwrap_or(""),
+            shard_id: resp[constants::SHARD_ID].as_str().unwrap_or(""),
+        })
+        .collect()
+}
+
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_name = store.resolve_stream_name(&data)?;
+    // capture_enabled gates the timestamps allocation inside the update_stream closure;
+    // the actual writer ref is re-checked below (can't borrow it through the closure).
+    let capture_enabled = store.capture_writer.is_some();
 
     let records = data[constants::RECORDS].as_array().ok_or_else(|| {
         KinesisErrorResponse::client_error(constants::SERIALIZATION_EXCEPTION, None)
@@ -76,7 +109,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         hash_keys.push(hash_key);
     }
 
-    let (return_records, batch) = store
+    let (return_records, batch, timestamps) = store
         .update_stream(&stream_name, |stream| {
             if !matches!(
                 stream.stream_status,
@@ -129,6 +162,11 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
             let mut batch_ops: Vec<Option<(String, StoredRecordRef<'_>)>> =
                 (0..records.len()).map(|_| None).collect();
             let mut return_records: Vec<Value> = vec![json!(null); records.len()];
+            let mut timestamps: Vec<u64> = if capture_enabled {
+                vec![0u64; records.len()]
+            } else {
+                Vec::new()
+            };
 
             for shard_ix in 0..stream.shards.len() as i64 {
                 for (i, record) in records.iter().enumerate() {
@@ -178,6 +216,9 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                     let partition_key = record["PartitionKey"].as_str().unwrap_or("");
                     let record_data = record["Data"].as_str().unwrap_or("");
 
+                    if capture_enabled {
+                        timestamps[i] = now;
+                    }
                     batch_ops[i] = Some((
                         stream_key,
                         StoredRecordRef {
@@ -196,15 +237,134 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
 
             let batch: Vec<(String, StoredRecordRef<'_>)> =
                 batch_ops.into_iter().flatten().collect();
-            Ok((return_records, batch))
+            Ok((return_records, batch, timestamps))
         })
         .await?;
 
     store.put_records_batch(&stream_name, &batch).await;
 
+    if let Some(ref writer) = store.capture_writer {
+        let capture_refs = build_capture_refs(records, &return_records, &timestamps, &stream_name);
+        writer.write_records(&capture_refs);
+    }
+
     tracing::trace!(stream = %stream_name, records = batch.len(), "records put");
+    // NOTE: The emulator never partially fails individual records within a batch,
+    // so FailedRecordCount is always 0. Real Kinesis can return non-zero here
+    // when per-shard throughput limits are hit.
     Ok(Some(json!({
         "FailedRecordCount": 0,
         "Records": return_records,
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::capture::{CaptureOp, CaptureWriter, read_capture_file};
+    use serde_json::json;
+    use tempfile::NamedTempFile;
+
+    /// Verifies that the PutRecords capture path filters out entries whose
+    /// response contains a non-null `ErrorCode`, while keeping entries with
+    /// no `ErrorCode` or a null one.
+    #[test]
+    fn build_capture_refs_filters_failed_entries() {
+        let capture_file = NamedTempFile::new().unwrap();
+        let writer = CaptureWriter::new(capture_file.path(), false).unwrap();
+
+        let stream_name = "test-stream";
+        let ts = 1_234_567_890u64;
+
+        let records: Vec<Value> = vec![
+            json!({
+                constants::PARTITION_KEY: "ok-key",
+                constants::DATA: "b2s=",
+            }),
+            json!({
+                constants::PARTITION_KEY: "fail-key",
+                constants::DATA: "ZmFpbA==",
+            }),
+            json!({
+                constants::PARTITION_KEY: "null-err-key",
+                constants::DATA: "bnVsbA==",
+            }),
+        ];
+
+        let return_records: Vec<Value> = vec![
+            json!({
+                "SequenceNumber": "seq-1",
+                "ShardId": "shardId-000000000000"
+            }),
+            json!({
+                "ErrorCode": "ProvisionedThroughputExceededException",
+                "ErrorMessage": "Rate exceeded for shard"
+            }),
+            json!({
+                "SequenceNumber": "seq-3",
+                "ShardId": "shardId-000000000000",
+                "ErrorCode": null
+            }),
+        ];
+
+        let timestamps = vec![ts; records.len()];
+        let capture_refs = build_capture_refs(&records, &return_records, &timestamps, stream_name);
+        writer.write_records(&capture_refs);
+
+        let captured = read_capture_file(capture_file.path()).unwrap();
+        // Only the first and third records should be captured
+        assert_eq!(captured.len(), 2);
+
+        assert_eq!(captured[0].op, CaptureOp::PutRecords);
+        assert_eq!(captured[0].partition_key, "ok-key");
+        assert_eq!(captured[0].data, "b2s=");
+        assert_eq!(captured[0].sequence_number, "seq-1");
+        assert_eq!(captured[0].shard_id, "shardId-000000000000");
+
+        assert_eq!(captured[1].op, CaptureOp::PutRecords);
+        assert_eq!(captured[1].partition_key, "null-err-key");
+        assert_eq!(captured[1].data, "bnVsbA==");
+        assert_eq!(captured[1].sequence_number, "seq-3");
+        assert_eq!(captured[1].shard_id, "shardId-000000000000");
+    }
+
+    /// Verifies that when ALL records in a PutRecords batch fail, no capture
+    /// records are written.
+    #[test]
+    fn build_capture_refs_all_failed_writes_nothing() {
+        let capture_file = NamedTempFile::new().unwrap();
+        let writer = CaptureWriter::new(capture_file.path(), false).unwrap();
+
+        let stream_name = "test-stream";
+        let ts = 1_234_567_890u64;
+
+        let records: Vec<Value> = vec![
+            json!({
+                constants::PARTITION_KEY: "k1",
+                constants::DATA: "YQ==",
+            }),
+            json!({
+                constants::PARTITION_KEY: "k2",
+                constants::DATA: "Yg==",
+            }),
+        ];
+
+        let return_records: Vec<Value> = vec![
+            json!({
+                "ErrorCode": "InternalFailure",
+                "ErrorMessage": "Internal error"
+            }),
+            json!({
+                "ErrorCode": "ProvisionedThroughputExceededException",
+                "ErrorMessage": "Rate exceeded"
+            }),
+        ];
+
+        let timestamps = vec![ts; records.len()];
+        let capture_refs = build_capture_refs(&records, &return_records, &timestamps, stream_name);
+        writer.write_records(&capture_refs);
+
+        let captured = read_capture_file(capture_file.path()).unwrap();
+        assert_eq!(captured.len(), 0);
+    }
 }
