@@ -312,56 +312,6 @@ impl Store {
         Ok(result)
     }
 
-    /// Executes a closure with write access to all streams simultaneously.
-    ///
-    /// The closure receives a mutable `BTreeMap` of all streams, the current
-    /// `StoreOptions`, the account ID, and the region. All changes to the map
-    /// are written back atomically when the closure returns.
-    pub async fn with_streams_write<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&mut BTreeMap<String, Stream>, &StoreOptions, &str, &str) -> R,
-    {
-        // Snapshot all streams.
-        let mut snapshot: BTreeMap<String, Stream> = BTreeMap::new();
-        for entry in self.inner.streams.iter() {
-            let stream = entry.value().stream.read().await.clone();
-            snapshot.insert(entry.key().clone(), stream);
-        }
-
-        let result = f(
-            &mut snapshot,
-            &self.options,
-            &self.aws_account_id,
-            &self.aws_region,
-        );
-
-        // Apply deletions.
-        let existing_keys: Vec<String> =
-            self.inner.streams.iter().map(|e| e.key().clone()).collect();
-        for key in &existing_keys {
-            if !snapshot.contains_key(key) {
-                self.inner.streams.remove(key);
-            }
-        }
-
-        // Apply updates and inserts.
-        for (name, stream) in snapshot {
-            if let Some(entry) = self.inner.streams.get(&name) {
-                let mut guard = entry.stream.write().await;
-                *guard = stream;
-            } else {
-                let shard_seq = build_shard_seq(&stream);
-                let entry = Arc::new(StreamEntry {
-                    stream: RwLock::new(stream),
-                    shard_seq: RwLock::new(shard_seq),
-                });
-                self.inner.streams.insert(name, entry);
-            }
-        }
-
-        result
-    }
-
     /// Returns the total number of open (non-closed) shards across all streams.
     pub async fn sum_open_shards(&self) -> u32 {
         let mut sum = 0u32;
