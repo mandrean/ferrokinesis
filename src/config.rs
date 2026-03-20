@@ -120,6 +120,16 @@ pub fn load_config(path: &Path) -> Result<FileConfig, ConfigError> {
             message: format!("retention_check_interval_secs must be between 0 and 86400, got {v}"),
         });
     }
+    if let Some(ref level) = config.log_level
+        && !["off", "error", "warn", "info", "debug", "trace"].contains(&level.as_str())
+    {
+        return Err(ConfigError::Validation {
+            path: path.display().to_string(),
+            message: format!(
+                "log_level must be one of: off, error, warn, info, debug, trace — got \"{level}\""
+            ),
+        });
+    }
     #[cfg(feature = "tls")]
     match (&config.tls_cert, &config.tls_key) {
         (Some(_), None) | (None, Some(_)) => {

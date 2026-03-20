@@ -24,7 +24,7 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Start the mock Kinesis server (default when no subcommand is given)
-    Serve(ServeArgs),
+    Serve(Box<ServeArgs>),
 
     /// Run a health check against a running server (for Docker HEALTHCHECK)
     HealthCheck(HealthCheckArgs),
@@ -85,11 +85,13 @@ struct ServeArgs {
     retention_check_interval_secs: Option<u64>,
 
     /// Log level (off, error, warn, info, debug, trace)
-    #[arg(long, env = "FERROKINESIS_LOG_LEVEL")]
+    #[arg(long, env = "FERROKINESIS_LOG_LEVEL",
+          value_parser = ["off", "error", "warn", "info", "debug", "trace"])]
     log_level: Option<String>,
 
     /// Enable per-request access logging
-    #[arg(long, env = "FERROKINESIS_ACCESS_LOG")]
+    #[arg(long, env = "FERROKINESIS_ACCESS_LOG",
+          default_missing_value = "true", num_args = 0..=1)]
     access_log: Option<bool>,
 
     /// Path to TLS certificate PEM file (enables HTTPS)
@@ -153,7 +155,7 @@ fn main() -> ExitCode {
 
     match cli.command {
         Some(Command::HealthCheck(args)) => run_health_check(&args),
-        Some(Command::Serve(args)) => run_serve(args),
+        Some(Command::Serve(args)) => run_serve(*args),
         #[cfg(feature = "tls")]
         Some(Command::GenerateCert(args)) => run_generate_cert(&args),
         None => run_serve(cli.serve_args),
@@ -436,24 +438,24 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
 
     let defaults = StoreOptions::default();
     let port = resolve(args.port, file_cfg.port, || 4567);
-    let max_request_body_mb =
-        resolve(args.max_request_body_mb, file_cfg.max_request_body_mb, || 7);
+    let max_request_body_mb = resolve(args.max_request_body_mb, file_cfg.max_request_body_mb, || 7);
     let log_level: String = resolve(args.log_level, file_cfg.log_level, || "info".into());
     let access_log = resolve(args.access_log, file_cfg.access_log, || false);
 
     // Initialize tracing subscriber.
     // RUST_LOG takes precedence when set; otherwise use the resolved log_level.
-    let env_filter = if std::env::var("RUST_LOG").is_ok() {
+    let mut env_filter = if std::env::var("RUST_LOG").is_ok() {
         tracing_subscriber::EnvFilter::from_default_env()
     } else {
-        let mut filter = tracing_subscriber::EnvFilter::new(&log_level);
-        if access_log {
-            filter = filter.add_directive("tower_http::trace=info".parse().unwrap());
-        } else {
-            filter = filter.add_directive("tower_http::trace=off".parse().unwrap());
-        }
-        filter
+        tracing_subscriber::EnvFilter::new(&log_level)
     };
+    // Always apply access-log directive, regardless of RUST_LOG.
+    // Later add_directive calls override earlier ones for the same target.
+    if access_log {
+        env_filter = env_filter.add_directive("tower_http::trace=info".parse().unwrap());
+    } else {
+        env_filter = env_filter.add_directive("tower_http::trace=off".parse().unwrap());
+    }
 
     tracing_subscriber::fmt()
         .with_env_filter(env_filter)

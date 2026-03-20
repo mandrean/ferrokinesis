@@ -23,6 +23,7 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use serde::Serialize;
 use serde_json::{Value, json};
+use tracing::Instrument;
 
 /// Axum fallback handler implementing the Kinesis wire protocol.
 ///
@@ -345,20 +346,34 @@ pub async fn handler(
 
     // Handle SubscribeToShard separately (streaming response)
     if operation == Operation::SubscribeToShard {
-        return match actions::subscribe_to_shard::execute_streaming(&store, data).await {
+        return match actions::subscribe_to_shard::execute_streaming(&store, data)
+            .instrument(span.clone())
+            .await
+        {
             Ok(body) => {
+                tracing::debug!(parent: &span, "ok");
                 response_headers.insert(
                     "Content-Type",
                     "application/vnd.amazon.eventstream".parse().unwrap(),
                 );
                 (StatusCode::OK, response_headers, body).into_response()
             }
-            Err(err) => send_kinesis_error(&response_headers, response_content_type, &err),
+            Err(ref err) if err.status_code >= 500 => {
+                tracing::error!(parent: &span, error_type = %err.body.error_type, "server error");
+                send_kinesis_error(&response_headers, response_content_type, err)
+            }
+            Err(ref err) => {
+                tracing::info!(parent: &span, error_type = %err.body.error_type, "client error");
+                send_kinesis_error(&response_headers, response_content_type, err)
+            }
         };
     }
 
     // Execute action
-    match actions::dispatch(&store, operation, data).await {
+    match actions::dispatch(&store, operation, data)
+        .instrument(span.clone())
+        .await
+    {
         Ok(Some(result)) => {
             tracing::debug!(parent: &span, "ok");
             send_json_response(response_headers, response_content_type, &result, 200)
@@ -374,7 +389,7 @@ pub async fn handler(
             send_kinesis_error(&response_headers, response_content_type, err)
         }
         Err(ref err) => {
-            tracing::warn!(parent: &span, error_type = %err.body.error_type, "client error");
+            tracing::info!(parent: &span, error_type = %err.body.error_type, "client error");
             send_kinesis_error(&response_headers, response_content_type, err)
         }
     }
