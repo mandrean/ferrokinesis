@@ -110,6 +110,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     };
 
     store.put_stream(stream_name, stream).await;
+    tracing::info!(stream = stream_name, shards = shard_count, "stream created");
 
     // Transition to ACTIVE after delay
     let store_clone = store.clone();

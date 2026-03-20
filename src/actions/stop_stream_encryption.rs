@@ -41,6 +41,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
             Ok(())
         })
         .await?;
+    tracing::info!(stream = stream_name, "encryption stopped");
 
     let store_clone = store.clone();
     let name = stream_name.to_string();
