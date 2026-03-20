@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "Core protocol logic for the ferrokinesis AWS Kinesis emulator"
 license = "MIT"
+rust-version = "1.87"
 
 [features]
 default = ["std"]

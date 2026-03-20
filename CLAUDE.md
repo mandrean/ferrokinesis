@@ -22,14 +22,15 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
 - Return `Ok(None)` for empty 200, `Ok(Some(json!({...})))` for response bodies
 - Errors via `KinesisErrorResponse::client_error(constants::ERROR_TYPE, Some("message"))`
 
-## Adding a new operation (four-site checklist)
+## Adding a new operation (five-site checklist)
 
 The compiler enforces exhaustive matches — **never use wildcard `_` arms in `Operation` match blocks**:
 
-1. `Operation` enum variant in `src/actions/mod.rs`
-2. `FromStr` mapping in `src/actions/mod.rs`
-3. `dispatch()` arm in `src/actions/mod.rs`
-4. Validation rules in `src/validation/rules.rs` + `get_validation_rules()` arm in `src/server.rs`
+1. `Operation` enum variant in `crates/ferrokinesis-core/src/operation.rs`
+2. `FromStr` mapping in `crates/ferrokinesis-core/src/operation.rs`
+3. `Operation::validation_rules()` arm in `crates/ferrokinesis-core/src/operation.rs`
+4. Validation rule function in `crates/ferrokinesis-core/src/validation/rules.rs`
+5. `dispatch()` arm in `src/actions/mod.rs`
 
 ## Constants discipline
 

@@ -160,14 +160,19 @@ pub struct Stream {
 
     // Hidden fields (not returned in API responses)
     #[serde(skip)]
+    #[doc(hidden)]
     pub seq_ix: Vec<Option<u64>>,
     #[serde(skip)]
+    #[doc(hidden)]
     pub tags: BTreeMap<String, String>,
     #[serde(skip)]
+    #[doc(hidden)]
     pub key_id: Option<String>,
     #[serde(skip)]
+    #[doc(hidden)]
     pub warm_throughput_mibps: u32,
     #[serde(skip)]
+    #[doc(hidden)]
     pub max_record_size_kib: u32,
 }
 

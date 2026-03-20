@@ -1136,7 +1136,6 @@ dependencies = [
  "criterion",
  "ferrokinesis-core",
  "goose",
- "md-5",
  "num-bigint",
  "num-traits",
  "postcard",
