@@ -133,6 +133,7 @@ pub struct StreamModeDetails {
 ///
 /// This is the primary type stored in the store and returned
 /// in `DescribeStream` / `DescribeStreamSummary` responses.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct Stream {
@@ -174,6 +175,49 @@ pub struct Stream {
     #[serde(skip)]
     #[doc(hidden)]
     pub max_record_size_kib: u32,
+}
+
+impl Stream {
+    /// Creates a new `Stream` with all fields specified.
+    ///
+    /// This is the only way to construct a `Stream` from outside the crate
+    /// because the struct is `#[non_exhaustive]`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        retention_period_hours: u32,
+        enhanced_monitoring: Vec<EnhancedMonitoring>,
+        encryption_type: EncryptionType,
+        has_more_shards: bool,
+        shards: Vec<Shard>,
+        stream_arn: String,
+        stream_name: String,
+        stream_status: StreamStatus,
+        stream_creation_timestamp: f64,
+        stream_mode_details: StreamModeDetails,
+        seq_ix: Vec<Option<u64>>,
+        tags: BTreeMap<String, String>,
+        key_id: Option<String>,
+        warm_throughput_mibps: u32,
+        max_record_size_kib: u32,
+    ) -> Self {
+        Self {
+            retention_period_hours,
+            enhanced_monitoring,
+            encryption_type,
+            has_more_shards,
+            shards,
+            stream_arn,
+            stream_name,
+            stream_status,
+            stream_creation_timestamp,
+            stream_mode_details,
+            seq_ix,
+            tags,
+            key_id,
+            warm_throughput_mibps,
+            max_record_size_kib,
+        }
+    }
 }
 
 /// Shard-level CloudWatch metric configuration for a stream.

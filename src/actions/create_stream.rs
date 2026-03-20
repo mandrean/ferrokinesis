@@ -84,30 +84,30 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         });
     }
 
-    let stream = Stream {
-        retention_period_hours: 24,
-        enhanced_monitoring: vec![EnhancedMonitoring {
+    let stream = Stream::new(
+        24, // retention_period_hours
+        vec![EnhancedMonitoring {
             shard_level_metrics: vec![],
         }],
-        encryption_type: EncryptionType::None,
-        has_more_shards: false,
-        shards: vec![], // Start empty while CREATING
-        stream_arn: format!(
+        EncryptionType::None,
+        false,  // has_more_shards
+        vec![], // Start empty while CREATING
+        format!(
             "arn:aws:kinesis:{}:{}:stream/{}",
             store.aws_region, store.aws_account_id, stream_name
         ),
-        stream_name: stream_name.to_string(),
-        stream_status: StreamStatus::Creating,
-        stream_creation_timestamp: (create_time as f64) / 1000.0,
-        stream_mode_details: StreamModeDetails {
+        stream_name.to_string(),
+        StreamStatus::Creating,
+        (create_time as f64) / 1000.0,
+        StreamModeDetails {
             stream_mode: StreamMode::Provisioned,
         },
-        seq_ix: vec![None; (shard_count as usize).div_ceil(5)],
-        tags: BTreeMap::new(),
-        key_id: None,
-        warm_throughput_mibps: 0,
-        max_record_size_kib: 1024,
-    };
+        vec![None; (shard_count as usize).div_ceil(5)],
+        BTreeMap::new(),
+        None, // key_id
+        0,    // warm_throughput_mibps
+        1024, // max_record_size_kib
+    );
 
     store.put_stream(stream_name, stream).await;
     tracing::info!(stream = stream_name, shards = shard_count, "stream created");
