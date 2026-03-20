@@ -90,7 +90,7 @@ jobs:
           ./ferrokinesis \
             --create-stream-ms 0 \
             --delete-stream-ms 0 \
-            --update-stream-ms 0 > /tmp/ferrokinesis.log 2>&1 &
+            --update-stream-ms 0 &
 
       - name: Wait for server
         run: bash tests/conformance/wait-for-server.sh
@@ -153,10 +153,6 @@ jobs:
       - name: Stop DynamoDB Local
         if: always() && matrix.needs_dynamodb
         run: docker rm -f dynamodb-local || true
-
-      - name: Server logs
-        if: always()
-        run: cat /tmp/ferrokinesis.log || true
 
       - name: Stop server
         if: always()

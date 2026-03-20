@@ -25,6 +25,8 @@ import software.amazon.awssdk.services.kinesis.model.DescribeStreamSummaryRespon
 import software.amazon.awssdk.services.kinesis.model.PutRecordRequest;
 import software.amazon.awssdk.services.kinesis.model.StreamStatus;
 import software.amazon.kinesis.common.ConfigsBuilder;
+import software.amazon.kinesis.common.InitialPositionInStream;
+import software.amazon.kinesis.common.InitialPositionInStreamExtended;
 import software.amazon.kinesis.coordinator.CoordinatorConfig.ClientVersionConfig;
 import software.amazon.kinesis.coordinator.Scheduler;
 import software.amazon.kinesis.metrics.MetricsLevel;
@@ -138,10 +140,9 @@ public class KclV2IntegrationTest {
 
         String workerId = "worker-" + UUID.randomUUID();
 
-        // ConfigsBuilder defaults to TRIM_HORIZON for a new application name with no existing
-        // checkpoint in DynamoDB. Since this stream and application name are freshly created,
-        // TRIM_HORIZON guarantees all records put in test 1 are visible from the start.
-        // ConfigsBuilder is the unified KCL 3.x configuration entry point.
+        // KCL defaults to LATEST for new applications. We must explicitly set TRIM_HORIZON
+        // so the subscriber starts from the beginning of the stream and picks up all records
+        // put in test 1.
         ConfigsBuilder configsBuilder = new ConfigsBuilder(
                 STREAM_NAME,
                 APPLICATION_NAME,
@@ -178,6 +179,9 @@ public class KclV2IntegrationTest {
                         .metricsLevel(MetricsLevel.NONE),
                 configsBuilder.processorConfig(),
                 configsBuilder.retrievalConfig()
+                        .initialPositionInStreamExtended(
+                                InitialPositionInStreamExtended.newInitialPosition(
+                                        InitialPositionInStream.TRIM_HORIZON))
                         .retrievalSpecificConfig(fanOutConfig)
         );
 

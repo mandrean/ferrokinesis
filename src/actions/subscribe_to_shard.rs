@@ -122,10 +122,10 @@ pub async fn execute_streaming(
 
     let now = current_time_ms();
 
-    tracing::info!(
+    tracing::debug!(
         shard = %shard_id,
         ?iterator_type,
-        "subscribe: starting position type"
+        "subscribe: starting position"
     );
 
     let start_seq = match iterator_type {
@@ -193,10 +193,7 @@ pub async fn execute_streaming(
     let stream = async_stream::stream! {
         let mut current_seq = start_seq;
         let start_time = current_time_ms();
-        let mut event_count: u64 = 0;
-
         // Send initial response frame
-        tracing::info!(shard = %shard_id, "subscribe: initial-response sent");
         yield Ok::<Bytes, std::io::Error>(Bytes::from(event_stream::encode_initial_response()));
 
         loop {
@@ -204,17 +201,13 @@ pub async fn execute_streaming(
 
             // Check 5-minute timeout
             if now - start_time >= MAX_SUBSCRIPTION_MS {
-                tracing::info!(shard = %shard_id, events = event_count, "subscribe: 5-min timeout");
                 break;
             }
 
             // Fetch records from current position
             let stream_data = match store.get_stream(&stream_name).await {
                 Ok(s) => s,
-                Err(e) => {
-                    tracing::info!(shard = %shard_id, error = %e, "subscribe: stream lookup failed, ending");
-                    break;
-                }
+                Err(_) => break,
             };
 
             let cutoff_time = now - (stream_data.retention_period_hours as u64 * 60 * 60 * 1000);
@@ -225,25 +218,6 @@ pub async fn execute_streaming(
                 .get_records_range_limited(&stream_name, &range_start, &range_end, SUBSCRIBE_EVENT_RECORD_LIMIT)
                 .await;
 
-            if event_count == 0 {
-                // Broad query: any records in this shard (no sequence filter)?
-                let broad_start = format!("{}/", sequence::shard_ix_to_hex(shard_ix));
-                let broad_end = sequence::shard_ix_to_hex(shard_ix + 1);
-                let broad_count = store
-                    .get_records_range_limited(&stream_name, &broad_start, &broad_end, 5)
-                    .await;
-                let first_key = broad_count.first().map(|(k, _)| k.as_str()).unwrap_or("(none)");
-                tracing::info!(
-                    shard = %shard_id,
-                    stream = %stream_name,
-                    %range_start,
-                    %range_end,
-                    raw_count = range_records.len(),
-                    broad_count = broad_count.len(),
-                    %first_key,
-                    "subscribe: first range query"
-                );
-            }
 
             let mut records: Vec<ResponseRecord<'_>> = Vec::with_capacity(range_records.len());
             let mut last_seq_num: Option<&str> = None;
@@ -316,15 +290,6 @@ pub async fn execute_streaming(
             } else {
                 (serde_json::to_vec(&event).unwrap(), "application/json")
             };
-            event_count += 1;
-            if event_count <= 3 || !records.is_empty() {
-                tracing::info!(
-                    shard = %shard_id,
-                    event = event_count,
-                    records = records.len(),
-                    "subscribe: yielding event"
-                );
-            }
             yield Ok(Bytes::from(event_stream::encode_subscribe_event(&payload, event_content_type)));
 
             // Update position for next poll
@@ -332,7 +297,6 @@ pub async fn execute_streaming(
 
             // If shard is closed and we've consumed everything, stop
             if shard_closed && records.is_empty() {
-                tracing::info!(shard = %shard_id, events = event_count, "subscribe: shard closed, ending");
                 break;
             }
 
