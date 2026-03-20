@@ -80,7 +80,8 @@ pub struct Mirror {
     host: String,
     diff: bool,
     client: reqwest::Client,
-    credentials: Option<aws_credential_types::provider::SharedCredentialsProvider>,
+    provider: Option<aws_credential_types::provider::SharedCredentialsProvider>,
+    cached_credentials: tokio::sync::RwLock<Option<aws_credential_types::Credentials>>,
     region: String,
     semaphore: Arc<Semaphore>,
     retry_config: RetryConfig,
@@ -151,20 +152,13 @@ impl Mirror {
         concurrency: usize,
         retry_config: RetryConfig,
     ) -> Self {
-        let credentials = Self::build_credentials_provider().await;
-        if credentials.is_none() {
+        let provider = Self::build_credentials_provider().await;
+        if provider.is_none() {
             tracing::warn!(
                 "no AWS credentials provider found, requests will be forwarded unsigned"
             );
         }
-        Self::with_provider(
-            endpoint,
-            diff,
-            region,
-            credentials,
-            concurrency,
-            retry_config,
-        )
+        Self::with_provider(endpoint, diff, region, provider, concurrency, retry_config)
     }
 
     /// Create a mirror with explicit static credentials (used in tests).
@@ -200,7 +194,8 @@ impl Mirror {
                 .timeout(Duration::from_secs(10))
                 .build()
                 .expect("failed to build mirror HTTP client"),
-            credentials: provider,
+            provider,
+            cached_credentials: tokio::sync::RwLock::new(None),
             region: region.to_string(),
             semaphore: Arc::new(Semaphore::new(concurrency)),
             retry_config,
@@ -257,10 +252,10 @@ impl Mirror {
         body: Bytes,
         local_result: MirrorableResponse,
     ) {
-        // Resolve fresh credentials and sign once before the retry loop.
-        // SigV4 signatures are valid for 5 minutes — retries stay well within that window.
-        // Re-resolving on each signing call ensures STS tokens are never stale.
-        let signed_headers = if let Some(ref provider) = self.credentials {
+        // Resolve credentials (cached with expiry-aware refresh) and sign once
+        // before the retry loop. SigV4 signatures are valid for 5 minutes —
+        // retries stay well within that window.
+        let signed_headers = if let Some(ref provider) = self.provider {
             match self
                 .sign_headers(content_type, target, &body, provider)
                 .await
@@ -356,6 +351,35 @@ impl Mirror {
         }
     }
 
+    /// Resolve credentials, using the cache if they haven't expired yet.
+    /// Refreshes proactively 60 seconds before expiry.
+    async fn resolve_credentials(
+        &self,
+        provider: &aws_credential_types::provider::SharedCredentialsProvider,
+    ) -> Result<
+        aws_credential_types::Credentials,
+        aws_credential_types::provider::error::CredentialsError,
+    > {
+        use aws_credential_types::provider::ProvideCredentials;
+
+        // Fast path: cached credentials still valid
+        if let Some(creds) = self.cached_credentials.read().await.as_ref() {
+            let near_expiry = creds.expiry().is_some_and(|exp| {
+                exp.duration_since(std::time::SystemTime::now())
+                    .unwrap_or_default()
+                    < std::time::Duration::from_secs(60)
+            });
+            if !near_expiry {
+                return Ok(creds.clone());
+            }
+        }
+
+        // Slow path: resolve fresh credentials from the provider chain
+        let creds = provider.provide_credentials().await?;
+        *self.cached_credentials.write().await = Some(creds.clone());
+        Ok(creds)
+    }
+
     async fn sign_headers(
         &self,
         content_type: &str,
@@ -363,12 +387,11 @@ impl Mirror {
         body: &[u8],
         provider: &aws_credential_types::provider::SharedCredentialsProvider,
     ) -> Result<Vec<(String, String)>, SignError> {
-        use aws_credential_types::provider::ProvideCredentials;
         use aws_sigv4::http_request::{SignableBody, SignableRequest, SigningSettings, sign};
         use aws_sigv4::sign::v4;
         use std::time::SystemTime;
 
-        let credentials = provider.provide_credentials().await?;
+        let credentials = self.resolve_credentials(provider).await?;
         let identity = aws_smithy_runtime_api::client::identity::Identity::from(credentials);
 
         let params = v4::SigningParams::builder()
