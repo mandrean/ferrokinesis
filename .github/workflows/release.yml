@@ -96,7 +96,7 @@ jobs:
       - name: Generate checksums
         run: |
           cd artifacts
-          find . -type f | sort | xargs sha256sum | sed "s|.*/||" > SHA256SUMS
+          find . -type f -not -name SHA256SUMS | sort | xargs sha256sum | sed "s|  .*/|  |" > SHA256SUMS
       - name: Upload release assets
         run: |
           TAG="${{ github.event.release.tag_name }}"
