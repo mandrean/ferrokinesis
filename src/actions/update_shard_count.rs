@@ -144,6 +144,12 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
             .await;
     });
 
+    tracing::trace!(
+        stream = %stream_name,
+        current_count,
+        target_shard_count,
+        "shard count update initiated"
+    );
     Ok(Some(json!({
         "StreamName": stream_name,
         "CurrentShardCount": current_count,

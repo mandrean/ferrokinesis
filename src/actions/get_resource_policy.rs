@@ -15,6 +15,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
 
     let policy = store.get_policy(resource_arn).await.unwrap_or_default();
 
+    tracing::trace!(resource_arn, "resource policy retrieved");
     Ok(Some(json!({
         "Policy": policy,
     })))

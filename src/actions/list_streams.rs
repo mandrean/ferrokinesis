@@ -21,6 +21,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     let has_more = names.len() > limit;
     let stream_names: Vec<&str> = names.iter().take(limit).map(|s| s.as_str()).collect();
 
+    tracing::trace!(streams = stream_names.len(), has_more, "streams listed");
     Ok(Some(json!({
         "StreamNames": stream_names,
         "HasMoreStreams": has_more,

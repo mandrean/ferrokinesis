@@ -58,5 +58,6 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         })
         .await?;
 
+    tracing::trace!(stream = %stream_name, "enhanced monitoring enabled");
     Ok(Some(result))
 }
