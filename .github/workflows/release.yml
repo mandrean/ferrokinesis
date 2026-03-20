@@ -1,8 +1,8 @@
 name: Release
 
 on:
-  push:
-    branches: [main]
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -80,9 +80,35 @@ jobs:
           name: ferrokinesis-${{ matrix.name }}
           path: ferrokinesis-${{ matrix.name }}${{ matrix.ext }}
 
+  upload-assets:
+    name: Upload Assets
+    needs: build
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: ferrokinesis-*
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          find . -type f | sort | xargs sha256sum | sed "s|.*/||" > SHA256SUMS
+      - name: Upload release assets
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          find artifacts -type f | sort | xargs \
+            gh release upload "$TAG" --clobber --repo "${{ github.repository }}"
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+
   docker:
     name: Docker
-    needs: [build, publish]
+    needs: [build, upload-assets]
+    if: ${{ always() && needs.build.result == 'success' && (needs.upload-assets.result == 'success' || needs.upload-assets.result == 'skipped') }}
     runs-on: ubuntu-latest
     permissions:
       packages: write
@@ -93,9 +119,15 @@ jobs:
           - 5000:5000
     steps:
       - uses: actions/checkout@v4
-      - name: Get version from Cargo.toml
+      - name: Get version
         id: version
-        run: echo "version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')" >> $GITHUB_OUTPUT
+        run: |
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            VERSION="${{ github.event.release.tag_name }}"
+            echo "version=${VERSION#v}" >> $GITHUB_OUTPUT
+          else
+            echo "version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')" >> $GITHUB_OUTPUT
+          fi
       - name: Download linux-amd64 binary
         uses: actions/download-artifact@v4
         with:
@@ -200,62 +232,3 @@ jobs:
           docker buildx imagetools create $TAG_ARGS localhost:5000/ferrokinesis:${{ github.sha }}
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
-
-  publish:
-    name: Publish
-    needs: [check, build]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GH_TOKEN }}
-      - uses: ./.github/actions/setup-rust-toolchain
-      - uses: Swatinem/rust-cache@v2
-      - name: Release
-        uses: release-plz/action@v0.5
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_TOKEN }}
-      - name: Get version from Cargo.toml
-        id: version
-        run: echo "tag=v$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')" >> $GITHUB_OUTPUT
-      - name: Check if release exists and needs assets
-        id: needs-upload
-        run: |
-          TAG="${{ steps.version.outputs.tag }}"
-          if gh release view "$TAG" --repo mandrean/ferrokinesis &>/dev/null; then
-            ASSET_COUNT=$(gh release view "$TAG" --repo mandrean/ferrokinesis --json assets --jq '.assets | length')
-            # 5 binaries from build matrix + SHA256SUMS
-            if [ "$ASSET_COUNT" -lt 6 ]; then
-              echo "upload=true" >> $GITHUB_OUTPUT
-            else
-              echo "upload=false" >> $GITHUB_OUTPUT
-            fi
-          else
-            echo "upload=false" >> $GITHUB_OUTPUT
-          fi
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-      - name: Download all artifacts
-        if: steps.needs-upload.outputs.upload == 'true'
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          pattern: ferrokinesis-*
-      - name: Generate checksums
-        if: steps.needs-upload.outputs.upload == 'true'
-        run: |
-          cd artifacts
-          find . -type f | sort | xargs sha256sum | sed "s|.*/||" > SHA256SUMS
-      - name: Upload release assets
-        if: steps.needs-upload.outputs.upload == 'true'
-        run: |
-          TAG="${{ steps.version.outputs.tag }}"
-          find artifacts -type f | sort | xargs \
-            gh release upload "$TAG" --clobber
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
