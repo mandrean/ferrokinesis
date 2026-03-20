@@ -50,8 +50,10 @@ public class KclV2IntegrationTest {
     private static final String DYNAMODB_ENDPOINT =
             System.getenv().getOrDefault("DYNAMODB_ENDPOINT", "http://localhost:8000");
     private static final String REGION = "us-east-1";
-    private static final String STREAM_NAME = "kcl-v2-integration";
-    private static final String APPLICATION_NAME = "kcl-v2-test-app";
+    // UUID suffix avoids stream-name collisions if multiple CI jobs or local runs overlap.
+    private static final String RUN_ID = UUID.randomUUID().toString().substring(0, 8);
+    private static final String STREAM_NAME = "kcl-v2-integration-" + RUN_ID;
+    private static final String APPLICATION_NAME = "kcl-v2-test-app-" + RUN_ID;
     private static final int SHARD_COUNT = 1;
     // TODO: add a multi-shard variant covering parallel SubscribeToShard streams and the
     //       at-most-5-enhanced-fan-out-consumers-per-shard constraint.
@@ -75,7 +77,7 @@ public class KclV2IntegrationTest {
                     .build())
             .build();
 
-    // DynamoDbAsyncClient for KCL lease management. KCL 2.x requires an async client.
+    // DynamoDbAsyncClient for KCL lease management. KCL 3.x requires an async client.
     private static final DynamoDbAsyncClient dynamoAsyncClient = DynamoDbAsyncClient.builder()
             .endpointOverride(URI.create(DYNAMODB_ENDPOINT))
             .region(Region.of(REGION))
@@ -132,7 +134,7 @@ public class KclV2IntegrationTest {
         // ConfigsBuilder defaults to TRIM_HORIZON for a new application name with no existing
         // checkpoint in DynamoDB. Since this stream and application name are freshly created,
         // TRIM_HORIZON guarantees all 10 records put in test 1 are visible from the start.
-        // ConfigsBuilder is the unified KCL 2.x configuration entry point.
+        // ConfigsBuilder is the unified KCL 3.x configuration entry point.
         ConfigsBuilder configsBuilder = new ConfigsBuilder(
                 STREAM_NAME,
                 APPLICATION_NAME,
@@ -143,7 +145,7 @@ public class KclV2IntegrationTest {
                 new TestShardRecordProcessorFactory()
         );
 
-        // FanOutConfig drives the enhanced fan-out path. KCL 2.x will internally:
+        // FanOutConfig drives the enhanced fan-out path. KCL 3.x will internally:
         //   1. DescribeStreamSummary — get stream ARN and status
         //   2. ListShards — enumerate shards
         //   3. RegisterStreamConsumer — register the consumer (named APPLICATION_NAME)
@@ -179,10 +181,10 @@ public class KclV2IntegrationTest {
         // processRecords() → checkpoint() chain. If any step hangs, the latch times out here.
         boolean allReceived = TestShardRecordProcessor.awaitRecords(120);
         assertTrue(allReceived,
-                "KCL 2.x did not process all " + RECORD_COUNT + " records within 120 seconds");
+                "KCL 3.x did not process all " + RECORD_COUNT + " records within 120 seconds");
 
         assertTrue(TestShardRecordProcessor.wasInitializeCalled(),
-                "KCL 2.x never called initialize() — shard assignment may have failed");
+                "KCL 3.x never called initialize() — shard assignment may have failed");
 
         List<software.amazon.kinesis.retrieval.KinesisClientRecord> records =
                 TestShardRecordProcessor.getRecords();
@@ -210,7 +212,7 @@ public class KclV2IntegrationTest {
     @Test
     @Order(3)
     void verifyLeaseTable() {
-        // KCL 2.x uses applicationName as the DynamoDB table name (same as KCL 1.x).
+        // KCL 3.x uses applicationName as the DynamoDB table name (same as KCL 1.x).
         // By the time this test runs the latch has fired. Because latch.countDown() now fires
         // only after checkpoint() returns, we are guaranteed the lease entry is committed to
         // DynamoDB Local before this scan runs.
@@ -220,7 +222,7 @@ public class KclV2IntegrationTest {
                 .build());
 
         assertFalse(result.items().isEmpty(),
-                "Lease table is empty — KCL 2.x did not create leases");
+                "Lease table is empty — KCL 3.x did not create leases");
 
         for (Map<String, AttributeValue> item : result.items()) {
             AttributeValue checkpoint = item.get("checkpoint");
