@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/mandrean/ferrokinesis/compare/v0.4.0...v0.5.0) - 2026-03-20
+
+### Added
+
+- use aws-config credential provider chain in mirror ([#180](https://github.com/mandrean/ferrokinesis/pull/180))
+
+### Fixed
+
+- reorder Docker tags so GHCR shows version in install instruction
+- use correct release-plz field name git_tag_name
+- move tag_name_template to [workspace] level
+- use v{version} tag format for ferrokinesis releases
+
+### Other
+
+- per-shard lock-free concurrent store (replace redb) ([#184](https://github.com/mandrean/ferrokinesis/pull/184))
+- single-pass CBOR serialization via BlobAwareValue ([#185](https://github.com/mandrean/ferrokinesis/pull/185))
+- move capture write into put_record/put_records handlers ([#179](https://github.com/mandrean/ferrokinesis/pull/179))
+
 ## [0.4.0](https://github.com/mandrean/ferrokinesis/compare/ferrokinesis-v0.3.0...ferrokinesis-v0.4.0) - 2026-03-20
 
 ### Added
