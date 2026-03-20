@@ -8,6 +8,9 @@
 
 use crate::actions::Operation;
 use crate::constants;
+use aws_credential_types::Credentials;
+use aws_credential_types::provider::SharedCredentialsProvider;
+use aws_credential_types::provider::error::CredentialsError;
 use bytes::Bytes;
 use serde_json::Value;
 use std::sync::Arc;
@@ -80,8 +83,8 @@ pub struct Mirror {
     host: String,
     diff: bool,
     client: reqwest::Client,
-    provider: Option<aws_credential_types::provider::SharedCredentialsProvider>,
-    cached_credentials: tokio::sync::RwLock<Option<aws_credential_types::Credentials>>,
+    provider: Option<SharedCredentialsProvider>,
+    cached_credentials: tokio::sync::RwLock<Option<Credentials>>,
     region: String,
     semaphore: Arc<Semaphore>,
     retry_config: RetryConfig,
@@ -95,7 +98,7 @@ pub enum SignError {
     /// Failed to sign the request.
     Signing(aws_sigv4::http_request::SigningError),
     /// Failed to resolve credentials from the provider.
-    Credentials(aws_credential_types::provider::error::CredentialsError),
+    Credentials(CredentialsError),
 }
 
 impl std::fmt::Display for SignError {
@@ -130,8 +133,8 @@ impl From<aws_sigv4::http_request::SigningError> for SignError {
     }
 }
 
-impl From<aws_credential_types::provider::error::CredentialsError> for SignError {
-    fn from(e: aws_credential_types::provider::error::CredentialsError) -> Self {
+impl From<CredentialsError> for SignError {
+    fn from(e: CredentialsError) -> Self {
         Self::Credentials(e)
     }
 }
@@ -166,12 +169,11 @@ impl Mirror {
         endpoint: &str,
         diff: bool,
         region: &str,
-        credentials: Option<aws_credential_types::Credentials>,
+        credentials: Option<Credentials>,
         concurrency: usize,
         retry_config: RetryConfig,
     ) -> Self {
-        let provider =
-            credentials.map(aws_credential_types::provider::SharedCredentialsProvider::new);
+        let provider = credentials.map(SharedCredentialsProvider::new);
         Self::with_provider(endpoint, diff, region, provider, concurrency, retry_config)
     }
 
@@ -180,7 +182,7 @@ impl Mirror {
         endpoint: &str,
         diff: bool,
         region: &str,
-        provider: Option<aws_credential_types::provider::SharedCredentialsProvider>,
+        provider: Option<SharedCredentialsProvider>,
         concurrency: usize,
         retry_config: RetryConfig,
     ) -> Self {
@@ -206,8 +208,7 @@ impl Mirror {
     ///
     /// Covers env vars, `~/.aws/credentials`, IMDS, ECS task roles — all with
     /// automatic refresh, so STS temporary credentials are never stale.
-    async fn build_credentials_provider()
-    -> Option<aws_credential_types::provider::SharedCredentialsProvider> {
+    async fn build_credentials_provider() -> Option<SharedCredentialsProvider> {
         let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
             .load()
             .await;
@@ -355,14 +356,11 @@ impl Mirror {
     /// Refreshes proactively 60 seconds before expiry.
     async fn resolve_credentials(
         &self,
-        provider: &aws_credential_types::provider::SharedCredentialsProvider,
-    ) -> Result<
-        aws_credential_types::Credentials,
-        aws_credential_types::provider::error::CredentialsError,
-    > {
+        provider: &SharedCredentialsProvider,
+    ) -> Result<Credentials, CredentialsError> {
         use aws_credential_types::provider::ProvideCredentials;
 
-        let is_near_expiry = |creds: &aws_credential_types::Credentials| {
+        let is_near_expiry = |creds: &Credentials| {
             creds.expiry().is_some_and(|exp| {
                 exp.duration_since(std::time::SystemTime::now())
                     .unwrap_or_default()
@@ -394,7 +392,7 @@ impl Mirror {
         content_type: &str,
         target: &str,
         body: &[u8],
-        provider: &aws_credential_types::provider::SharedCredentialsProvider,
+        provider: &SharedCredentialsProvider,
     ) -> Result<Vec<(String, String)>, SignError> {
         use aws_sigv4::http_request::{SignableBody, SignableRequest, SigningSettings, sign};
         use aws_sigv4::sign::v4;
