@@ -190,6 +190,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn write_records_empty_slice_is_noop() {
+        let capture_file = tempfile::NamedTempFile::new().unwrap();
+        let writer = CaptureWriter::new(capture_file.path(), false).unwrap();
+        writer.write_records(&[]);
+        let captured = read_capture_file(capture_file.path()).unwrap();
+        assert_eq!(captured.len(), 0);
+    }
+
+    #[test]
     fn scrub_is_deterministic() {
         let a = scrub_partition_key("my-key");
         let b = scrub_partition_key("my-key");

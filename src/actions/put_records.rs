@@ -16,6 +16,10 @@ struct SeqPiece {
     shard_create_time: u64,
 }
 
+fn is_capture_eligible(resp: &Value) -> bool {
+    resp.get(constants::ERROR_CODE).is_none_or(|v| v.is_null())
+}
+
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_name = store.resolve_stream_name(&data)?;
 
@@ -211,7 +215,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
             .iter()
             .zip(return_records.iter())
             .zip(timestamps.iter())
-            .filter(|((_, resp), _)| resp.get(constants::ERROR_CODE).is_none_or(|v| v.is_null()))
+            .filter(|((_, resp), _)| is_capture_eligible(resp))
             .map(|((req, resp), &ts)| CaptureRecordRef {
                 op: CaptureOp::PutRecords,
                 ts,
@@ -285,7 +289,7 @@ mod tests {
         let capture_refs: Vec<CaptureRecordRef<'_>> = records
             .iter()
             .zip(return_records.iter())
-            .filter(|(_, resp)| resp.get(constants::ERROR_CODE).is_none_or(|v| v.is_null()))
+            .filter(|(_, resp)| is_capture_eligible(resp))
             .map(|(req, resp)| CaptureRecordRef {
                 op: CaptureOp::PutRecords,
                 ts,
@@ -351,7 +355,7 @@ mod tests {
         let capture_refs: Vec<CaptureRecordRef<'_>> = records
             .iter()
             .zip(return_records.iter())
-            .filter(|(_, resp)| resp.get(constants::ERROR_CODE).is_none_or(|v| v.is_null()))
+            .filter(|(_, resp)| is_capture_eligible(resp))
             .map(|(req, resp)| CaptureRecordRef {
                 op: CaptureOp::PutRecords,
                 ts,
