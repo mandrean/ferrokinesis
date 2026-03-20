@@ -44,7 +44,11 @@ pub const ITERATOR_PWD_IV: [u8; 16] = [
     0x7b, 0xf1, 0x39, 0xdb, 0xab, 0xbe, 0xa2, 0xd9, 0x99, 0x5d, 0x6f, 0xca, 0xe1, 0xdf, 0xf7, 0xda,
 ];
 
-/// Create a shard iterator token (AES-256-CBC encrypted)
+/// Create a shard iterator token (AES-256-CBC encrypted).
+///
+/// Plaintext format: `{timestamp_ms:014}/{stream}/{shard_id}/{seq}/{nonce}`.
+/// The token is encrypted with [`ITERATOR_PWD_KEY`]/[`ITERATOR_PWD_IV`],
+/// prepended with an 8-byte version header, then base64-encoded.
 pub fn create_shard_iterator(
     stream_name: &str,
     shard_id: &str,
@@ -89,7 +93,10 @@ pub fn create_shard_iterator(
     BASE64.encode(&buffer)
 }
 
-/// Decode a shard iterator token, returning (iterator_time_ms, stream_name, shard_id, seq_no)
+/// Decode a shard iterator token, returning `(iterator_time_ms, stream_name, shard_id, seq_no)`.
+///
+/// Validates the 8-byte version header, decrypts the AES-256-CBC payload,
+/// and splits the plaintext on `/` to recover the four fields.
 pub fn decode_shard_iterator(
     iterator: &str,
 ) -> Result<(u64, String, String, String), ShardIteratorError> {

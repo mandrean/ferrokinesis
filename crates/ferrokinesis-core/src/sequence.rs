@@ -23,7 +23,12 @@ pub enum SequenceError {
     ShardIndexOutOfRange(i64),
 }
 
-/// Parsed sequence number components
+/// Decomposed components of a Kinesis sequence number.
+///
+/// Sequence numbers encode shard creation time, shard index, a per-record
+/// sub-index, and a format version (v0, v1, or v2) inside a single decimal
+/// string. This struct holds the parsed fields so callers can inspect or
+/// reconstruct them without re-parsing.
 #[derive(Debug, Clone)]
 pub struct SeqObj {
     pub shard_create_time: u64,
@@ -39,6 +44,11 @@ fn pow_2(n: u32) -> BigUint {
     BigUint::one() << n
 }
 
+/// Parse a decimal sequence number string into its [`SeqObj`] components.
+///
+/// Detects version (v0/v1/v2) from the high nibble of the underlying
+/// 128-bit value and extracts shard creation time, shard index, sub-index,
+/// and auxiliary fields accordingly.
 pub fn parse_sequence(seq: &str) -> Result<SeqObj, SequenceError> {
     let seq_num: BigUint = seq
         .parse()
@@ -171,6 +181,7 @@ pub fn parse_sequence(seq: &str) -> Result<SeqObj, SequenceError> {
     }
 }
 
+/// Serialize a [`SeqObj`] back into its decimal sequence number string.
 pub fn stringify_sequence(obj: &SeqObj) -> String {
     match obj.version {
         0 | 2 if obj.version == 0 => {
@@ -250,6 +261,7 @@ pub fn stringify_sequence(obj: &SeqObj) -> String {
     }
 }
 
+/// Advance the timestamp to produce the next sequence number (v2 format).
 pub fn increment_sequence(seq_obj: &SeqObj, seq_time: Option<u64>) -> String {
     stringify_sequence(&SeqObj {
         shard_create_time: seq_obj.shard_create_time,
@@ -262,10 +274,12 @@ pub fn increment_sequence(seq_obj: &SeqObj, seq_time: Option<u64>) -> String {
     })
 }
 
+/// Format a shard index as an 8-digit hex string (two's-complement `u32`).
 pub fn shard_ix_to_hex(shard_ix: i64) -> String {
     format!("{:08x}", shard_ix as u32)
 }
 
+/// Format a shard index as the canonical `shardId-NNNNNNNNNNNN` string.
 pub fn shard_id_name(shard_ix: i64) -> String {
     if shard_ix < 0 {
         format!("shardId--{:011}", shard_ix.unsigned_abs())
@@ -274,6 +288,10 @@ pub fn shard_id_name(shard_ix: i64) -> String {
     }
 }
 
+/// Parse a shard ID string into its canonical form and numeric index.
+///
+/// Accepts both `"shardId-000000000001"` and bare `"1"` formats.
+/// Returns `(canonical_id, shard_index)`.
 pub fn resolve_shard_id(shard_id: &str) -> Result<(String, i64), SequenceError> {
     let parts: Vec<&str> = shard_id.splitn(2, '-').collect();
     let id_part = if parts.len() > 1 { parts[1] } else { parts[0] };
@@ -287,6 +305,9 @@ pub fn resolve_shard_id(shard_id: &str) -> Result<(String, i64), SequenceError> 
     Ok((shard_id_name(shard_ix), shard_ix))
 }
 
+/// MD5-hash a partition key and return the result as a 128-bit [`BigUint`].
+///
+/// Kinesis uses this hash to determine which shard a record belongs to.
 pub fn partition_key_to_hash_key(partition_key: &str) -> BigUint {
     use md5::{Digest, Md5};
     let mut hasher = Md5::new();

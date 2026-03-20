@@ -46,6 +46,7 @@ fn is_regex_match(pattern: &str, s: &str) -> bool {
     }
 }
 
+/// Lowercase the first character of `s` (for camelCase error messages).
 pub fn to_lower_first(s: &str) -> String {
     let mut chars = s.chars();
     match chars.next() {
@@ -54,7 +55,10 @@ pub fn to_lower_first(s: &str) -> String {
     }
 }
 
-/// Field type descriptor
+/// AWS Coral field type descriptor.
+///
+/// Maps to the type system used by Kinesis request validation —
+/// each variant corresponds to a Coral primitive or composite type.
 #[derive(Debug, Clone)]
 pub enum FieldType {
     Boolean,
@@ -76,7 +80,11 @@ pub enum FieldType {
     },
 }
 
-/// Field definition with type and validation constraints
+/// Field definition with type and validation constraints.
+///
+/// Constructed via the builder methods (e.g. `.required()`, `.min(n)`,
+/// `.max(n)`, `.pattern(re)`) to declaratively describe a single
+/// request field's type, optionality, and value constraints.
 #[derive(Debug, Clone)]
 pub struct FieldDef {
     pub field_type: FieldType,
