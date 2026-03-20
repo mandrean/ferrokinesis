@@ -282,9 +282,8 @@ pub async fn execute_streaming(
             });
 
             let (payload, event_content_type) = if is_cbor {
-                let cbor_val = crate::server::json_to_cbor_with_blob_bytes(&event);
                 let mut buf = Vec::new();
-                ciborium::into_writer(&cbor_val, &mut buf).unwrap();
+                ciborium::into_writer(&crate::server::BlobAwareValue::new(&event), &mut buf).unwrap();
                 (buf, constants::CONTENT_TYPE_CBOR)
             } else {
                 (serde_json::to_vec(&event).unwrap(), "application/json")

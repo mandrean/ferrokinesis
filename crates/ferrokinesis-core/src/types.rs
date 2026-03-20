@@ -471,7 +471,10 @@ pub struct StoredRecord {
     pub approximate_arrival_timestamp: f64,
 }
 
-/// Borrowing variant of [`StoredRecord`] for zero-copy writes.
+/// Write variant of [`StoredRecord`] for zero-copy writes.
+///
+/// Both `partition_key` and `data` borrow from the incoming request
+/// to avoid allocations on the write path.
 ///
 /// INVARIANT: Field order and types must exactly match [`StoredRecord`].
 /// `postcard` serializes by position, not name — a mismatch silently corrupts data.
@@ -480,7 +483,7 @@ pub struct StoredRecord {
 pub struct StoredRecordRef<'a> {
     /// Partition key used to assign the record to a shard.
     pub partition_key: &'a str,
-    /// Base64-encoded record payload.
+    /// Base64-encoded record payload (borrowed from the incoming request).
     pub data: &'a str,
     /// Unix timestamp (seconds) when the record arrived at the stream.
     pub approximate_arrival_timestamp: f64,
@@ -488,8 +491,9 @@ pub struct StoredRecordRef<'a> {
 
 /// A record as returned to clients by `GetRecords` and `SubscribeToShard`.
 ///
-/// Borrows from the underlying [`StoredRecord`] to avoid intermediate
-/// `serde_json::Value` allocations.
+/// Borrows from the underlying [`StoredRecord`] to avoid intermediate allocations.
+/// The `data` field is a base64-encoded string that is forwarded as-is in JSON
+/// responses; the CBOR path decodes it via [`BlobAwareValue`](crate::server).
 #[derive(Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct ResponseRecord<'a> {
