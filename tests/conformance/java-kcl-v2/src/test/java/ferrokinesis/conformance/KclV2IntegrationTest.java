@@ -46,6 +46,14 @@ import static org.junit.jupiter.api.Assertions.*;
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 public class KclV2IntegrationTest {
 
+    static {
+        // Disable CBOR protocol so the SDK uses JSON for Kinesis requests.
+        // Ferrokinesis's CBOR event-stream encoding for SubscribeToShard is not yet
+        // fully compatible with the Java SDK v2's CBOR deserializer; the JSON path
+        // is proven by the java-sdk-v2 conformance suite.
+        System.setProperty("aws.cborEnabled", "false");
+    }
+
     private static final String KINESIS_ENDPOINT =
             System.getenv().getOrDefault("KINESIS_ENDPOINT", "http://localhost:4567");
     private static final String DYNAMODB_ENDPOINT =

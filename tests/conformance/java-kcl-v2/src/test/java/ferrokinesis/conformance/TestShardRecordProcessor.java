@@ -60,6 +60,7 @@ public class TestShardRecordProcessor implements ShardRecordProcessor {
 
     @Override
     public void processRecords(ProcessRecordsInput processRecordsInput) {
+        int incoming = processRecordsInput.records().size();
         int newCount = 0;
         for (KinesisClientRecord record : processRecordsInput.records()) {
             if (seenSequenceNumbers.add(record.sequenceNumber())) {
@@ -67,6 +68,9 @@ public class TestShardRecordProcessor implements ShardRecordProcessor {
                 newCount++;
             }
         }
+        System.out.println("[KCLv2] processRecords shard=" + shardId
+                + " incoming=" + incoming + " new=" + newCount
+                + " total=" + receivedRecords.size());
         try {
             processRecordsInput.checkpointer().checkpoint();
         } catch (Exception e) {
