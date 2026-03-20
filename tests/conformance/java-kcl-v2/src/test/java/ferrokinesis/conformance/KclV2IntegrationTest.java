@@ -55,10 +55,8 @@ public class KclV2IntegrationTest {
     private static final String RUN_ID = UUID.randomUUID().toString().substring(0, 8);
     private static final String STREAM_NAME = "kcl-v2-integration-" + RUN_ID;
     private static final String APPLICATION_NAME = "kcl-v2-test-app-" + RUN_ID;
-    private static final int SHARD_COUNT = 1;
-    // TODO: add a multi-shard variant covering parallel SubscribeToShard streams and the
-    //       at-most-5-enhanced-fan-out-consumers-per-shard constraint.
-    private static final int RECORD_COUNT = 10;
+    private static final int SHARD_COUNT = 2;
+    private static final int RECORD_COUNT = 20;
 
     private static final StaticCredentialsProvider CREDENTIALS =
             StaticCredentialsProvider.create(AwsBasicCredentials.create("test", "test"));
@@ -134,7 +132,7 @@ public class KclV2IntegrationTest {
 
         // ConfigsBuilder defaults to TRIM_HORIZON for a new application name with no existing
         // checkpoint in DynamoDB. Since this stream and application name are freshly created,
-        // TRIM_HORIZON guarantees all 10 records put in test 1 are visible from the start.
+        // TRIM_HORIZON guarantees all records put in test 1 are visible from the start.
         // ConfigsBuilder is the unified KCL 3.x configuration entry point.
         ConfigsBuilder configsBuilder = new ConfigsBuilder(
                 STREAM_NAME,
@@ -213,6 +211,16 @@ public class KclV2IntegrationTest {
             assertNotNull(r.approximateArrivalTimestamp(),
                     "Record has null approximateArrivalTimestamp");
         }
+
+        // Verify records came from multiple shards by checking distinct sequence number prefixes.
+        // Ferrokinesis encodes the shard index as a hex prefix in the sequence number.
+        Set<String> shardPrefixes = new HashSet<>();
+        for (software.amazon.kinesis.retrieval.KinesisClientRecord r : records) {
+            // The shard hex prefix is the first 8 characters of the sequence number.
+            shardPrefixes.add(r.sequenceNumber().substring(0, 8));
+        }
+        assertTrue(shardPrefixes.size() >= 2,
+                "Expected records from at least 2 shards, but only found prefixes: " + shardPrefixes);
     }
 
     @Test
