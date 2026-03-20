@@ -10,7 +10,7 @@
 //! layer and rewraps them as Kinesis-shaped `SerializationException` errors.
 
 use crate::actions::{self, Operation};
-use crate::capture::{CaptureRecord, CaptureWriter};
+use crate::capture::{CaptureOp, CaptureRecord, CaptureWriter};
 use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::store::Store;
@@ -365,12 +365,23 @@ pub async fn handler(
         };
     }
 
-    // Clone fields needed for capture before dispatch() moves data
+    // Extract only the fields needed for capture before dispatch() moves data
     let capture_ctx = if store.capture_writer.is_some()
         && matches!(operation, Operation::PutRecord | Operation::PutRecords)
     {
         let stream = store.resolve_stream_name(&data).unwrap_or_default();
-        Some((operation, stream, data.clone()))
+        let capture_data = match operation {
+            Operation::PutRecord => json!({
+                constants::PARTITION_KEY: data[constants::PARTITION_KEY],
+                constants::DATA: data[constants::DATA],
+                constants::EXPLICIT_HASH_KEY: data[constants::EXPLICIT_HASH_KEY],
+            }),
+            Operation::PutRecords => json!({
+                constants::RECORDS: data[constants::RECORDS],
+            }),
+            _ => unreachable!(),
+        };
+        Some((operation, stream, capture_data))
     } else {
         None
     };
@@ -574,7 +585,7 @@ fn write_capture_records(
     match operation {
         Operation::PutRecord => {
             let record = CaptureRecord {
-                op: "PutRecord".to_string(),
+                op: CaptureOp::PutRecord,
                 ts,
                 stream: stream.to_string(),
                 partition_key: input[constants::PARTITION_KEY]
@@ -603,15 +614,15 @@ fn write_capture_records(
             let Some(response_records) = response[constants::RECORDS].as_array() else {
                 return;
             };
-            for (inp, resp) in input_records.iter().zip(response_records.iter()) {
-                if resp
-                    .get(constants::ERROR_CODE)
-                    .is_some_and(|v| !v.is_null())
-                {
-                    continue;
-                }
-                let record = CaptureRecord {
-                    op: "PutRecords".to_string(),
+            let records: Vec<CaptureRecord> = input_records
+                .iter()
+                .zip(response_records.iter())
+                .filter(|(_, resp)| {
+                    resp.get(constants::ERROR_CODE)
+                        .is_none_or(|v| v.is_null())
+                })
+                .map(|(inp, resp)| CaptureRecord {
+                    op: CaptureOp::PutRecords,
                     ts,
                     stream: stream.to_string(),
                     partition_key: inp[constants::PARTITION_KEY]
@@ -625,9 +636,9 @@ fn write_capture_records(
                         .unwrap_or("")
                         .to_string(),
                     shard_id: resp[constants::SHARD_ID].as_str().unwrap_or("").to_string(),
-                };
-                writer.write_record(&record);
-            }
+                })
+                .collect();
+            writer.write_records(&records);
         }
         Operation::AddTagsToStream
         | Operation::CreateStream

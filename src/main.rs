@@ -166,9 +166,13 @@ struct ReplayArgs {
     #[arg(long, default_value = "1x")]
     replay_speed: String,
 
-    /// Use TLS when connecting (accepts self-signed certificates)
+    /// Use TLS (HTTPS) when connecting to the target server
     #[arg(long)]
     tls: bool,
+
+    /// Skip TLS certificate verification (for self-signed certificates)
+    #[arg(long, requires = "tls")]
+    tls_insecure: bool,
 }
 
 #[cfg(feature = "replay")]
@@ -484,7 +488,7 @@ async fn run_replay(args: ReplayArgs) -> ExitCode {
     let scheme = if args.tls { "https" } else { "http" };
     let base_url = format!("{scheme}://{}:{}", args.host, args.port);
     let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(args.tls)
+        .danger_accept_invalid_certs(args.tls_insecure)
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(30))
         .build()

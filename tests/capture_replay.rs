@@ -1,7 +1,7 @@
 mod common;
 use common::*;
 
-use ferrokinesis::capture::{CaptureWriter, read_capture_file, scrub_partition_key};
+use ferrokinesis::capture::{CaptureOp, CaptureWriter, read_capture_file, scrub_partition_key};
 use ferrokinesis::store::StoreOptions;
 use serde_json::json;
 use tempfile::NamedTempFile;
@@ -27,7 +27,7 @@ async fn capture_put_record() {
 
     let records = read_capture_file(capture_file.path()).unwrap();
     assert_eq!(records.len(), 1);
-    assert_eq!(records[0].op, "PutRecord");
+    assert_eq!(records[0].op, CaptureOp::PutRecord);
     assert_eq!(records[0].stream, "cap-test");
     assert_eq!(records[0].partition_key, "pk1");
     assert_eq!(records[0].data, "aGVsbG8=");
@@ -61,7 +61,7 @@ async fn capture_put_records_batch() {
     let records = read_capture_file(capture_file.path()).unwrap();
     assert_eq!(records.len(), 3);
     for r in &records {
-        assert_eq!(r.op, "PutRecords");
+        assert_eq!(r.op, CaptureOp::PutRecords);
         assert_eq!(r.stream, "cap-batch");
         assert!(!r.shard_id.is_empty());
         assert!(!r.sequence_number.is_empty());

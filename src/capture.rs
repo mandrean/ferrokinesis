@@ -9,11 +9,20 @@ use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+/// The capture operation type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CaptureOp {
+    /// A single `PutRecord` call.
+    PutRecord,
+    /// A `PutRecords` batch call.
+    PutRecords,
+}
+
 /// A single captured record in NDJSON format.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaptureRecord {
-    /// Operation name: `"PutRecord"` or `"PutRecords"`.
-    pub op: String,
+    /// Which operation produced this record.
+    pub op: CaptureOp,
     /// Timestamp in milliseconds since epoch.
     pub ts: u64,
     /// Stream name the record was written to.
@@ -55,23 +64,44 @@ impl CaptureWriter {
     /// Failures are logged via tracing and never propagated — capture must not
     /// affect the response path.
     pub fn write_record(&self, record: &CaptureRecord) {
-        let Ok(mut line) = (if self.scrub {
-            let mut scrubbed = record.clone();
-            scrubbed.partition_key = scrub_partition_key(&scrubbed.partition_key);
-            serde_json::to_vec(&scrubbed)
-        } else {
-            serde_json::to_vec(record)
-        }) else {
-            tracing::warn!("capture: failed to serialize record");
+        self.write_records(std::slice::from_ref(record));
+    }
+
+    /// Writes multiple capture records, acquiring the lock once and flushing
+    /// once at the end. Preferred over repeated [`write_record`](Self::write_record)
+    /// calls for batch operations like `PutRecords`.
+    pub fn write_records(&self, records: &[CaptureRecord]) {
+        // Serialize all records before acquiring the lock
+        let mut lines: Vec<Vec<u8>> = Vec::with_capacity(records.len());
+        for record in records {
+            let Ok(mut line) = (if self.scrub {
+                let mut scrubbed = record.clone();
+                scrubbed.partition_key = scrub_partition_key(&scrubbed.partition_key);
+                serde_json::to_vec(&scrubbed)
+            } else {
+                serde_json::to_vec(record)
+            }) else {
+                tracing::warn!("capture: failed to serialize record");
+                continue;
+            };
+            line.push(b'\n');
+            lines.push(line);
+        }
+        if lines.is_empty() {
             return;
-        };
-        line.push(b'\n');
+        }
         let Ok(mut writer) = self.inner.lock() else {
             tracing::error!("capture: failed to acquire lock");
             return;
         };
-        if let Err(e) = writer.write_all(&line).and_then(|()| writer.flush()) {
-            tracing::warn!("capture: write error: {e}");
+        for line in &lines {
+            if let Err(e) = writer.write_all(line) {
+                tracing::warn!("capture: write error: {e}");
+                return;
+            }
+        }
+        if let Err(e) = writer.flush() {
+            tracing::warn!("capture: flush error: {e}");
         }
     }
 }
@@ -79,6 +109,9 @@ impl CaptureWriter {
 /// Reads an NDJSON capture file into a `Vec<CaptureRecord>`.
 ///
 /// Blank lines are silently skipped. Malformed lines are logged to stderr and skipped.
+///
+/// Note: loads the entire file into memory. For very large capture files,
+/// consider a streaming approach in the future.
 pub fn read_capture_file(path: &Path) -> io::Result<Vec<CaptureRecord>> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
