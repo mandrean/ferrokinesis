@@ -190,7 +190,7 @@ public class KclV2IntegrationTest {
 
         Set<String> payloads = new HashSet<>();
         for (software.amazon.kinesis.retrieval.KinesisClientRecord r : records) {
-            payloads.add(StandardCharsets.UTF_8.decode(r.data().asByteBuffer()).toString());
+            payloads.add(StandardCharsets.UTF_8.decode(r.data()).toString());
         }
         for (int i = 0; i < RECORD_COUNT; i++) {
             assertTrue(payloads.contains("kcl-v2-record-" + i),
