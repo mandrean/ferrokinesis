@@ -221,17 +221,13 @@ impl Mirror {
     /// Reads `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optionally
     /// `AWS_SESSION_TOKEN`. Returns `None` if the required variables are unset.
     #[cfg(not(feature = "mirror-aws-config"))]
+    #[allow(clippy::unused_async)]
     async fn build_credentials_provider() -> Option<SharedCredentialsProvider> {
         let access_key = std::env::var("AWS_ACCESS_KEY_ID").ok()?;
         let secret_key = std::env::var("AWS_SECRET_ACCESS_KEY").ok()?;
         let session_token = std::env::var("AWS_SESSION_TOKEN").ok();
-        let credentials = Credentials::new(
-            access_key,
-            secret_key,
-            session_token,
-            None,
-            "environment",
-        );
+        let credentials =
+            Credentials::new(access_key, secret_key, session_token, None, "environment");
         Some(SharedCredentialsProvider::new(credentials))
     }
 
@@ -686,5 +682,91 @@ mod tests {
         assert_eq!(config.max_retries, 3);
         assert_eq!(config.initial_backoff, Duration::from_millis(100));
         assert_eq!(config.max_backoff, Duration::from_millis(5000));
+    }
+
+    // --- resolve_credentials tests ---
+
+    #[derive(Debug)]
+    struct CountingProvider {
+        counter: std::sync::atomic::AtomicUsize,
+        expiry: Option<std::time::SystemTime>,
+    }
+
+    impl CountingProvider {
+        fn new(expiry: Option<std::time::SystemTime>) -> Self {
+            Self {
+                counter: std::sync::atomic::AtomicUsize::new(0),
+                expiry,
+            }
+        }
+    }
+
+    impl aws_credential_types::provider::ProvideCredentials for CountingProvider {
+        fn provide_credentials<'a>(
+            &'a self,
+        ) -> aws_credential_types::provider::future::ProvideCredentials<'a>
+        where
+            Self: 'a,
+        {
+            let n = self
+                .counter
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            aws_credential_types::provider::future::ProvideCredentials::ready(Ok(Credentials::new(
+                format!("AKID-{n}"),
+                "secret",
+                None,
+                self.expiry,
+                "test",
+            )))
+        }
+    }
+
+    fn test_mirror_with_provider(provider: SharedCredentialsProvider) -> Mirror {
+        Mirror::with_provider(
+            "http://localhost:4567",
+            false,
+            "us-east-1",
+            Some(provider),
+            1,
+            RetryConfig::default(),
+        )
+    }
+
+    #[tokio::test]
+    async fn resolve_credentials_caches_static() {
+        let provider = SharedCredentialsProvider::new(CountingProvider::new(None));
+        let mirror = test_mirror_with_provider(provider.clone());
+
+        let c1 = mirror.resolve_credentials(&provider).await.unwrap();
+        let c2 = mirror.resolve_credentials(&provider).await.unwrap();
+
+        assert_eq!(c1.access_key_id(), "AKID-0");
+        assert_eq!(c2.access_key_id(), "AKID-0");
+    }
+
+    #[tokio::test]
+    async fn resolve_credentials_refreshes_near_expiry() {
+        let expiry = std::time::SystemTime::now() + std::time::Duration::from_secs(30);
+        let provider = SharedCredentialsProvider::new(CountingProvider::new(Some(expiry)));
+        let mirror = test_mirror_with_provider(provider.clone());
+
+        let c1 = mirror.resolve_credentials(&provider).await.unwrap();
+        let c2 = mirror.resolve_credentials(&provider).await.unwrap();
+
+        assert_eq!(c1.access_key_id(), "AKID-0");
+        assert_eq!(c2.access_key_id(), "AKID-1");
+    }
+
+    #[tokio::test]
+    async fn resolve_credentials_uses_cache_when_not_expired() {
+        let expiry = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+        let provider = SharedCredentialsProvider::new(CountingProvider::new(Some(expiry)));
+        let mirror = test_mirror_with_provider(provider.clone());
+
+        let c1 = mirror.resolve_credentials(&provider).await.unwrap();
+        let c2 = mirror.resolve_credentials(&provider).await.unwrap();
+
+        assert_eq!(c1.access_key_id(), "AKID-0");
+        assert_eq!(c2.access_key_id(), "AKID-0");
     }
 }
