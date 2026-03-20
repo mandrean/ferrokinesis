@@ -406,7 +406,8 @@ pub fn check_validations(
     fields: &[(&str, &FieldDef)],
     custom: Option<&dyn Fn(&Value) -> Option<String>>,
 ) -> Result<(), KinesisErrorResponse> {
-    let obj = data.as_object().unwrap_or(&serde_json::Map::new()).clone();
+    let empty = serde_json::Map::new();
+    let obj = data.as_object().unwrap_or(&empty);
 
     // Check required fields first
     for &(field_name, field_def) in fields {
@@ -657,10 +658,11 @@ pub fn check_validations(
                         format!("{parent}.{}", to_lower_first(attr))
                     };
                     for (child_name, child_def) in children {
-                        let child_val = data.get(child_name).cloned().unwrap_or(Value::Null);
+                        let null = Value::Null;
+                        let child_val = data.get(child_name).unwrap_or(&null);
                         check_non_required(
                             child_name,
-                            &child_val,
+                            child_val,
                             child_def,
                             &child_parent,
                             errors,
@@ -673,8 +675,9 @@ pub fn check_validations(
     }
 
     for &(field_name, field_def) in fields {
-        let val = obj.get(field_name).cloned().unwrap_or(Value::Null);
-        check_non_required(field_name, &val, field_def, "", &mut errors);
+        let null = Value::Null;
+        let val = obj.get(field_name).unwrap_or(&null);
+        check_non_required(field_name, val, field_def, "", &mut errors);
     }
 
     if !errors.is_empty() {
