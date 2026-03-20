@@ -79,6 +79,18 @@
 # CLI: --mirror-concurrency | Env: FERROKINESIS_MIRROR_CONCURRENCY
 # concurrency = 64
 
+# Maximum retries for failed mirror requests (0 = no retries, default: 3)
+# CLI: --mirror-max-retries | Env: FERROKINESIS_MIRROR_MAX_RETRIES
+# max_retries = 3
+
+# Initial backoff delay between mirror retries in milliseconds (default: 100)
+# CLI: --mirror-initial-backoff-ms | Env: FERROKINESIS_MIRROR_INITIAL_BACKOFF_MS
+# initial_backoff_ms = 100
+
+# Maximum backoff delay between mirror retries in milliseconds (default: 5000)
+# CLI: --mirror-max-backoff-ms | Env: FERROKINESIS_MIRROR_MAX_BACKOFF_MS
+# max_backoff_ms = 5000
+
 # TLS certificate and key (requires the "tls" feature)
 # Both must be set together, or both omitted.
 # CLI: --tls-cert / --tls-key | Env: FERROKINESIS_TLS_CERT / FERROKINESIS_TLS_KEY

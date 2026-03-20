@@ -103,6 +103,12 @@ pub struct MirrorConfig {
     pub diff: Option<bool>,
     /// Maximum number of concurrent in-flight mirror requests (default: 64).
     pub concurrency: Option<usize>,
+    /// Maximum number of retries for failed mirror requests (default: 3, 0 = no retries).
+    pub max_retries: Option<usize>,
+    /// Initial backoff delay between retries in milliseconds (default: 100).
+    pub initial_backoff_ms: Option<u64>,
+    /// Maximum backoff delay between retries in milliseconds (default: 5000).
+    pub max_backoff_ms: Option<u64>,
 }
 
 /// Parse and validate a TOML configuration file.
@@ -156,6 +162,29 @@ pub fn load_config(path: &Path) -> Result<FileConfig, ConfigError> {
         return Err(ConfigError::Validation {
             path: path.display().to_string(),
             message: format!("mirror.concurrency must be at least 1, got {concurrency}"),
+        });
+    }
+    #[cfg(feature = "mirror")]
+    if let Some(ref mirror) = config.mirror
+        && let Some(initial) = mirror.initial_backoff_ms
+        && initial < 1
+    {
+        return Err(ConfigError::Validation {
+            path: path.display().to_string(),
+            message: format!("mirror.initial_backoff_ms must be at least 1, got {initial}"),
+        });
+    }
+    #[cfg(feature = "mirror")]
+    if let Some(ref mirror) = config.mirror
+        && let Some(initial) = mirror.initial_backoff_ms
+        && let Some(max) = mirror.max_backoff_ms
+        && max < initial
+    {
+        return Err(ConfigError::Validation {
+            path: path.display().to_string(),
+            message: format!(
+                "mirror.max_backoff_ms ({max}) must be >= mirror.initial_backoff_ms ({initial})"
+            ),
         });
     }
     #[cfg(feature = "tls")]

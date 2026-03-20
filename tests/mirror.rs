@@ -4,7 +4,7 @@ mod common;
 use common::*;
 
 use axum::Extension;
-use ferrokinesis::mirror::Mirror;
+use ferrokinesis::mirror::{Mirror, RetryConfig};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -20,6 +20,7 @@ async fn start_primary_with_mirror(
         "us-east-1",
         Some(creds),
         Mirror::DEFAULT_CONCURRENCY,
+        RetryConfig::default(),
     );
 
     let options = ferrokinesis::store::StoreOptions {

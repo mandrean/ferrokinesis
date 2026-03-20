@@ -124,6 +124,23 @@ struct ServeArgs {
           value_parser = clap::value_parser!(u64).range(1..))]
     mirror_concurrency: Option<u64>,
 
+    /// Maximum retries for failed mirror requests (0 = no retries, default: 3)
+    #[cfg(feature = "mirror")]
+    #[arg(long, env = "FERROKINESIS_MIRROR_MAX_RETRIES", requires = "mirror_to")]
+    mirror_max_retries: Option<usize>,
+
+    /// Initial backoff delay between mirror retries in milliseconds (default: 100)
+    #[cfg(feature = "mirror")]
+    #[arg(long, env = "FERROKINESIS_MIRROR_INITIAL_BACKOFF_MS", requires = "mirror_to",
+          value_parser = clap::value_parser!(u64).range(1..))]
+    mirror_initial_backoff_ms: Option<u64>,
+
+    /// Maximum backoff delay between mirror retries in milliseconds (default: 5000)
+    #[cfg(feature = "mirror")]
+    #[arg(long, env = "FERROKINESIS_MIRROR_MAX_BACKOFF_MS", requires = "mirror_to",
+          value_parser = clap::value_parser!(u64).range(1..))]
+    mirror_max_backoff_ms: Option<u64>,
+
     /// Path to TLS certificate PEM file (enables HTTPS)
     #[cfg(feature = "tls")]
     #[arg(long, env = "FERROKINESIS_TLS_CERT", requires = "tls_key")]
@@ -716,18 +733,43 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
         let mirror_to = args.mirror_to.or(mirror_cfg.to);
         let mirror_diff = resolve(args.mirror_diff, mirror_cfg.diff, || false);
         let mirror_concurrency = resolve(
-            args.mirror_concurrency.map(|v| v as usize),
+            args.mirror_concurrency
+                .map(|v| usize::try_from(v).expect("mirror-concurrency overflows usize")),
             mirror_cfg.concurrency,
             || ferrokinesis::mirror::Mirror::DEFAULT_CONCURRENCY,
         );
+        let mirror_max_retries = resolve(args.mirror_max_retries, mirror_cfg.max_retries, || {
+            ferrokinesis::mirror::RetryConfig::DEFAULT_MAX_RETRIES
+        });
+        let mirror_initial_backoff_ms = resolve(
+            args.mirror_initial_backoff_ms,
+            mirror_cfg.initial_backoff_ms,
+            || ferrokinesis::mirror::RetryConfig::DEFAULT_INITIAL_BACKOFF_MS,
+        );
+        let mirror_max_backoff_ms = resolve(
+            args.mirror_max_backoff_ms,
+            mirror_cfg.max_backoff_ms,
+            || ferrokinesis::mirror::RetryConfig::DEFAULT_MAX_BACKOFF_MS,
+        );
+        let retry_config = ferrokinesis::mirror::RetryConfig {
+            max_retries: mirror_max_retries,
+            initial_backoff: Duration::from_millis(mirror_initial_backoff_ms),
+            max_backoff: Duration::from_millis(mirror_max_backoff_ms),
+        };
         if let Some(endpoint) = mirror_to {
             let m = ferrokinesis::mirror::Mirror::new(
                 &endpoint,
                 mirror_diff,
                 &aws_region,
                 mirror_concurrency,
+                retry_config,
             );
-            tracing::info!(endpoint = %endpoint, concurrency = mirror_concurrency, "mirroring PutRecord/PutRecords");
+            tracing::info!(
+                endpoint = %endpoint,
+                concurrency = mirror_concurrency,
+                max_retries = mirror_max_retries,
+                "mirroring PutRecord/PutRecords",
+            );
             app.layer(axum::Extension(std::sync::Arc::new(m)))
         } else {
             app

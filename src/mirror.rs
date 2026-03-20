@@ -2,7 +2,8 @@
 //!
 //! When configured via `--mirror-to`, [`Mirror`] asynchronously forwards
 //! `PutRecord` and `PutRecords` requests to the mirror endpoint after the
-//! local response has been sent. An optional `--mirror-diff` flag logs
+//! local response has been sent. Failed requests are retried with configurable
+//! exponential backoff. An optional `--mirror-diff` flag logs
 //! response divergences for differential validation.
 
 use crate::actions::Operation;
@@ -10,6 +11,7 @@ use crate::constants;
 use bytes::Bytes;
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Semaphore;
 
 /// Captured local response for diff comparison.
@@ -17,6 +19,60 @@ use tokio::sync::Semaphore;
 /// `None` means no body (empty 200), `Some(value)` means a JSON response body.
 /// Only successful local dispatches are mirrored — failed dispatches are skipped.
 pub type MirrorableResponse = Option<Value>;
+
+/// Retry configuration for mirror forwarding.
+#[derive(Debug, Clone)]
+pub struct RetryConfig {
+    /// Maximum number of retry attempts. `0` disables retries.
+    pub max_retries: usize,
+    /// Initial (minimum) backoff delay between retries.
+    pub initial_backoff: Duration,
+    /// Maximum backoff delay between retries.
+    pub max_backoff: Duration,
+}
+
+impl RetryConfig {
+    /// Default maximum retry attempts.
+    pub const DEFAULT_MAX_RETRIES: usize = 3;
+    /// Default initial backoff in milliseconds.
+    pub const DEFAULT_INITIAL_BACKOFF_MS: u64 = 100;
+    /// Default maximum backoff in milliseconds.
+    pub const DEFAULT_MAX_BACKOFF_MS: u64 = 5000;
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_retries: Self::DEFAULT_MAX_RETRIES,
+            initial_backoff: Duration::from_millis(Self::DEFAULT_INITIAL_BACKOFF_MS),
+            max_backoff: Duration::from_millis(Self::DEFAULT_MAX_BACKOFF_MS),
+        }
+    }
+}
+
+/// Error classification for mirror request forwarding.
+#[derive(Debug)]
+enum ForwardError {
+    /// Transient error (connection failure, timeout, 5xx, 429) — eligible for retry.
+    Transient(String),
+    /// Permanent error (4xx except 429) — not retried.
+    Permanent(String),
+}
+
+impl ForwardError {
+    fn is_transient(&self) -> bool {
+        matches!(self, Self::Transient(_))
+    }
+}
+
+impl std::fmt::Display for ForwardError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Transient(msg) => write!(f, "transient: {msg}"),
+            Self::Permanent(msg) => write!(f, "permanent: {msg}"),
+        }
+    }
+}
 
 /// Async traffic mirror that forwards write operations to a remote endpoint.
 pub struct Mirror {
@@ -27,6 +83,7 @@ pub struct Mirror {
     credentials: Option<aws_credential_types::Credentials>,
     region: String,
     semaphore: Arc<Semaphore>,
+    retry_config: RetryConfig,
 }
 
 /// Error during SigV4 request signing.
@@ -76,12 +133,25 @@ impl Mirror {
     ///
     /// Looks for `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optionally
     /// `AWS_SESSION_TOKEN`. Logs a warning if credentials are not found.
-    pub fn new(endpoint: &str, diff: bool, region: &str, concurrency: usize) -> Self {
+    pub fn new(
+        endpoint: &str,
+        diff: bool,
+        region: &str,
+        concurrency: usize,
+        retry_config: RetryConfig,
+    ) -> Self {
         let credentials = Self::load_credentials();
         if credentials.is_none() {
             tracing::warn!("no AWS credentials found, requests will be forwarded unsigned");
         }
-        Self::with_credentials(endpoint, diff, region, credentials, concurrency)
+        Self::with_credentials(
+            endpoint,
+            diff,
+            region,
+            credentials,
+            concurrency,
+            retry_config,
+        )
     }
 
     /// Create a mirror with explicit credentials.
@@ -91,6 +161,7 @@ impl Mirror {
         region: &str,
         credentials: Option<aws_credential_types::Credentials>,
         concurrency: usize,
+        retry_config: RetryConfig,
     ) -> Self {
         let url = format!("{}/", endpoint.trim_end_matches('/'));
         let host = extract_host(&url);
@@ -99,12 +170,13 @@ impl Mirror {
             host,
             diff,
             client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(10))
+                .timeout(Duration::from_secs(10))
                 .build()
                 .expect("failed to build mirror HTTP client"),
             credentials,
             region: region.to_string(),
             semaphore: Arc::new(Semaphore::new(concurrency)),
+            retry_config,
         }
     }
 
@@ -164,34 +236,70 @@ impl Mirror {
         body: Bytes,
         local_result: MirrorableResponse,
     ) {
-        let mut request = self
-            .client
-            .post(&self.url)
-            .header("Content-Type", content_type)
-            .header("X-Amz-Target", target);
-
-        if let Some(ref credentials) = self.credentials {
+        // Sign headers once before the retry loop.
+        // SigV4 signatures are valid for 5 minutes — retries stay well within that window.
+        let signed_headers = if let Some(ref credentials) = self.credentials {
             match self.sign_headers(content_type, target, &body, credentials) {
-                Ok(headers) => {
-                    for (name, value) in headers {
-                        request = request.header(name, value);
-                    }
-                }
+                Ok(headers) => Some(headers),
                 Err(e) => {
                     tracing::error!(error = %e, "signing failed");
                     return;
                 }
             }
-        }
+        } else {
+            None
+        };
 
-        match request.body(body).send().await {
-            Ok(response) => {
-                let status = response.status();
-                if status.is_client_error() || status.is_server_error() {
-                    tracing::warn!(status = status.as_u16(), "mirror endpoint returned error");
+        let send = || async {
+            let mut request = self
+                .client
+                .post(&self.url)
+                .header("Content-Type", content_type)
+                .header("X-Amz-Target", target);
+
+            if let Some(ref headers) = signed_headers {
+                for (name, value) in headers {
+                    request = request.header(name.as_str(), value.as_str());
                 }
+            }
+
+            // Bytes::clone is cheap (Arc-backed, zero-copy).
+            match request.body(body.clone()).send().await {
+                Ok(response) => {
+                    let status = response.status();
+                    if status.is_server_error() || status.as_u16() == 429 {
+                        Err(ForwardError::Transient(format!("HTTP {status}")))
+                    } else if status.is_client_error() {
+                        Err(ForwardError::Permanent(format!("HTTP {status}")))
+                    } else {
+                        Ok(response)
+                    }
+                }
+                Err(e) => Err(ForwardError::Transient(e.to_string())),
+            }
+        };
+
+        let result = if self.retry_config.max_retries == 0 {
+            send().await
+        } else {
+            use backon::{ExponentialBuilder, Retryable};
+            send.retry(
+                ExponentialBuilder::default()
+                    .with_min_delay(self.retry_config.initial_backoff)
+                    .with_max_delay(self.retry_config.max_backoff)
+                    .with_max_times(self.retry_config.max_retries),
+            )
+            .when(|e| e.is_transient())
+            .notify(|e, dur| {
+                tracing::warn!(error = %e, delay = ?dur, "retrying mirror request");
+            })
+            .await
+        };
+
+        match result {
+            Ok(response) => {
                 if self.diff {
-                    let status = status.as_u16();
+                    let status = response.status().as_u16();
                     let response_ct = response
                         .headers()
                         .get("content-type")
@@ -214,7 +322,12 @@ impl Mirror {
                     }
                 }
             }
-            Err(e) => tracing::warn!(error = %e, "mirror request failed"),
+            Err(ref e) if e.is_transient() => {
+                tracing::error!(error = %e, "mirror request failed after retries");
+            }
+            Err(ref e) => {
+                tracing::warn!(error = %e, "mirror request permanently failed");
+            }
         }
     }
 
@@ -483,5 +596,19 @@ mod tests {
     #[test]
     fn extract_host_ipv6_no_port() {
         assert_eq!(extract_host("http://[::1]"), "[::1]");
+    }
+
+    #[test]
+    fn forward_error_is_transient() {
+        assert!(ForwardError::Transient("timeout".into()).is_transient());
+        assert!(!ForwardError::Permanent("bad request".into()).is_transient());
+    }
+
+    #[test]
+    fn retry_config_defaults() {
+        let config = RetryConfig::default();
+        assert_eq!(config.max_retries, 3);
+        assert_eq!(config.initial_backoff, Duration::from_millis(100));
+        assert_eq!(config.max_backoff, Duration::from_millis(5000));
     }
 }
