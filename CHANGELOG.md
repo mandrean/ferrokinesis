@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/mandrean/ferrokinesis/compare/ferrokinesis-v0.3.0...ferrokinesis-v0.4.0) - 2026-03-20
+
+### Added
+
+- add transparent traffic mirroring to real AWS ([#165](https://github.com/mandrean/ferrokinesis/pull/165))
+- add stream capture and replay ([#163](https://github.com/mandrean/ferrokinesis/pull/163))
+- add TRACE-level logging to all action handlers ([#168](https://github.com/mandrean/ferrokinesis/pull/168))
+
+### Fixed
+
+- correct SHA256SUMS generation in release workflow ([#173](https://github.com/mandrean/ferrokinesis/pull/173))
+- split release workflow so artifacts only build on actual releases ([#164](https://github.com/mandrean/ferrokinesis/pull/164))
+
+### Other
+
+- add KCL 2.x enhanced fan-out integration test ([#141](https://github.com/mandrean/ferrokinesis/pull/141))
+- unify workspace versioning and suppress spurious ferrokinesis-core releases ([#176](https://github.com/mandrean/ferrokinesis/pull/176))
+- extract ferrokinesis-core no_std crate ([#166](https://github.com/mandrean/ferrokinesis/pull/166))
+
 ### Other
 
 - bump `ferrokinesis-core` from `0.1.0` → `0.3.0` to align with workspace version (intentional jump; no intermediate releases)
