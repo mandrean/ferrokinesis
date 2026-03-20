@@ -87,7 +87,7 @@ public class TestShardRecordProcessor implements ShardRecordProcessor {
     public void shardEnded(ShardEndedInput shardEndedInput) {
         // Must checkpoint with the SHARD_END sentinel when the shard is exhausted.
         // Only triggered if the shard is closed (split/merge); not triggered in this
-        // test since we use a single open shard.
+        // test since we don't split/merge shards.
         try {
             shardEndedInput.checkpointer().checkpoint();
         } catch (Exception e) {

@@ -25,7 +25,7 @@ import software.amazon.awssdk.services.kinesis.model.DescribeStreamSummaryRespon
 import software.amazon.awssdk.services.kinesis.model.PutRecordRequest;
 import software.amazon.awssdk.services.kinesis.model.StreamStatus;
 import software.amazon.kinesis.common.ConfigsBuilder;
-import software.amazon.kinesis.coordinator.ClientVersionConfig;
+import software.amazon.kinesis.coordinator.CoordinatorConfig.ClientVersionConfig;
 import software.amazon.kinesis.coordinator.Scheduler;
 import software.amazon.kinesis.metrics.MetricsLevel;
 import software.amazon.kinesis.retrieval.fanout.FanOutConfig;
