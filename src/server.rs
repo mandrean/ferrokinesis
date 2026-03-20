@@ -13,7 +13,7 @@ use crate::actions::{self, Operation};
 use crate::capture::{CaptureOp, CaptureRecordRef, CaptureWriter};
 use crate::constants;
 use crate::error::KinesisErrorResponse;
-use crate::mirror::{Mirror, MirrorableResponse};
+use crate::mirror::Mirror;
 use crate::store::Store;
 use crate::util::current_time_ms;
 use crate::validation;
@@ -426,26 +426,23 @@ pub async fn handler(
     if let Some(Extension(ref mirror)) = mirror
         && Mirror::should_mirror(&operation)
     {
-        let local_result = match &dispatch_result {
-            Ok(Some(v)) => MirrorableResponse::Success {
-                status: 200,
-                body: Some(v.clone()),
-            },
-            Ok(None) => MirrorableResponse::Success {
-                status: 200,
-                body: None,
-            },
-            Err(e) => MirrorableResponse::Error {
-                status: e.status_code,
-                body: serde_json::to_value(&e.body).unwrap_or_default(),
-            },
-        };
-        mirror.spawn_forward(
-            target.to_string(),
-            content_type.to_string(),
-            body.clone(),
-            local_result,
-        );
+        match &dispatch_result {
+            Ok(result) => {
+                mirror.spawn_forward(
+                    target.to_string(),
+                    content_type.to_string(),
+                    body.clone(),
+                    result.clone(),
+                );
+            }
+            Err(e) => {
+                tracing::debug!(
+                    parent: &span,
+                    error_type = %e.body.error_type,
+                    "skipping mirror: local dispatch failed"
+                );
+            }
+        }
     }
 
     match dispatch_result {

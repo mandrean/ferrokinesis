@@ -112,8 +112,9 @@ struct ServeArgs {
     mirror_to: Option<String>,
 
     /// Log response divergences between local and mirror to stderr
-    #[arg(long, env = "FERROKINESIS_MIRROR_DIFF", requires = "mirror_to")]
-    mirror_diff: bool,
+    #[arg(long, env = "FERROKINESIS_MIRROR_DIFF", requires = "mirror_to",
+          default_missing_value = "true", num_args = 0..=1)]
+    mirror_diff: Option<bool>,
 
     /// Path to TLS certificate PEM file (enables HTTPS)
     #[cfg(feature = "tls")]
@@ -697,7 +698,7 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
         .try_into()
         .expect("--max-request-body-mb value overflows usize");
     let mirror_to = args.mirror_to.or(file_cfg.mirror_to);
-    let mirror_diff = args.mirror_diff || file_cfg.mirror_diff.unwrap_or(false);
+    let mirror_diff = resolve(args.mirror_diff, file_cfg.mirror_diff, || false);
     let aws_region = options.aws_region.clone();
 
     let (app, _store) = ferrokinesis::create_app_with_capture(options, capture_writer);

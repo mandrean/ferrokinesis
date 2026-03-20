@@ -3,30 +3,19 @@
 //! When configured via `--mirror-to`, [`Mirror`] asynchronously forwards
 //! `PutRecord` and `PutRecords` requests to the mirror endpoint after the
 //! local response has been sent. An optional `--mirror-diff` flag logs
-//! response divergences to stderr for differential validation.
+//! response divergences for differential validation.
 
 use crate::actions::Operation;
 use bytes::Bytes;
 use serde_json::Value;
 use std::sync::Arc;
+use tokio::sync::Semaphore;
 
 /// Captured local response for diff comparison.
-pub enum MirrorableResponse {
-    /// Successful dispatch (HTTP 200).
-    Success {
-        /// HTTP status code (always 200).
-        status: u16,
-        /// Response body, if any.
-        body: Option<Value>,
-    },
-    /// Failed dispatch (HTTP 4xx/5xx).
-    Error {
-        /// HTTP status code.
-        status: u16,
-        /// Error response body.
-        body: Value,
-    },
-}
+///
+/// `None` means no body (empty 200), `Some(value)` means a JSON response body.
+/// Only successful local dispatches are mirrored — failed dispatches are skipped.
+pub type MirrorableResponse = Option<Value>;
 
 /// Async traffic mirror that forwards write operations to a remote endpoint.
 pub struct Mirror {
@@ -35,6 +24,7 @@ pub struct Mirror {
     client: reqwest::Client,
     credentials: Option<aws_credential_types::Credentials>,
     region: String,
+    semaphore: Arc<Semaphore>,
 }
 
 impl Mirror {
@@ -45,7 +35,7 @@ impl Mirror {
     pub fn new(endpoint: &str, diff: bool, region: &str) -> Self {
         let credentials = Self::load_credentials();
         if credentials.is_none() {
-            eprintln!("mirror: no AWS credentials found; requests will be forwarded unsigned");
+            tracing::warn!("no AWS credentials found, requests will be forwarded unsigned");
         }
         Self::with_credentials(endpoint, diff, region, credentials)
     }
@@ -60,12 +50,21 @@ impl Mirror {
         Self {
             endpoint: endpoint.trim_end_matches('/').to_string(),
             diff,
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .expect("failed to build mirror HTTP client"),
             credentials,
             region: region.to_string(),
+            semaphore: Arc::new(Semaphore::new(64)),
         }
     }
 
+    /// Load AWS credentials from environment variables once at startup.
+    ///
+    /// Credentials are captured at construction time and not refreshed. If the
+    /// underlying env vars change (e.g. STS temporary credentials expire), the
+    /// mirror will continue using the original values.
     fn load_credentials() -> Option<aws_credential_types::Credentials> {
         let access_key = std::env::var("AWS_ACCESS_KEY_ID").ok()?;
         let secret_key = std::env::var("AWS_SECRET_ACCESS_KEY").ok()?;
@@ -94,11 +93,19 @@ impl Mirror {
         body: Bytes,
         local_result: MirrorableResponse,
     ) {
+        let permit = match self.semaphore.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                tracing::warn!("backpressure: dropping mirrored request");
+                return;
+            }
+        };
         let mirror = Arc::clone(self);
         tokio::spawn(async move {
             mirror
                 .forward(&target, &content_type, body, &local_result)
                 .await;
+            drop(permit);
         });
     }
 
@@ -125,7 +132,7 @@ impl Mirror {
                     }
                 }
                 Err(e) => {
-                    eprintln!("mirror: signing failed: {e}");
+                    tracing::error!(error = %e, "signing failed");
                     return;
                 }
             }
@@ -151,11 +158,13 @@ impl Mirror {
                                 &mirror_body,
                             );
                         }
-                        Err(e) => eprintln!("mirror: failed to read response body: {e}"),
+                        Err(e) => {
+                            tracing::error!(error = %e, "failed to read mirror response body")
+                        }
                     }
                 }
             }
-            Err(e) => eprintln!("mirror: request failed: {e}"),
+            Err(e) => tracing::warn!(error = %e, "mirror request failed"),
         }
     }
 
@@ -218,14 +227,12 @@ impl Mirror {
     ) {
         let operation = target.split('.').nth(1).unwrap_or(target);
 
-        let local_status = match local {
-            MirrorableResponse::Success { status, .. }
-            | MirrorableResponse::Error { status, .. } => *status,
-        };
-
-        if local_status != mirror_status {
-            eprintln!(
-                "mirror-diff: {operation}: status divergence: local={local_status} mirror={mirror_status}"
+        if 200 != mirror_status {
+            tracing::info!(
+                operation,
+                local = 200u16,
+                mirror = mirror_status,
+                "status divergence"
             );
         }
 
@@ -239,10 +246,7 @@ impl Mirror {
             serde_json::from_slice(mirror_body).ok()
         };
 
-        let local_value = match local {
-            MirrorableResponse::Success { body, .. } => body.clone(),
-            MirrorableResponse::Error { body, .. } => Some(body.clone()),
-        };
+        let local_value = local.clone();
 
         let volatile_keys = ["SequenceNumber"];
         let local_stripped = local_value.map(|mut v| {
@@ -255,17 +259,15 @@ impl Mirror {
         });
 
         if local_stripped != mirror_stripped {
-            eprintln!(
-                "mirror-diff: {operation}: body divergence:\n  local:  {}\n  mirror: {}",
-                local_stripped
-                    .as_ref()
-                    .map(|v| serde_json::to_string(v).unwrap_or_default())
-                    .unwrap_or_else(|| "<empty>".to_string()),
-                mirror_stripped
-                    .as_ref()
-                    .map(|v| serde_json::to_string(v).unwrap_or_default())
-                    .unwrap_or_else(|| "<empty>".to_string()),
-            );
+            let local_str = local_stripped
+                .as_ref()
+                .map(|v| serde_json::to_string(v).unwrap_or_default())
+                .unwrap_or_else(|| "<empty>".to_string());
+            let mirror_str = mirror_stripped
+                .as_ref()
+                .map(|v| serde_json::to_string(v).unwrap_or_default())
+                .unwrap_or_else(|| "<empty>".to_string());
+            tracing::info!(operation, %local_str, %mirror_str, "body divergence");
         }
     }
 }
