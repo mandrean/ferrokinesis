@@ -232,7 +232,7 @@ impl Mirror {
         let operation = target.split('.').nth(1).unwrap_or(target);
 
         if mirror_status != 200 {
-            tracing::info!(
+            tracing::warn!(
                 operation,
                 local = 200u16,
                 mirror = mirror_status,
@@ -269,7 +269,7 @@ impl Mirror {
                 .as_ref()
                 .map(|v| serde_json::to_string(v).unwrap_or_default())
                 .unwrap_or_else(|| "<empty>".to_string());
-            tracing::info!(operation, %local_str, %mirror_str, "body divergence");
+            tracing::warn!(operation, %local_str, %mirror_str, "body divergence");
         }
     }
 }
