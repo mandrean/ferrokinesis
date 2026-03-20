@@ -398,15 +398,17 @@ impl Store {
         let now = crate::util::current_time_ms();
         let cutoff_time = now - (retention_hours as u64 * 60 * 60 * 1000);
 
-        let shard_map = match self.inner.stream_records.get(stream_name) {
-            Some(m) => m,
+        // Phase 1: collect Arc refs while holding the DashMap Ref.
+        let shard_arcs: Vec<_> = match self.inner.stream_records.get(stream_name) {
+            Some(shard_map) => shard_map.iter().map(|e| e.value().clone()).collect(),
             None => return 0,
-        };
+        }; // DashMap Ref dropped here.
 
+        // Phase 2: scan and delete under per-shard locks only.
         let mut total_deleted = 0;
-        for shard_entry in shard_map.iter() {
+        for records_arc in shard_arcs {
             let keys_to_delete: Vec<String> = {
-                let records = shard_entry.value().read().await;
+                let records = records_arc.read().await;
                 records
                     .iter()
                     .filter_map(|(key, _)| {
@@ -422,7 +424,7 @@ impl Store {
             };
 
             if !keys_to_delete.is_empty() {
-                let mut records = shard_entry.value().write().await;
+                let mut records = records_arc.write().await;
                 for key in &keys_to_delete {
                     records.remove(key);
                 }
@@ -435,16 +437,26 @@ impl Store {
 
     /// Deletes records by their shard keys within a stream.
     pub async fn delete_record_keys(&self, stream_name: &str, keys: &[String]) {
-        let shard_map = match self.inner.stream_records.get(stream_name) {
-            Some(m) => m,
-            None => return,
-        };
-        for key in keys {
-            let shard_hex = shard_hex_from_key(key);
-            if let Some(records_arc) = shard_map.get(shard_hex) {
-                let mut records = records_arc.value().write().await;
-                records.remove(key);
-            }
+        // Phase 1: collect Arc refs while holding the DashMap Ref.
+        let pending: Vec<_> = {
+            let shard_map = match self.inner.stream_records.get(stream_name) {
+                Some(m) => m,
+                None => return,
+            };
+            keys.iter()
+                .filter_map(|key| {
+                    let shard_hex = shard_hex_from_key(key);
+                    shard_map
+                        .get(shard_hex)
+                        .map(|r| (r.value().clone(), key.clone()))
+                })
+                .collect()
+        }; // DashMap Ref dropped here.
+
+        // Phase 2: delete under per-shard write locks only.
+        for (records_arc, key) in pending {
+            let mut records = records_arc.write().await;
+            records.remove(&key);
         }
     }
 

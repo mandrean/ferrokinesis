@@ -38,9 +38,6 @@ fn build_capture_refs<'a>(
 }
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_name = store.resolve_stream_name(&data)?;
-    // capture_enabled gates the timestamps allocation inside the update_stream closure;
-    // the actual writer ref is re-checked below (can't borrow it through the closure).
-    let capture_enabled = store.capture_writer.is_some();
 
     let records = data[constants::RECORDS].as_array().ok_or_else(|| {
         KinesisErrorResponse::client_error(constants::SERIALIZATION_EXCEPTION, None)
