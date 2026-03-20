@@ -1134,8 +1134,8 @@ dependencies = [
  "ciborium",
  "clap",
  "criterion",
+ "ferrokinesis-core",
  "goose",
- "md-5",
  "num-bigint",
  "num-traits",
  "postcard",
@@ -1156,6 +1156,22 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "ferrokinesis-core"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "base64",
+ "cbc",
+ "md-5",
+ "num-bigint",
+ "num-traits",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

@@ -1,4 +1,8 @@
 use super::{FieldDef, FieldType};
+use alloc::boxed::Box;
+use alloc::string::ToString;
+use alloc::vec;
+use alloc::vec::Vec;
 
 fn stream_name_field() -> FieldDef {
     FieldDef::new(FieldType::String)

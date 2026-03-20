@@ -134,6 +134,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         &stream_name,
         &shard_id,
         &next_seq,
+        crate::util::current_time_ms(),
     ));
     let mut millis_behind = 0u64;
 
