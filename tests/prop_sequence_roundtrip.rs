@@ -2,7 +2,6 @@
 // is cheap and provides strong coverage of the sequence number encoding space.
 
 use ferrokinesis::sequence::{SeqObj, parse_sequence, stringify_sequence};
-use num_bigint::BigUint;
 use proptest::prelude::*;
 mod common;
 use common::prop_runner;
@@ -34,7 +33,7 @@ fn prop_sequence_roundtrip_identity() {
 
             let obj = SeqObj {
                 shard_create_time,
-                seq_ix: Some(BigUint::from(seq_ix)),
+                seq_ix: Some(seq_ix),
                 byte1: None,
                 seq_time: Some(seq_time),
                 seq_rand: None,

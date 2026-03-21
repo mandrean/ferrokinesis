@@ -2,7 +2,14 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use num_bigint::BigUint;
-use num_traits::{Num, One, ToPrimitive, Zero};
+use num_traits::{Num, One, Zero};
+
+/// Maximum sequence sub-index value (`i64::MAX` as `u64`).
+///
+/// Used as the seq_ix when constructing closing sequence numbers for split/merge
+/// operations. This ensures no future record could produce a sequence number ≥
+/// the ending sequence, making the shard-closed invariant unconditionally safe.
+pub const MAX_SEQ_IX: u64 = 0x7FFF_FFFF_FFFF_FFFF;
 
 /// Errors from parsing or resolving sequence numbers and shard IDs.
 #[derive(Debug, thiserror::Error)]
@@ -32,7 +39,7 @@ pub enum SequenceError {
 #[derive(Debug, Clone)]
 pub struct SeqObj {
     pub shard_create_time: u64,
-    pub seq_ix: Option<BigUint>,
+    pub seq_ix: Option<u64>,
     pub byte1: Option<String>,
     pub seq_time: Option<u64>,
     pub seq_rand: Option<String>,
@@ -129,9 +136,7 @@ pub fn parse_sequence(seq: &str) -> Result<SeqObj, SequenceError> {
 
             Ok(SeqObj {
                 shard_create_time: shard_create_secs * 1000,
-                seq_ix: Some(
-                    BigUint::from_str_radix(seq_ix_hex, 16).unwrap_or_else(|_| BigUint::zero()),
-                ),
+                seq_ix: Some(u64::from_str_radix(seq_ix_hex, 16).unwrap_or(0)),
                 byte1: Some(hex[27..29].to_string()),
                 seq_time: Some(seq_time),
                 seq_rand: None,
@@ -147,9 +152,7 @@ pub fn parse_sequence(seq: &str) -> Result<SeqObj, SequenceError> {
 
             Ok(SeqObj {
                 shard_create_time: shard_create_secs * 1000,
-                seq_ix: Some(BigUint::from(
-                    u64::from_str_radix(&hex[36..38], 16).unwrap_or(0),
-                )),
+                seq_ix: Some(u64::from_str_radix(&hex[36..38], 16).unwrap_or(0)),
                 byte1: Some(hex[11..13].to_string()),
                 seq_time: Some(u64::from_str_radix(&hex[13..22], 16).unwrap_or(0) * 1000),
                 seq_rand: Some(hex[22..36].to_string()),
@@ -181,80 +184,103 @@ pub fn parse_sequence(seq: &str) -> Result<SeqObj, SequenceError> {
     }
 }
 
+const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
+
+/// Write `val` as a zero-padded lowercase hex string of exactly `width` nibbles
+/// into `buf`. `buf.len()` must equal `width`.
+fn write_hex_u64(buf: &mut [u8], val: u64, width: usize) {
+    debug_assert_eq!(buf.len(), width);
+    for i in 0..width {
+        buf[i] = HEX_CHARS[((val >> ((width - 1 - i) * 4)) & 0xF) as usize];
+    }
+}
+
+/// Write `val` as a zero-padded lowercase hex string of exactly `width` nibbles.
+fn write_hex_u32(buf: &mut [u8], val: u32, width: usize) {
+    debug_assert_eq!(buf.len(), width);
+    for i in 0..width {
+        buf[i] = HEX_CHARS[((val >> ((width - 1 - i) * 4)) & 0xF) as usize];
+    }
+}
+
+/// Copy exactly `width` ASCII hex bytes from `src` into `buf`, right-aligned
+/// and zero-padded if `src` is shorter.
+fn write_hex_str(buf: &mut [u8], src: &str, width: usize) {
+    debug_assert_eq!(buf.len(), width);
+    let src_bytes = src.as_bytes();
+    let src_len = src_bytes.len().min(width);
+    let pad = width - src_len;
+    buf[..pad].fill(b'0');
+    buf[pad..].copy_from_slice(&src_bytes[src_bytes.len() - src_len..]);
+}
+
 /// Serialize a [`SeqObj`] back into its decimal sequence number string.
 pub fn stringify_sequence(obj: &SeqObj) -> String {
     match obj.version {
         0 | 2 if obj.version == 0 => {
-            let shard_create_hex = format!("{:09x}", obj.shard_create_time / 1000)
-                .chars()
-                .rev()
-                .take(9)
-                .collect::<String>()
-                .chars()
-                .rev()
-                .collect::<String>();
-            let byte1 = obj.byte1.as_deref().unwrap_or("00");
-            let seq_rand = obj.seq_rand.as_deref().unwrap_or("0000000000000000");
-            let shard_ix_hex = format!("{:08x}", obj.shard_ix as u32);
-            let shard_ix_short = &shard_ix_hex[shard_ix_hex.len() - 4..];
+            // v0 hex layout: "1" + shard_create(9) + byte1(2) + seq_rand(16) + shard_ix(4) = 32
+            let mut buf = [b'0'; 32];
+            buf[0] = b'1';
+            write_hex_u64(&mut buf[1..10], obj.shard_create_time / 1000, 9);
+            write_hex_str(&mut buf[10..12], obj.byte1.as_deref().unwrap_or("00"), 2);
+            write_hex_str(
+                &mut buf[12..28],
+                obj.seq_rand.as_deref().unwrap_or("0000000000000000"),
+                16,
+            );
+            write_hex_u32(&mut buf[28..32], obj.shard_ix as u32, 4);
 
-            let hex_str = format!("1{shard_create_hex}{byte1}{seq_rand}{shard_ix_short}");
-            BigUint::from_str_radix(&hex_str, 16)
+            let hex_str = core::str::from_utf8(&buf).unwrap();
+            BigUint::from_str_radix(hex_str, 16)
                 .unwrap_or_else(|_| BigUint::zero())
                 .to_string()
         }
         1 => {
-            let shard_create_hex = format!("{:09x}", obj.shard_create_time / 1000);
-            let shard_create_hex = &shard_create_hex[shard_create_hex.len().saturating_sub(9)..];
-            let shard_ix_last = format!("{:x}", obj.shard_ix as u32);
-            let shard_ix_last = &shard_ix_last[shard_ix_last.len() - 1..];
-            let byte1 = obj.byte1.as_deref().unwrap_or("00");
-            let seq_time_hex = format!(
-                "{:09x}",
-                obj.seq_time.unwrap_or(obj.shard_create_time) / 1000
+            // v1 hex layout: "2" + shard_create(9) + shard_ix_last(1) + byte1(2) + seq_time(9)
+            //                + seq_rand(14) + seq_ix(2) + shard_ix(8) + "1" = 47
+            let mut buf = [b'0'; 47];
+            buf[0] = b'2';
+            write_hex_u64(&mut buf[1..10], obj.shard_create_time / 1000, 9);
+            buf[10] = HEX_CHARS[((obj.shard_ix as u32) & 0xF) as usize];
+            write_hex_str(&mut buf[11..13], obj.byte1.as_deref().unwrap_or("00"), 2);
+            write_hex_u64(
+                &mut buf[13..22],
+                obj.seq_time.unwrap_or(obj.shard_create_time) / 1000,
+                9,
             );
-            let seq_time_hex = &seq_time_hex[seq_time_hex.len().saturating_sub(9)..];
-            let seq_rand = obj.seq_rand.as_deref().unwrap_or("00000000000000");
-            let seq_ix = obj.seq_ix.as_ref().and_then(|v| v.to_u64()).unwrap_or(0);
-            let seq_ix_hex = format!("{seq_ix:02x}");
-            let seq_ix_hex = &seq_ix_hex[seq_ix_hex.len().saturating_sub(2)..];
+            write_hex_str(
+                &mut buf[22..36],
+                obj.seq_rand.as_deref().unwrap_or("00000000000000"),
+                14,
+            );
+            write_hex_u64(&mut buf[36..38], obj.seq_ix.unwrap_or(0), 2);
+            write_hex_u32(&mut buf[38..46], obj.shard_ix as u32, 8);
+            buf[46] = b'1';
 
-            let hex_str = format!(
-                "2{shard_create_hex}{shard_ix_last}{byte1}{seq_time_hex}{seq_rand}{seq_ix_hex}{}1",
-                shard_ix_to_hex(obj.shard_ix)
-            );
-            BigUint::from_str_radix(&hex_str, 16)
+            let hex_str = core::str::from_utf8(&buf).unwrap();
+            BigUint::from_str_radix(hex_str, 16)
                 .unwrap_or_else(|_| BigUint::zero())
                 .to_string()
         }
         _ => {
-            // Version 2 (default)
-            let shard_create_hex = format!("{:09x}", obj.shard_create_time / 1000);
-            let shard_create_hex = &shard_create_hex[shard_create_hex.len().saturating_sub(9)..];
-            let shard_ix_last = format!("{:x}", obj.shard_ix as u32);
-            let shard_ix_last = &shard_ix_last[shard_ix_last.len() - 1..];
-
-            let seq_ix = obj
-                .seq_ix
-                .as_ref()
-                .map(|v| format!("{v:x}"))
-                .unwrap_or_else(|| "0".to_string());
-            let seq_ix_padded = format!("{seq_ix:0>16}");
-            let seq_ix_hex = &seq_ix_padded[seq_ix_padded.len().saturating_sub(16)..];
-
-            let byte1 = obj.byte1.as_deref().unwrap_or("00");
-
-            let seq_time_hex = format!(
-                "{:09x}",
-                obj.seq_time.unwrap_or(obj.shard_create_time) / 1000
+            // v2 hex layout (default): "2" + shard_create(9) + shard_ix_last(1) + seq_ix(16)
+            //                          + byte1(2) + seq_time(9) + shard_ix(8) + "2" = 47
+            let mut buf = [b'0'; 47];
+            buf[0] = b'2';
+            write_hex_u64(&mut buf[1..10], obj.shard_create_time / 1000, 9);
+            buf[10] = HEX_CHARS[((obj.shard_ix as u32) & 0xF) as usize];
+            write_hex_u64(&mut buf[11..27], obj.seq_ix.unwrap_or(0), 16);
+            write_hex_str(&mut buf[27..29], obj.byte1.as_deref().unwrap_or("00"), 2);
+            write_hex_u64(
+                &mut buf[29..38],
+                obj.seq_time.unwrap_or(obj.shard_create_time) / 1000,
+                9,
             );
-            let seq_time_hex = &seq_time_hex[seq_time_hex.len().saturating_sub(9)..];
+            write_hex_u32(&mut buf[38..46], obj.shard_ix as u32, 8);
+            buf[46] = b'2';
 
-            let hex_str = format!(
-                "2{shard_create_hex}{shard_ix_last}{seq_ix_hex}{byte1}{seq_time_hex}{}2",
-                shard_ix_to_hex(obj.shard_ix)
-            );
-            BigUint::from_str_radix(&hex_str, 16)
+            let hex_str = core::str::from_utf8(&buf).unwrap();
+            BigUint::from_str_radix(hex_str, 16)
                 .unwrap_or_else(|_| BigUint::zero())
                 .to_string()
         }
@@ -265,7 +291,7 @@ pub fn stringify_sequence(obj: &SeqObj) -> String {
 pub fn increment_sequence(seq_obj: &SeqObj, seq_time: Option<u64>) -> String {
     stringify_sequence(&SeqObj {
         shard_create_time: seq_obj.shard_create_time,
-        seq_ix: seq_obj.seq_ix.clone(),
+        seq_ix: seq_obj.seq_ix,
         byte1: None,
         seq_time: Some(seq_time.unwrap_or_else(|| seq_obj.seq_time.unwrap_or(0) + 1000)),
         seq_rand: None,
@@ -305,15 +331,15 @@ pub fn resolve_shard_id(shard_id: &str) -> Result<(String, i64), SequenceError> 
     Ok((shard_id_name(shard_ix), shard_ix))
 }
 
-/// MD5-hash a partition key and return the result as a 128-bit [`BigUint`].
+/// MD5-hash a partition key and return the result as a 128-bit integer.
 ///
 /// Kinesis uses this hash to determine which shard a record belongs to.
-pub fn partition_key_to_hash_key(partition_key: &str) -> BigUint {
+pub fn partition_key_to_hash_key(partition_key: &str) -> u128 {
     use md5::{Digest, Md5};
     let mut hasher = Md5::new();
     hasher.update(partition_key.as_bytes());
     let result = hasher.finalize();
-    BigUint::from_bytes_be(&result)
+    u128::from_be_bytes(result.into())
 }
 
 #[cfg(test)]
@@ -349,7 +375,7 @@ mod tests {
     fn test_stringify_parse_roundtrip() {
         let obj = SeqObj {
             shard_create_time: 1_600_000_000_000,
-            seq_ix: Some(BigUint::from(42u64)),
+            seq_ix: Some(42),
             byte1: Some("00".to_string()),
             seq_time: Some(1_600_000_001_000),
             seq_rand: None,
@@ -367,6 +393,6 @@ mod tests {
     fn test_partition_key_to_hash_key() {
         // MD5 of "a" is 0cc175b9c0f1b6a831c399e269772661
         let hash = partition_key_to_hash_key("a");
-        assert!(hash > BigUint::zero());
+        assert!(hash > 0);
     }
 }

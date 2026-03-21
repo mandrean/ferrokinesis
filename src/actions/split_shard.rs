@@ -4,8 +4,6 @@ use crate::sequence;
 use crate::store::Store;
 use crate::types::*;
 use crate::util::current_time_ms;
-use num_bigint::BigUint;
-use num_traits::{Num, One, Zero};
 use serde_json::Value;
 
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
@@ -65,26 +63,16 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                 ));
             }
 
-            let hash_key: BigUint = new_starting_hash_key
-                .parse()
-                .unwrap_or_else(|_| BigUint::zero());
+            let hash_key: u128 = new_starting_hash_key.parse().unwrap_or(0);
             let shard = &stream.shards[shard_ix as usize];
-            let shard_start: BigUint = shard
-                .hash_key_range
-                .starting_hash_key
-                .parse()
-                .unwrap_or_else(|_| BigUint::zero());
-            let shard_end: BigUint = shard
-                .hash_key_range
-                .ending_hash_key
-                .parse()
-                .unwrap_or_else(|_| BigUint::zero());
+            let shard_start = shard.hash_key_range.start_u128();
+            let shard_end = shard.hash_key_range.end_u128();
 
             // Strict interior constraint: the split key must be > start+1 AND < end.
             // Equal to start+1 would give the lower child an empty hash range [start, start];
             // equal to end would give the upper child an empty range [end, end]. Either
             // degenerate case would prevent any partition key from routing to that child.
-            if hash_key <= &shard_start + BigUint::one() || hash_key >= shard_end {
+            if hash_key <= shard_start + 1 || hash_key >= shard_end {
                 return Err(KinesisErrorResponse::client_error(
                     constants::INVALID_ARGUMENT,
                     Some(&format!(
@@ -116,12 +104,6 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                 let now = current_time_ms();
                 stream.stream_status = StreamStatus::Active;
 
-                // Use the maximum possible seq_ix (0x7fffffffffffffff) for the closing
-                // sequence number so that no future record in this shard could produce a
-                // sequence number that compares as ≥ the ending sequence.
-                let max_seq_ix = BigUint::from_str_radix("7fffffffffffffff", 16)
-                    .unwrap_or_else(|_| BigUint::zero());
-
                 let shard = &mut stream.shards[shard_ix as usize];
                 let create_time =
                     sequence::parse_sequence(&shard.sequence_number_range.starting_sequence_number)
@@ -132,7 +114,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                     Some(sequence::stringify_sequence(&sequence::SeqObj {
                         shard_create_time: create_time,
                         shard_ix,
-                        seq_ix: Some(max_seq_ix),
+                        seq_ix: Some(sequence::MAX_SEQ_IX),
                         seq_time: Some(now),
                         byte1: None,
                         seq_rand: None,
@@ -143,10 +125,10 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                 stream.shards.push(Shard {
                     parent_shard_id: Some(shard_id_clone.clone()),
                     adjacent_parent_shard_id: None,
-                    hash_key_range: HashKeyRange {
-                        starting_hash_key: shard_start.to_string(),
-                        ending_hash_key: (&hash_key - BigUint::one()).to_string(),
-                    },
+                    hash_key_range: HashKeyRange::new(
+                        shard_start.to_string(),
+                        (hash_key - 1).to_string(),
+                    ),
                     sequence_number_range: SequenceNumberRange {
                         starting_sequence_number: sequence::stringify_sequence(&sequence::SeqObj {
                             // Child's create_time is 1 second ahead of the parent's closing
@@ -170,10 +152,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                 stream.shards.push(Shard {
                     parent_shard_id: Some(shard_id_clone.clone()),
                     adjacent_parent_shard_id: None,
-                    hash_key_range: HashKeyRange {
-                        starting_hash_key: hash_key.to_string(),
-                        ending_hash_key: shard_end.to_string(),
-                    },
+                    hash_key_range: HashKeyRange::new(hash_key.to_string(), shard_end.to_string()),
                     sequence_number_range: SequenceNumberRange {
                         starting_sequence_number: sequence::stringify_sequence(&sequence::SeqObj {
                             shard_create_time: now + 1000,

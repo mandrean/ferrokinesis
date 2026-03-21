@@ -7,7 +7,6 @@ use crate::types::{EpochSeconds, ResponseRecord, ShardIteratorType, StreamStatus
 use crate::util::current_time_ms;
 use axum::body::Body;
 use bytes::Bytes;
-use num_bigint::BigUint;
 use serde_json::{Value, json};
 
 /// Maximum subscription duration (5 minutes)
@@ -135,7 +134,7 @@ pub async fn execute_streaming(
             let seq_ix = store.current_shard_seq(&stream_name, shard_ix).await;
             sequence::stringify_sequence(&sequence::SeqObj {
                 shard_create_time: shard_seq_obj.shard_create_time,
-                seq_ix: Some(BigUint::from(seq_ix)),
+                seq_ix: Some(seq_ix),
                 seq_time: Some(now),
                 shard_ix: shard_seq_obj.shard_ix,
                 byte1: None,

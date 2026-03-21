@@ -5,8 +5,6 @@ use crate::error::KinesisErrorResponse;
 use crate::sequence;
 use crate::store::Store;
 use crate::types::StoredRecordRef;
-use num_bigint::BigUint;
-use num_traits::{One, Zero};
 use serde_json::{Value, json};
 #[cfg(feature = "server")]
 use std::borrow::Cow;
@@ -78,24 +76,21 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     }
 
     // Pre-compute hash keys (no stream access needed)
-    let pow_128 = BigUint::one() << 128;
-    let mut hash_keys = Vec::with_capacity(records.len());
+    let mut hash_keys: Vec<u128> = Vec::with_capacity(records.len());
 
     for record in records {
         let partition_key = record["PartitionKey"].as_str().unwrap_or("");
         let explicit_hash_key = record["ExplicitHashKey"].as_str();
 
-        let hash_key = if let Some(ehk) = explicit_hash_key {
-            let hk: BigUint = ehk.parse().unwrap_or_else(|_| BigUint::zero());
-            if hk >= pow_128 {
-                return Err(KinesisErrorResponse::client_error(
+        let hash_key: u128 = if let Some(ehk) = explicit_hash_key {
+            ehk.parse::<u128>().map_err(|_| {
+                KinesisErrorResponse::client_error(
                     constants::INVALID_ARGUMENT,
                     Some(&format!(
                         "Invalid ExplicitHashKey. ExplicitHashKey must be in the range: [0, 2^128-1]. Specified value was {ehk}"
                     )),
-                ));
-            }
-            hk
+                )
+            })?
         } else {
             sequence::partition_key_to_hash_key(partition_key)
         };

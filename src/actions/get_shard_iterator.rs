@@ -5,7 +5,6 @@ use crate::shard_iterator;
 use crate::store::Store;
 use crate::types::ShardIteratorType;
 use crate::util::current_time_ms;
-use num_bigint::BigUint;
 use serde_json::{Value, json};
 
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
@@ -145,7 +144,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                 let seq_ix = store.current_shard_seq(stream_name, shard_ix).await;
                 iterator_seq = sequence::stringify_sequence(&sequence::SeqObj {
                     shard_create_time: shard_seq_obj.shard_create_time,
-                    seq_ix: Some(BigUint::from(seq_ix)),
+                    seq_ix: Some(seq_ix),
                     seq_time: Some(now),
                     shard_ix: shard_seq_obj.shard_ix,
                     byte1: None,
