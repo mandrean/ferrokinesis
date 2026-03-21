@@ -1,3 +1,4 @@
+#[cfg(feature = "server")]
 use crate::capture::{CaptureOp, CaptureRecordRef};
 use crate::constants;
 use crate::error::KinesisErrorResponse;
@@ -5,12 +6,15 @@ use crate::sequence;
 use crate::store::Store;
 use crate::types::StoredRecordRef;
 use serde_json::{Value, json};
+#[cfg(feature = "server")]
 use std::borrow::Cow;
 
+#[cfg(feature = "server")]
 fn is_capture_eligible(resp: &Value) -> bool {
     resp.get(constants::ERROR_CODE).is_none_or(|v| v.is_null())
 }
 
+#[cfg(feature = "server")]
 fn build_capture_refs<'a>(
     records: &'a [Value],
     return_records: &'a [Value],
@@ -122,6 +126,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
 
     store.put_records_batch(&stream_name, &batch).await;
 
+    #[cfg(feature = "server")]
     if let Some(ref writer) = store.capture_writer {
         let timestamps: Vec<u64> = allocations.iter().map(|a| a.now).collect();
         let capture_refs = build_capture_refs(records, &return_records, &timestamps, &stream_name);
@@ -138,7 +143,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     })))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "server"))]
 mod tests {
     use super::*;
     use crate::capture::{CaptureOp, CaptureWriter, read_capture_file};

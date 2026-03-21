@@ -45,8 +45,8 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     // Delete after short delay
     let store_clone = store.clone();
     let arn = resolved_arn;
-    tokio::spawn(async move {
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    crate::runtime::spawn_background(async move {
+        crate::runtime::sleep_ms(500).await;
         store_clone.delete_consumer(&arn).await;
     });
 

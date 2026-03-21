@@ -24,8 +24,8 @@
 //! header to determine the [`actions::Operation`], deserializes the JSON/CBOR body,
 //! runs validation, then routes to the appropriate action handler in [`actions`].
 //!
-//! All persistent state lives in an in-memory [redb](https://docs.rs/redb) database
-//! wrapped by [`store::Store`].
+//! All persistent state lives in an in-memory concurrent store wrapped by
+//! [`store::Store`].
 //!
 //! ## AWS Kinesis documentation
 //!
@@ -35,19 +35,25 @@
 #![warn(missing_docs)]
 
 pub mod actions;
+#[cfg(feature = "server")]
 pub mod capture;
+#[cfg(feature = "server")]
 pub mod config;
 #[doc(hidden)]
 pub mod constants;
 pub mod error;
+#[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod event_stream;
 pub mod health;
 #[cfg(feature = "mirror")]
 #[doc(hidden)]
 pub mod mirror;
+#[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod retention;
+#[doc(hidden)]
+pub mod runtime;
 #[doc(hidden)]
 pub mod sequence;
 pub mod server;
@@ -63,7 +69,9 @@ pub mod validation;
 use axum::Router;
 use axum::middleware;
 use axum::routing::{any, get};
-use store::{Store, StoreOptions};
+use store::Store;
+#[cfg(not(target_arch = "wasm32"))]
+use store::StoreOptions;
 #[cfg(feature = "access-log")]
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 
@@ -92,10 +100,15 @@ use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 ///     axum::serve(listener, app).await.unwrap();
 /// }
 /// ```
+#[cfg(not(target_arch = "wasm32"))]
 pub fn create_app(options: StoreOptions) -> (Router, Store) {
-    create_app_with_capture(options, None)
+    let store = Store::new(options.clone());
+    let app = create_router(store.clone());
+    spawn_retention_reaper(&store, &options);
+    (app, store)
 }
 
+#[cfg(all(feature = "server", not(target_arch = "wasm32")))]
 /// Like [`create_app`], but accepts an optional [`capture::CaptureWriter`] to record
 /// PutRecord/PutRecords calls to an NDJSON file.
 pub fn create_app_with_capture(
@@ -103,12 +116,22 @@ pub fn create_app_with_capture(
     capture: Option<capture::CaptureWriter>,
 ) -> (Router, Store) {
     let store = Store::with_capture(options.clone(), capture);
+    let app = create_router(store.clone());
+    spawn_retention_reaper(&store, &options);
+    (app, store)
+}
+
+/// Creates an Axum [`Router`] around an existing [`store::Store`].
+///
+/// Unlike [`create_app`], this does not spawn any background maintenance tasks.
+/// It is intended for embedded or in-process use cases, including the wasm wrapper.
+pub fn create_router(store: Store) -> Router {
     let app = Router::new()
         .route("/_health", get(health::health))
         .route("/_health/live", get(health::live))
         .route("/_health/ready", get(health::ready))
         .fallback(any(server::handler))
-        .with_state(store.clone())
+        .with_state(store)
         .layer(middleware::from_fn(server::kinesis_413_middleware));
 
     #[cfg(feature = "access-log")]
@@ -118,13 +141,58 @@ pub fn create_app_with_capture(
             .on_response(DefaultOnResponse::new().level(tracing::Level::INFO)),
     );
 
+    app
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn spawn_retention_reaper(store: &Store, options: &StoreOptions) {
     if options.retention_check_interval_secs > 0 {
         let reaper_store = store.clone();
-        tokio::spawn(retention::run_reaper(
+        runtime::spawn_background(retention::run_reaper(
             reaper_store,
             options.retention_check_interval_secs,
         ));
     }
+}
 
-    (app, store)
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+    use crate::actions::{Operation, dispatch};
+    use crate::types::StreamStatus;
+    use serde_json::json;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn create_app_preserves_background_transitions() {
+        let (_app, store) = create_app(StoreOptions {
+            create_stream_ms: 1,
+            ..StoreOptions::default()
+        });
+
+        dispatch(
+            &store,
+            Operation::CreateStream,
+            json!({
+                "StreamName": "native-no-default-features",
+                "ShardCount": 1,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let stream = store
+            .get_stream("native-no-default-features")
+            .await
+            .unwrap();
+        assert_eq!(stream.stream_status, StreamStatus::Creating);
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        let stream = store
+            .get_stream("native-no-default-features")
+            .await
+            .unwrap();
+        assert_eq!(stream.stream_status, StreamStatus::Active);
+    }
 }

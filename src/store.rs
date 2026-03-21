@@ -150,6 +150,7 @@ pub struct Store {
     pub aws_region: String,
     inner: Arc<StoreInner>,
     /// Optional capture writer for recording PutRecord/PutRecords calls.
+    #[cfg(feature = "server")]
     pub(crate) capture_writer: Option<crate::capture::CaptureWriter>,
 }
 
@@ -175,9 +176,18 @@ impl Store {
     /// Strips non-digit characters from `options.aws_account_id` and warns if
     /// the result is not exactly 12 digits.
     pub fn new(options: StoreOptions) -> Self {
-        Self::with_capture(options, None)
+        #[cfg(feature = "server")]
+        {
+            Self::build(options, None)
+        }
+
+        #[cfg(not(feature = "server"))]
+        {
+            Self::build(options)
+        }
     }
 
+    #[cfg(feature = "server")]
     /// Creates a new store with an optional [`crate::capture::CaptureWriter`]
     /// to record PutRecord/PutRecords calls to an NDJSON file.
     ///
@@ -186,6 +196,13 @@ impl Store {
     pub fn with_capture(
         options: StoreOptions,
         capture_writer: Option<crate::capture::CaptureWriter>,
+    ) -> Self {
+        Self::build(options, capture_writer)
+    }
+
+    fn build(
+        options: StoreOptions,
+        #[cfg(feature = "server")] capture_writer: Option<crate::capture::CaptureWriter>,
     ) -> Self {
         let aws_account_id: String = options
             .aws_account_id
@@ -214,6 +231,7 @@ impl Store {
                 resource_tags: DashMap::new(),
                 account_settings: RwLock::new(Value::Object(Default::default())),
             }),
+            #[cfg(feature = "server")]
             capture_writer,
         }
     }

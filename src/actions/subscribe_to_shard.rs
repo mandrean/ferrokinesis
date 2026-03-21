@@ -293,7 +293,7 @@ pub async fn execute_streaming(
             }
 
             // Wait before polling again
-            tokio::time::sleep(tokio::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+            crate::runtime::sleep_ms(POLL_INTERVAL_MS).await;
         }
     };
 
