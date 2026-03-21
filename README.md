@@ -49,6 +49,22 @@ chmod +x ferrokinesis
 cargo install ferrokinesis
 ```
 
+### WASI Preview 2 (Experimental)
+
+Build the experimental WASI listener binary:
+
+```sh
+cargo build --target wasm32-wasip2 --no-default-features --features wasi --bin ferrokinesis-wasi
+```
+
+Then run it in a Preview 2-capable runtime with TCP listening enabled, for example:
+
+```sh
+wasmtime run --wasi tcp-listen=0.0.0.0:4567 target/wasm32-wasip2/debug/ferrokinesis-wasi.wasm
+```
+
+The WASI binary is env-configured only. It currently targets the normal JSON/CBOR request path and health endpoints; `SubscribeToShard` remains unsupported there for now.
+
 ### Docker
 
 ```sh
