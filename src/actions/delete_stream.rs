@@ -20,8 +20,8 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     let store_clone = store.clone();
     let name = stream_name.to_string();
     let delay = store.options.delete_stream_ms;
-    tokio::spawn(async move {
-        tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
+    crate::runtime::spawn_background(async move {
+        crate::runtime::sleep_ms(delay).await;
         store_clone.delete_stream(&name).await;
     });
 

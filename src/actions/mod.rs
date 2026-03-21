@@ -68,6 +68,7 @@ pub mod split_shard;
 pub mod start_stream_encryption;
 #[doc(hidden)]
 pub mod stop_stream_encryption;
+#[cfg(feature = "rt")]
 #[doc(hidden)]
 pub mod subscribe_to_shard;
 #[doc(hidden)]
@@ -87,6 +88,7 @@ pub mod update_stream_warm_throughput;
 
 pub use ferrokinesis_core::operation::Operation;
 
+use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::store::Store;
 use serde_json::Value;
@@ -150,10 +152,10 @@ pub async fn dispatch(
         Operation::SplitShard => split_shard::execute(store, data).await,
         Operation::StartStreamEncryption => start_stream_encryption::execute(store, data).await,
         Operation::StopStreamEncryption => stop_stream_encryption::execute(store, data).await,
-        Operation::SubscribeToShard => {
-            // Handled separately in server.rs via execute_streaming; should not reach here.
-            Err(KinesisErrorResponse::server_error(None, None))
-        }
+        Operation::SubscribeToShard => Err(KinesisErrorResponse::client_error(
+            constants::INVALID_ARGUMENT,
+            Some("SubscribeToShard is not supported in this build."),
+        )),
         Operation::TagResource => tag_resource::execute(store, data).await,
         Operation::UntagResource => untag_resource::execute(store, data).await,
         Operation::UpdateAccountSettings => update_account_settings::execute(store, data).await,

@@ -108,8 +108,8 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     let delay = store.options.update_stream_ms;
     let shard_id_clone = shard_id.clone();
 
-    tokio::spawn(async move {
-        tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
+    crate::runtime::spawn_background(async move {
+        crate::runtime::sleep_ms(delay).await;
 
         let _ = store_clone
             .update_stream(&name, |stream| {

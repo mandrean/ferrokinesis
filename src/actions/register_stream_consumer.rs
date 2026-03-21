@@ -60,8 +60,8 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     // Transition to ACTIVE after a short delay
     let store_clone = store.clone();
     let arn = consumer_arn.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    crate::runtime::spawn_background(async move {
+        crate::runtime::sleep_ms(500).await;
         if let Some(mut c) = store_clone.get_consumer(&arn).await {
             c.consumer_status = ConsumerStatus::Active;
             store_clone.put_consumer(&arn, c).await;
