@@ -205,6 +205,34 @@ impl TestServer {
             .unwrap()
     }
 
+    /// Make a CBOR request with multiple Data fields encoded as CBOR byte strings.
+    /// `raw_data_many` must match the explicit path traversal order exactly
+    /// (for example, `"Records.*.Data"` consumes one payload per array element).
+    pub async fn cbor_request_raw_data_many(
+        &self,
+        target: &str,
+        fields: &Value,
+        data_field_path: &str,
+        raw_data_many: &[Vec<u8>],
+    ) -> reqwest::Response {
+        let cbor_val = json_to_cbor_with_bytes_many(fields, data_field_path, raw_data_many);
+        let mut buf = Vec::new();
+        ciborium::into_writer(&cbor_val, &mut buf).unwrap();
+        self.client
+            .post(self.url())
+            .header("Content-Type", AMZ_CBOR)
+            .header("X-Amz-Target", format!("{VERSION}.{target}"))
+            .header(
+                "Authorization",
+                "AWS4-HMAC-SHA256 Credential=AKID/20150101/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=abcd1234",
+            )
+            .header("X-Amz-Date", "20150101T000000Z")
+            .body(buf)
+            .send()
+            .await
+            .unwrap()
+    }
+
     /// Make a raw HTTP request with full control over headers/body
     pub async fn raw_request(
         &self,
@@ -457,6 +485,36 @@ pub fn json_to_cbor_with_bytes(
     json_to_cbor_inner(val, data_field_path, raw_data)
 }
 
+/// Convert a serde_json::Value to ciborium::Value, replacing each field matched by
+/// `data_field_path` with the next CBOR Bytes payload from `raw_data_many`.
+/// Path syntax matches [`json_to_cbor_with_bytes`], including wildcard expansion.
+///
+/// Panics if the explicit path matches a different number of fields than the
+/// number of provided payloads.
+pub fn json_to_cbor_with_bytes_many(
+    val: &Value,
+    data_field_path: &str,
+    raw_data_many: &[Vec<u8>],
+) -> ciborium::Value {
+    let mut next_idx = 0;
+    let cbor = json_to_cbor_inner_many(
+        val,
+        data_field_path,
+        data_field_path,
+        raw_data_many,
+        &mut next_idx,
+    );
+    assert_eq!(
+        next_idx,
+        raw_data_many.len(),
+        "path {:?} matched {} field(s), but {} raw payload(s) were provided",
+        data_field_path,
+        next_idx,
+        raw_data_many.len()
+    );
+    cbor
+}
+
 fn json_to_cbor_inner(val: &Value, path: &str, raw_data: &[u8]) -> ciborium::Value {
     match val {
         Value::Null => ciborium::Value::Null,
@@ -500,6 +558,75 @@ fn json_to_cbor_inner(val: &Value, path: &str, raw_data: &[u8]) -> ciborium::Val
                         } else if k == first {
                             // Traverse deeper
                             json_to_cbor_inner(v, rest, raw_data)
+                        } else {
+                            json_to_cbor_inner(v, "", &[])
+                        };
+                        (cbor_key, cbor_val)
+                    })
+                    .collect(),
+            )
+        }
+    }
+}
+
+fn json_to_cbor_inner_many(
+    val: &Value,
+    path: &str,
+    full_path: &str,
+    raw_data_many: &[Vec<u8>],
+    next_idx: &mut usize,
+) -> ciborium::Value {
+    if path.is_empty() {
+        return json_to_cbor_inner(val, "", &[]);
+    }
+
+    match val {
+        Value::Null => ciborium::Value::Null,
+        Value::Bool(b) => ciborium::Value::Bool(*b),
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                ciborium::Value::Integer(i.into())
+            } else if let Some(f) = n.as_f64() {
+                ciborium::Value::Float(f)
+            } else {
+                ciborium::Value::Null
+            }
+        }
+        Value::String(s) => ciborium::Value::Text(s.clone()),
+        Value::Array(arr) => {
+            let (first, rest) = path.split_once('.').unwrap_or((path, ""));
+            if first == "*" {
+                ciborium::Value::Array(
+                    arr.iter()
+                        .map(|item| {
+                            json_to_cbor_inner_many(item, rest, full_path, raw_data_many, next_idx)
+                        })
+                        .collect(),
+                )
+            } else {
+                json_to_cbor_inner(val, "", &[])
+            }
+        }
+        Value::Object(map) => {
+            let (first, rest) = path.split_once('.').unwrap_or((path, ""));
+            ciborium::Value::Map(
+                map.iter()
+                    .map(|(k, v)| {
+                        let cbor_key = ciborium::Value::Text(k.clone());
+                        let cbor_val = if k == first && rest.is_empty() {
+                            let idx = *next_idx;
+                            let raw = raw_data_many.get(idx).unwrap_or_else(|| {
+                                panic!(
+                                    "path {:?} matched more fields than raw payloads provided: needed payload index {}, provided {}",
+                                    full_path,
+                                    idx,
+                                    raw_data_many.len()
+                                )
+                            });
+                            *next_idx += 1;
+                            ciborium::Value::Bytes(raw.clone())
+                        } else if k == first {
+                            json_to_cbor_inner_many(v, rest, full_path, raw_data_many, next_idx)
                         } else {
                             json_to_cbor_inner(v, "", &[])
                         };
