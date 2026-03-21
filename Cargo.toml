@@ -25,9 +25,14 @@ name = "loadtest"
 path = "src/bin/loadtest.rs"
 required-features = ["loadtest"]
 
+[[bin]]
+name = "ferrokinesis-wasi"
+path = "src/bin/wasi.rs"
+required-features = ["wasi"]
+
 [features]
 default = ["server", "access-log"]
-rt = []
+rt = ["tokio/rt", "tokio/time", "tokio/macros"]
 server = [
     "rt",
     "dep:clap",
@@ -43,6 +48,7 @@ server = [
     "tokio/signal",
 ]
 access-log = ["dep:tower-http"]
+wasi = ["rt", "dep:httparse", "dep:tower", "dep:tracing-subscriber"]
 wasm = [
     "dep:getrandom",
     "dep:js-sys",
@@ -80,6 +86,7 @@ ciborium = "0.2"
 clap = { version = "4", features = ["derive", "env"], optional = true }
 getrandom = { version = "0.3", default-features = false, optional = true }
 goose = { version = "0.18", optional = true }
+httparse = { version = "1", optional = true }
 js-sys = { version = "0.3", optional = true }
 md-5 = { version = "0.10", default-features = false }
 num-bigint = "0.4"
@@ -96,6 +103,7 @@ serde_json = "1"
 thiserror = "2.0.18"
 tokio = { version = "1", default-features = false, features = ["sync"] }
 toml = { version = "0.8", optional = true }
+tower = { version = "0.5", features = ["util"], optional = true }
 tower-http = { version = "0.6", features = ["trace"], optional = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
