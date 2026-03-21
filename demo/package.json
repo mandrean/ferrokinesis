@@ -1,0 +1,17 @@
+{
+  "name": "ferrokinesis-browser-demo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:wasm": "node ./scripts/build-wasm.mjs",
+    "dev": "npm run build:wasm && vite",
+    "build": "npm run build:wasm && vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 4173",
+    "test:smoke": "npm run build && playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.54.2",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.12"
+  }
+}

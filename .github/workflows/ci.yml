@@ -51,6 +51,42 @@ jobs:
       - name: Test (TLS)
         run: cargo test --features tls
 
+  browser-demo:
+    name: Browser Demo
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust-toolchain
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: demo/package-lock.json
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --version 0.14.0 --locked
+      - name: Install demo dependencies
+        run: npm ci --prefix demo
+      - name: Install Playwright browser
+        run: |
+          cd demo
+          npx playwright install --with-deps chromium
+      - name: Browser demo smoke test
+        run: npm --prefix demo run test:smoke
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            demo/playwright-report/
+            demo/test-results/
+
   coverage:
     name: Coverage
     if: github.event_name != 'schedule'
