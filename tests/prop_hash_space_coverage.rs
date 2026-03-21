@@ -75,8 +75,6 @@ fn prop_hash_space_fully_partitioned() {
 /// P2: MD5 hash of any partition key is within [0, 2^128).
 #[test]
 fn prop_md5_hash_in_range() {
-    let pow_128 = BigUint::one() << 128;
-
     let mut runner = TestRunner::new(Config {
         cases: 256,
         ..Config::default()
@@ -85,12 +83,13 @@ fn prop_md5_hash_in_range() {
     runner
         .run(&"[\\PC]{1,256}", |pk| {
             let hash = partition_key_to_hash_key(&pk);
-            prop_assert!(
-                hash < pow_128,
-                "hash {} for partition key {:?} is >= 2^128",
-                hash,
-                pk
-            );
+            // u128 is always in [0, 2^128-1] by definition; verify determinism
+            let hash2 = partition_key_to_hash_key(&pk);
+            prop_assert_eq!(hash, hash2, "MD5 hash not deterministic for {:?}", pk);
+            // Non-empty keys should produce non-zero hashes (extremely unlikely to be 0)
+            if !pk.is_empty() {
+                prop_assert!(hash > 0, "non-empty key {:?} produced zero hash", pk);
+            }
             Ok(())
         })
         .unwrap();

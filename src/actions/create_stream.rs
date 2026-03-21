@@ -62,10 +62,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
 
         shards.push(Shard {
             shard_id: sequence::shard_id_name(i as i64),
-            hash_key_range: HashKeyRange {
-                starting_hash_key: start.to_string(),
-                ending_hash_key: end.to_string(),
-            },
+            hash_key_range: HashKeyRange::new(start.to_string(), end.to_string()),
             sequence_number_range: SequenceNumberRange {
                 starting_sequence_number: sequence::stringify_sequence(&sequence::SeqObj {
                     shard_create_time: create_time,

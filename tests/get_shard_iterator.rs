@@ -2,7 +2,6 @@ mod common;
 
 use common::*;
 use ferrokinesis::sequence::{SeqObj, stringify_sequence};
-use num_bigint::BigUint;
 use serde_json::{Value, json};
 
 #[tokio::test]
@@ -336,7 +335,7 @@ async fn get_shard_iterator_at_seq_version_mismatch() {
 
     let fake_seq = stringify_sequence(&SeqObj {
         shard_create_time: 1000,
-        seq_ix: Some(BigUint::from(0u32)),
+        seq_ix: Some(0),
         byte1: None,
         seq_time: Some(1000),
         seq_rand: None,

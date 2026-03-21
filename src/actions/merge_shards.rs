@@ -4,8 +4,6 @@ use crate::sequence;
 use crate::store::Store;
 use crate::types::*;
 use crate::util::current_time_ms;
-use num_bigint::BigUint;
-use num_traits::{Num, One, Zero};
 use serde_json::Value;
 
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
@@ -57,21 +55,18 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                 }
             }
 
-            let end0: BigUint = stream.shards[shard_ixs[0] as usize]
+            let end0 = stream.shards[shard_ixs[0] as usize]
                 .hash_key_range
-                .ending_hash_key
-                .parse()
-                .unwrap_or_else(|_| BigUint::zero());
-            let start1: BigUint = stream.shards[shard_ixs[1] as usize]
+                .end_u128();
+            let start1 = stream.shards[shard_ixs[1] as usize]
                 .hash_key_range
-                .starting_hash_key
-                .parse()
-                .unwrap_or_else(|_| BigUint::zero());
+                .start_u128();
 
             // Kinesis requires the two shards to be adjacent — their hash ranges must
-            // be contiguous with no gap. BigUint is necessary here because the MD5 hash
-            // space spans [0, 2^128-1] and the boundary values can equal 2^128-1.
-            if end0 + BigUint::one() != start1 {
+            // be contiguous with no gap. `checked_add` handles the theoretical edge case
+            // where end0 == u128::MAX (impossible in practice since there'd be no room
+            // for another shard, but safe by construction).
+            if end0.checked_add(1) != Some(start1) {
                 return Err(KinesisErrorResponse::client_error(
                     constants::INVALID_ARGUMENT,
                     Some(&format!(
@@ -102,13 +97,6 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                 let now = current_time_ms();
                 stream.stream_status = StreamStatus::Active;
 
-                // Use the maximum possible seq_ix (0x7fffffffffffffff) for the closing
-                // sequence number. This ensures no future record written to this shard
-                // could ever produce a sequence number that compares as ≥ the ending
-                // sequence, making the shard-closed invariant unconditionally safe.
-                let max_seq_ix = BigUint::from_str_radix("7fffffffffffffff", 16)
-                    .unwrap_or_else(|_| BigUint::zero());
-
                 for &ix in &shard_ixs_clone {
                     let shard = &mut stream.shards[ix as usize];
                     let create_time = sequence::parse_sequence(
@@ -121,7 +109,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                         Some(sequence::stringify_sequence(&sequence::SeqObj {
                             shard_create_time: create_time,
                             shard_ix: ix,
-                            seq_ix: Some(max_seq_ix.clone()),
+                            seq_ix: Some(sequence::MAX_SEQ_IX),
                             seq_time: Some(now),
                             byte1: None,
                             seq_rand: None,
@@ -142,10 +130,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                 stream.shards.push(Shard {
                     parent_shard_id: Some(shard_ids_clone[0].clone()),
                     adjacent_parent_shard_id: Some(shard_ids_clone[1].clone()),
-                    hash_key_range: HashKeyRange {
-                        starting_hash_key: starting_hash,
-                        ending_hash_key: ending_hash,
-                    },
+                    hash_key_range: HashKeyRange::new(starting_hash, ending_hash),
                     sequence_number_range: SequenceNumberRange {
                         starting_sequence_number: sequence::stringify_sequence(&sequence::SeqObj {
                             // Child's create_time is 1 second ahead of the parent's closing

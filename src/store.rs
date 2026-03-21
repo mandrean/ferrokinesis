@@ -21,8 +21,6 @@ use crate::sequence;
 use crate::types::{Consumer, StoredRecord, Stream, StreamStatus};
 use crate::util::current_time_ms;
 use dashmap::DashMap;
-use num_bigint::BigUint;
-use num_traits::Zero;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -708,7 +706,7 @@ impl Store {
     pub async fn allocate_sequence(
         &self,
         name: &str,
-        hash_key: &BigUint,
+        hash_key: &u128,
     ) -> Result<SequenceAllocation, KinesisErrorResponse> {
         let entry = self
             .inner
@@ -743,7 +741,7 @@ impl Store {
 
         let seq_num = sequence::stringify_sequence(&sequence::SeqObj {
             shard_create_time,
-            seq_ix: Some(BigUint::from(current_seq_ix)),
+            seq_ix: Some(current_seq_ix),
             byte1: None,
             seq_time: Some(now),
             seq_rand: None,
@@ -767,7 +765,7 @@ impl Store {
     pub async fn allocate_sequences_batch(
         &self,
         name: &str,
-        hash_keys: &[BigUint],
+        hash_keys: &[u128],
     ) -> Result<Vec<SequenceAllocation>, KinesisErrorResponse> {
         let entry = self
             .inner
@@ -800,7 +798,7 @@ impl Store {
 
             let seq_num = sequence::stringify_sequence(&sequence::SeqObj {
                 shard_create_time,
-                seq_ix: Some(BigUint::from(current_seq_ix)),
+                seq_ix: Some(current_seq_ix),
                 byte1: None,
                 seq_time: Some(now),
                 seq_rand: None,
@@ -865,19 +863,11 @@ async fn sync_shard_seq(entry: &StreamEntry, stream: &Stream) {
 }
 
 /// Route a hash key to the appropriate open shard. Returns `(shard_ix, shard_id, create_time_ms)`.
-fn route_hash_to_shard(stream: &Stream, hash_key: &BigUint) -> (i64, String, u64) {
+fn route_hash_to_shard(stream: &Stream, hash_key: &u128) -> (i64, String, u64) {
     for (i, shard) in stream.shards.iter().enumerate() {
         if shard.sequence_number_range.ending_sequence_number.is_none() {
-            let start: BigUint = shard
-                .hash_key_range
-                .starting_hash_key
-                .parse()
-                .unwrap_or_else(|_| BigUint::zero());
-            let end: BigUint = shard
-                .hash_key_range
-                .ending_hash_key
-                .parse()
-                .unwrap_or_else(|_| BigUint::zero());
+            let start = shard.hash_key_range.start_u128();
+            let end = shard.hash_key_range.end_u128();
             if *hash_key >= start && *hash_key <= end {
                 let create_time =
                     sequence::parse_sequence(&shard.sequence_number_range.starting_sequence_number)
