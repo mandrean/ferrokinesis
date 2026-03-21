@@ -204,8 +204,12 @@ button {
 }
 
 .preset-button {
+  min-width: 0;
   padding: 14px 12px;
   text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.15;
   background: rgba(20, 33, 27, 0.86);
   color: var(--ink);
 }

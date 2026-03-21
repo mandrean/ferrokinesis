@@ -134,7 +134,7 @@ function renderPresetButtons(): void {
       button.className = "preset-button";
       button.dataset.presetId = preset.id;
       button.setAttribute("data-testid", `preset-${preset.id}`);
-      button.textContent = preset.label;
+      appendOperationLabel(button, preset.label);
       button.addEventListener("click", () => selectPreset(preset.id));
       return button;
     }),
@@ -359,4 +359,15 @@ function errorMessage(error: unknown): string {
 
 function isRecord(value: unknown): value is JsonBody {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function appendOperationLabel(button: HTMLButtonElement, label: string): void {
+  const parts = label.split(/(?=[A-Z])/).filter((part) => part.length > 0);
+
+  parts.forEach((part, index) => {
+    button.append(part);
+    if (index < parts.length - 1) {
+      button.append(document.createElement("wbr"));
+    }
+  });
 }
