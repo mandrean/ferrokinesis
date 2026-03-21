@@ -357,7 +357,7 @@ pub async fn handler(
 
     // Handle SubscribeToShard separately (streaming response)
     if operation == Operation::SubscribeToShard {
-        #[cfg(feature = "rt")]
+        #[cfg(not(target_arch = "wasm32"))]
         return match actions::subscribe_to_shard::execute_streaming(
             &store,
             data,
@@ -379,7 +379,7 @@ pub async fn handler(
             }
         };
 
-        #[cfg(not(feature = "rt"))]
+        #[cfg(target_arch = "wasm32")]
         {
             let err = KinesisErrorResponse::client_error(
                 constants::INVALID_ARGUMENT,

@@ -36,6 +36,8 @@ jobs:
         run: |
           rustup target add wasm32-unknown-unknown
           cargo build -p ferrokinesis-core --no-default-features --target wasm32-unknown-unknown
+      - name: Ferrokinesis (native no-default-features lib)
+        run: cargo test --no-default-features --lib
       - name: Ferrokinesis (wasm32 library)
         run: cargo check --target wasm32-unknown-unknown --no-default-features --features wasm
       - name: Install wasm-pack

@@ -77,8 +77,9 @@ impl Kinesis {
             .try_into()
             .map_err(|_| js_error("maxRequestBodyMb overflows usize"))?;
 
-        let (app, store) = ferrokinesis::create_app(store_options);
-        let app = app.layer(DefaultBodyLimit::max(max_bytes));
+        let store = Store::new(store_options);
+        let app =
+            ferrokinesis::create_router(store.clone()).layer(DefaultBodyLimit::max(max_bytes));
 
         Ok(Self { app, _store: store })
     }

@@ -27,14 +27,7 @@ required-features = ["loadtest"]
 
 [features]
 default = ["server", "access-log"]
-rt = [
-    "dep:async-stream",
-    "dep:aws-smithy-eventstream",
-    "dep:aws-smithy-types",
-    "tokio/rt",
-    "tokio/time",
-    "tokio/macros",
-]
+rt = []
 server = [
     "rt",
     "dep:clap",
@@ -73,14 +66,11 @@ tls = ["server", "dep:axum-server", "dep:rcgen", "dep:rustls"]
 
 [dependencies]
 ferrokinesis-core = { path = "crates/ferrokinesis-core", version = "0.5.0" }
-async-stream = { version = "0.3", optional = true }
 backon = { version = "1.6", default-features = false, features = ["tokio-sleep"], optional = true }
 aws-config = { version = "1", optional = true, default-features = false, features = ["default-https-client", "rt-tokio", "credentials-process"] }
 aws-credential-types = { version = "1", optional = true }
 aws-sigv4 = { version = "1", optional = true }
-aws-smithy-eventstream = { version = "0.60", optional = true }
 aws-smithy-runtime-api = { version = "1", features = ["client"], optional = true }
-aws-smithy-types = { version = "1.4", optional = true }
 axum = { version = "0.8", default-features = false, features = ["json"] }
 axum-server = { version = "0.8", features = ["tls-rustls"], optional = true }
 base64 = "0.22"
@@ -111,6 +101,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = tr
 url = { version = "2", optional = true }
 uuid = { version = "1", features = ["v4"] }
 wasm-bindgen-futures = { version = "0.4", optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+async-stream = "0.3"
+aws-smithy-eventstream = "0.60"
+aws-smithy-types = "1.4"
+tokio = { version = "1", default-features = false, features = ["sync", "rt", "time", "macros"] }
 
 [profile.release]
 lto = true

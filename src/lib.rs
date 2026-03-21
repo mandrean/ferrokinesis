@@ -42,14 +42,14 @@ pub mod config;
 #[doc(hidden)]
 pub mod constants;
 pub mod error;
-#[cfg(feature = "rt")]
+#[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod event_stream;
 pub mod health;
 #[cfg(feature = "mirror")]
 #[doc(hidden)]
 pub mod mirror;
-#[cfg(feature = "rt")]
+#[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod retention;
 #[doc(hidden)]
@@ -69,7 +69,9 @@ pub mod validation;
 use axum::Router;
 use axum::middleware;
 use axum::routing::{any, get};
-use store::{Store, StoreOptions};
+use store::Store;
+#[cfg(not(target_arch = "wasm32"))]
+use store::StoreOptions;
 #[cfg(feature = "access-log")]
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 
@@ -98,14 +100,15 @@ use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 ///     axum::serve(listener, app).await.unwrap();
 /// }
 /// ```
+#[cfg(not(target_arch = "wasm32"))]
 pub fn create_app(options: StoreOptions) -> (Router, Store) {
     let store = Store::new(options.clone());
-    let app = build_app(store.clone());
+    let app = create_router(store.clone());
     spawn_retention_reaper(&store, &options);
     (app, store)
 }
 
-#[cfg(feature = "server")]
+#[cfg(all(feature = "server", not(target_arch = "wasm32")))]
 /// Like [`create_app`], but accepts an optional [`capture::CaptureWriter`] to record
 /// PutRecord/PutRecords calls to an NDJSON file.
 pub fn create_app_with_capture(
@@ -113,12 +116,16 @@ pub fn create_app_with_capture(
     capture: Option<capture::CaptureWriter>,
 ) -> (Router, Store) {
     let store = Store::with_capture(options.clone(), capture);
-    let app = build_app(store.clone());
+    let app = create_router(store.clone());
     spawn_retention_reaper(&store, &options);
     (app, store)
 }
 
-fn build_app(store: Store) -> Router {
+/// Creates an Axum [`Router`] around an existing [`store::Store`].
+///
+/// Unlike [`create_app`], this does not spawn any background maintenance tasks.
+/// It is intended for embedded or in-process use cases, including the wasm wrapper.
+pub fn create_router(store: Store) -> Router {
     let app = Router::new()
         .route("/_health", get(health::health))
         .route("/_health/live", get(health::live))
@@ -137,7 +144,7 @@ fn build_app(store: Store) -> Router {
     app
 }
 
-#[cfg(feature = "rt")]
+#[cfg(not(target_arch = "wasm32"))]
 fn spawn_retention_reaper(store: &Store, options: &StoreOptions) {
     if options.retention_check_interval_secs > 0 {
         let reaper_store = store.clone();
@@ -148,5 +155,44 @@ fn spawn_retention_reaper(store: &Store, options: &StoreOptions) {
     }
 }
 
-#[cfg(not(feature = "rt"))]
-fn spawn_retention_reaper(_store: &Store, _options: &StoreOptions) {}
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+    use crate::actions::{Operation, dispatch};
+    use crate::types::StreamStatus;
+    use serde_json::json;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn create_app_preserves_background_transitions() {
+        let (_app, store) = create_app(StoreOptions {
+            create_stream_ms: 1,
+            ..StoreOptions::default()
+        });
+
+        dispatch(
+            &store,
+            Operation::CreateStream,
+            json!({
+                "StreamName": "native-no-default-features",
+                "ShardCount": 1,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let stream = store
+            .get_stream("native-no-default-features")
+            .await
+            .unwrap();
+        assert_eq!(stream.stream_status, StreamStatus::Creating);
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        let stream = store
+            .get_stream("native-no-default-features")
+            .await
+            .unwrap();
+        assert_eq!(stream.stream_status, StreamStatus::Active);
+    }
+}
