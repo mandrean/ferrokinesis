@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0"
+    />
+    <title>ferrokinesis browser demo</title>
+    <meta
+      name="description"
+      content="Try AWS Kinesis API calls in your browser with ferrokinesis."
+    />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="hero">
+        <p class="eyebrow">GitHub Pages browser demo</p>
+        <div class="hero-copy">
+          <div>
+            <h1>Try Kinesis in your browser</h1>
+            <p class="hero-text">
+              A zero-install ferrokinesis demo running entirely in-browser with one
+              in-memory Kinesis instance per page load.
+            </p>
+          </div>
+          <div class="hero-note">
+            <span class="hero-note-label">State model</span>
+            <p>
+              No backend. No persistence. Refresh or <strong>Reset state</strong> for a
+              clean slate.
+            </p>
+          </div>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section class="panel panel-request" aria-labelledby="request-panel-title">
+          <div class="panel-header">
+            <div>
+              <p class="panel-kicker">Request</p>
+              <h2 id="request-panel-title">Preset-driven API calls</h2>
+            </div>
+            <p class="panel-copy">
+              Pick a guided operation, tweak the JSON body, and send it through the
+              in-process WASM wrapper.
+            </p>
+          </div>
+
+          <div class="preset-block">
+            <div class="preset-header">
+              <h3>Guided presets</h3>
+              <p>Terminal look, explicit controls.</p>
+            </div>
+            <div id="preset-list" class="preset-list" aria-label="Operation presets"></div>
+            <p id="preset-summary" class="preset-summary"></p>
+          </div>
+
+          <label class="field" for="target-input">
+            <span>Target</span>
+            <input
+              id="target-input"
+              data-testid="target-input"
+              spellcheck="false"
+              autocomplete="off"
+            />
+          </label>
+
+          <label class="field field-body" for="body-input">
+            <span>JSON body</span>
+            <textarea
+              id="body-input"
+              data-testid="body-input"
+              spellcheck="false"
+              rows="16"
+            ></textarea>
+          </label>
+
+          <div class="actions">
+            <button id="send-request" data-testid="send-request" class="button button-primary">
+              Send request
+            </button>
+            <button id="reset-state" data-testid="reset-state" class="button button-secondary">
+              Reset state
+            </button>
+          </div>
+
+          <p id="banner" data-testid="banner" class="banner" role="status" aria-live="polite">
+            Booting browser demo...
+          </p>
+        </section>
+
+        <section class="panel panel-response" aria-labelledby="response-panel-title">
+          <div class="panel-header">
+            <div>
+              <p class="panel-kicker">Response</p>
+              <h2 id="response-panel-title">Status, headers, JSON output</h2>
+            </div>
+            <p class="panel-copy">
+              Responses are shown exactly as the in-browser emulator returns them.
+            </p>
+          </div>
+
+          <div class="response-meta">
+            <div class="metric">
+              <span class="metric-label">Status</span>
+              <strong id="response-status" data-testid="response-status">Ready</strong>
+            </div>
+            <div class="metric">
+              <span class="metric-label">Duration</span>
+              <strong id="response-duration">--</strong>
+            </div>
+          </div>
+
+          <div class="output-block">
+            <div class="output-header">
+              <h3>Headers</h3>
+            </div>
+            <pre id="headers-output" data-testid="headers-output" class="output">{}</pre>
+          </div>
+
+          <div class="output-block output-block-body">
+            <div class="output-header">
+              <h3>Body</h3>
+            </div>
+            <pre id="response-output" data-testid="response-body" class="output">
+Select a preset and send a request to see the response payload.
+            </pre>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

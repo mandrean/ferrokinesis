@@ -8,6 +8,21 @@
 
 A local AWS Kinesis mock server for testing, written in Rust.
 
+## Browser Demo
+
+Try ferrokinesis without installing anything:
+
+[![Open browser demo](https://img.shields.io/badge/Open-browser_demo-102318?style=for-the-badge&logo=googlechrome&logoColor=CDF564)](https://mandrean.github.io/ferrokinesis/)
+
+The GitHub Pages demo runs the in-process WASM wrapper entirely in your browser. It keeps state in memory only, so refresh or `Reset state` starts you from a clean slate.
+
+Run it locally with:
+
+```sh
+npm ci --prefix demo
+npm --prefix demo run dev
+```
+
 ## Features
 
 - Pure Rust implementation
@@ -65,6 +80,14 @@ wasmtime run --wasi tcp-listen=0.0.0.0:4567 target/wasm32-wasip2/debug/ferrokine
 
 The WASI binary is env-configured only. It currently targets the normal JSON/CBOR request path and health endpoints; `SubscribeToShard` remains unsupported there for now.
 
+### Browser Demo
+
+Build the browser demo and its generated WASM package:
+
+```sh
+npm ci --prefix demo
+npm --prefix demo run build
+```
 ### Docker
 
 ```sh
