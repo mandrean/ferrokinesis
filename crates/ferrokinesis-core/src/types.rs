@@ -430,8 +430,10 @@ pub struct HashKeyRange {
     pub starting_hash_key: String,
     /// Inclusive upper bound of the hash key range (decimal string).
     pub ending_hash_key: String,
+    #[cfg(feature = "std")]
     #[serde(skip)]
     start_cached: std::sync::OnceLock<u128>,
+    #[cfg(feature = "std")]
     #[serde(skip)]
     end_cached: std::sync::OnceLock<u128>,
 }
@@ -442,23 +444,45 @@ impl HashKeyRange {
         Self {
             starting_hash_key,
             ending_hash_key,
+            #[cfg(feature = "std")]
             start_cached: std::sync::OnceLock::new(),
+            #[cfg(feature = "std")]
             end_cached: std::sync::OnceLock::new(),
         }
     }
 
     /// Returns the starting hash key as a `u128`, parsing and caching on first call.
+    ///
+    /// With the `std` feature the result is cached in a `OnceLock`; without it
+    /// the decimal string is parsed on every call (acceptable for `no_std` builds
+    /// where this crate is used outside of the hot server path).
+    #[cfg(feature = "std")]
     pub fn start_u128(&self) -> u128 {
         *self
             .start_cached
             .get_or_init(|| self.starting_hash_key.parse().unwrap_or(0))
     }
 
+    #[cfg(not(feature = "std"))]
+    pub fn start_u128(&self) -> u128 {
+        self.starting_hash_key.parse().unwrap_or(0)
+    }
+
     /// Returns the ending hash key as a `u128`, parsing and caching on first call.
+    ///
+    /// With the `std` feature the result is cached in a `OnceLock`; without it
+    /// the decimal string is parsed on every call (acceptable for `no_std` builds
+    /// where this crate is used outside of the hot server path).
+    #[cfg(feature = "std")]
     pub fn end_u128(&self) -> u128 {
         *self
             .end_cached
             .get_or_init(|| self.ending_hash_key.parse().unwrap_or(0))
+    }
+
+    #[cfg(not(feature = "std"))]
+    pub fn end_u128(&self) -> u128 {
+        self.ending_hash_key.parse().unwrap_or(0)
     }
 }
 
