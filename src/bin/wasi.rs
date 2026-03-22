@@ -48,6 +48,65 @@ struct SerializedResponse {
     body: Vec<u8>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct ClientHttpError {
+    status: StatusCode,
+    message: String,
+}
+
+impl ClientHttpError {
+    fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+        }
+    }
+
+    fn request_header_fields_too_large(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for ClientHttpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.status, self.message)
+    }
+}
+
+impl std::error::Error for ClientHttpError {}
+
+#[derive(Debug)]
+enum RequestReadError {
+    Client(ClientHttpError),
+    Io(io::Error),
+}
+
+impl From<ClientHttpError> for RequestReadError {
+    fn from(err: ClientHttpError) -> Self {
+        Self::Client(err)
+    }
+}
+
+impl From<io::Error> for RequestReadError {
+    fn from(err: io::Error) -> Self {
+        Self::Io(err)
+    }
+}
+
+impl std::fmt::Display for RequestReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Client(err) => err.fmt(f),
+            Self::Io(err) => err.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for RequestReadError {}
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -93,11 +152,17 @@ fn run() -> Result<(), DynError> {
                 }
             }
             Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
-                runtime.block_on(tokio::time::sleep(Duration::from_millis(IDLE_TICK_MS)));
+                sleep_with_runtime(&runtime, Duration::from_millis(IDLE_TICK_MS));
             }
             Err(err) => return Err(Box::new(err)),
         }
     }
+}
+
+fn sleep_with_runtime(runtime: &tokio::runtime::Runtime, duration: Duration) {
+    runtime.block_on(async move {
+        tokio::time::sleep(duration).await;
+    });
 }
 
 impl WasiConfig {
@@ -171,9 +236,14 @@ fn serve_connection(
     stream: &mut TcpStream,
     max_body_bytes: usize,
 ) -> io::Result<()> {
-    let request = match read_http_request(stream, max_body_bytes)? {
-        Some(request) => request,
-        None => return Ok(()),
+    let request = match read_http_request(stream, max_body_bytes) {
+        Ok(Some(request)) => request,
+        Ok(None) => return Ok(()),
+        Err(RequestReadError::Client(err)) => {
+            write_plain_response(stream, err.status, &err.message)?;
+            return Ok(());
+        }
+        Err(RequestReadError::Io(err)) => return Err(err),
     };
 
     let response = match runtime.block_on(execute_request(app, request)) {
@@ -194,7 +264,7 @@ fn serve_connection(
 fn read_http_request(
     stream: &mut TcpStream,
     max_body_bytes: usize,
-) -> io::Result<Option<ParsedRequest>> {
+) -> Result<Option<ParsedRequest>, RequestReadError> {
     let mut buffer = Vec::new();
     let mut chunk = [0_u8; 8192];
 
@@ -204,10 +274,10 @@ fn read_http_request(
                 if buffer.is_empty() {
                     return Ok(None);
                 }
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
+                return Err(ClientHttpError::bad_request(
                     "connection closed before request headers were complete",
-                ));
+                )
+                .into());
             }
             Ok(read) => {
                 buffer.extend_from_slice(&chunk[..read]);
@@ -215,13 +285,13 @@ fn read_http_request(
                     break;
                 }
                 if buffer.len() > HEADER_LIMIT_BYTES {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
+                    return Err(ClientHttpError::request_header_fields_too_large(
                         "request headers exceeded limit",
-                    ));
+                    )
+                    .into());
                 }
             }
-            Err(err) => return Err(err),
+            Err(err) => return Err(err.into()),
         }
     }
 
@@ -240,7 +310,10 @@ fn read_http_request(
         let to_read = (body_target_len - request.body.len()).min(chunk.len());
         let read = stream.read(&mut chunk[..to_read])?;
         if read == 0 {
-            break;
+            return Err(ClientHttpError::bad_request(
+                "connection closed before request body was complete",
+            )
+            .into());
         }
         request.body.extend_from_slice(&chunk[..read]);
     }
@@ -248,22 +321,18 @@ fn read_http_request(
     Ok(Some(request))
 }
 
-fn parse_request_head(buffer: &[u8], max_body_bytes: usize) -> io::Result<ParsedHead> {
+fn parse_request_head(buffer: &[u8], max_body_bytes: usize) -> Result<ParsedHead, ClientHttpError> {
     let mut headers = [httparse::EMPTY_HEADER; 64];
     let mut request = httparse::Request::new(&mut headers);
     let _parsed_len = match request.parse(buffer) {
         Ok(httparse::Status::Complete(len)) => len,
         Ok(httparse::Status::Partial) => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "incomplete HTTP request",
-            ));
+            return Err(ClientHttpError::bad_request("incomplete HTTP request"));
         }
         Err(err) => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid HTTP request: {err}"),
-            ));
+            return Err(ClientHttpError::bad_request(format!(
+                "invalid HTTP request: {err}"
+            )));
         }
     };
 
@@ -275,16 +344,10 @@ fn parse_request_head(buffer: &[u8], max_body_bytes: usize) -> io::Result<Parsed
         let name = header.name.to_string();
         if name.eq_ignore_ascii_case("content-length") {
             let value = std::str::from_utf8(header.value).map_err(|err| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("invalid content-length header: {err}"),
-                )
+                ClientHttpError::bad_request(format!("invalid content-length header: {err}"))
             })?;
             content_length = value.parse::<usize>().map_err(|err| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("invalid content-length header: {err}"),
-                )
+                ClientHttpError::bad_request(format!("invalid content-length header: {err}"))
             })?;
         }
         if name.eq_ignore_ascii_case("transfer-encoding") {
@@ -294,8 +357,7 @@ fn parse_request_head(buffer: &[u8], max_body_bytes: usize) -> io::Result<Parsed
     }
 
     if saw_transfer_encoding {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(ClientHttpError::bad_request(
             "chunked transfer encoding is not supported",
         ));
     }
@@ -304,11 +366,11 @@ fn parse_request_head(buffer: &[u8], max_body_bytes: usize) -> io::Result<Parsed
         request: ParsedRequest {
             method: request
                 .method
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing HTTP method"))?
+                .ok_or_else(|| ClientHttpError::bad_request("missing HTTP method"))?
                 .to_string(),
             path: request
                 .path
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing HTTP path"))?
+                .ok_or_else(|| ClientHttpError::bad_request("missing HTTP path"))?
                 .to_string(),
             version: request.version.unwrap_or(1),
             headers: parsed_headers,
@@ -454,6 +516,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::Shutdown;
+    use std::thread;
 
     #[test]
     fn parse_request_head_extracts_method_headers_and_body_limit() {
@@ -487,6 +551,86 @@ mod tests {
         let parsed = parse_request_head(raw.as_bytes(), 8).unwrap();
 
         assert_eq!(parsed.body_target_len, 9);
+    }
+
+    #[test]
+    fn parse_request_head_rejects_chunked_transfer_encoding() {
+        let raw = concat!(
+            "POST / HTTP/1.1\r\n",
+            "Host: localhost\r\n",
+            "Transfer-Encoding: chunked\r\n",
+            "\r\n",
+        );
+
+        let err = parse_request_head(raw.as_bytes(), 1024).unwrap_err();
+
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert_eq!(err.message, "chunked transfer encoding is not supported");
+    }
+
+    #[test]
+    fn sleep_with_runtime_runs_without_entering_runtime() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+
+        sleep_with_runtime(&runtime, Duration::from_millis(0));
+    }
+
+    #[test]
+    fn serve_connection_replies_to_chunked_requests() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let (app, _store) = ferrokinesis::create_app(StoreOptions::default());
+        let app = app.layer(DefaultBodyLimit::max(1024));
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let client = thread::spawn(move || {
+            let mut stream = TcpStream::connect(addr).unwrap();
+            stream
+                .write_all(
+                    concat!(
+                        "POST / HTTP/1.1\r\n",
+                        "Host: localhost\r\n",
+                        "Transfer-Encoding: chunked\r\n",
+                        "\r\n",
+                        "0\r\n\r\n",
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+            stream.shutdown(Shutdown::Write).unwrap();
+
+            let mut response = Vec::new();
+            stream.read_to_end(&mut response).unwrap();
+            String::from_utf8(response).unwrap()
+        });
+
+        let (mut server_stream, _) = listener.accept().unwrap();
+        server_stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        server_stream
+            .set_write_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+
+        serve_connection(&runtime, app, &mut server_stream, 1024).unwrap();
+        drop(server_stream);
+
+        let response = client.join().unwrap();
+        assert!(
+            response.starts_with("HTTP/1.1 400 Bad Request\r\n"),
+            "{response}"
+        );
+        assert!(
+            response.contains("chunked transfer encoding is not supported"),
+            "{response}"
+        );
     }
 
     #[test]
