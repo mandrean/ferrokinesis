@@ -1,7 +1,7 @@
 mod common;
 
 use base64::Engine;
-use common::{TestServer, assert_values_equivalent, decode_body};
+use common::{TestServer, assert_values_equivalent, decode_body, json_to_cbor_with_bytes_many};
 use ferrokinesis::store::StoreOptions;
 use serde_json::json;
 
@@ -12,6 +12,51 @@ const VOLATILE_KEYS: &[&str] = &[
     "ShardIterator",
     "x-amzn-RequestId",
 ];
+
+fn cbor_field<'a>(value: &'a ciborium::Value, key: &str) -> Option<&'a ciborium::Value> {
+    let ciborium::Value::Map(entries) = value else {
+        return None;
+    };
+
+    entries
+        .iter()
+        .find_map(|(entry_key, entry_value)| match entry_key {
+            ciborium::Value::Text(text) if text == key => Some(entry_value),
+            _ => None,
+        })
+}
+
+#[test]
+fn helper_json_to_cbor_with_bytes_many_replaces_records_data_with_bytes() {
+    let payload = json!({
+        "StreamName": "helper-batch",
+        "Records": [
+            {"Data": base64::engine::general_purpose::STANDARD.encode(b"first"), "PartitionKey": "pk-1"},
+            {"Data": base64::engine::general_purpose::STANDARD.encode(b"second"), "PartitionKey": "pk-2"},
+        ],
+    });
+    let raw_payloads = vec![b"first".to_vec(), b"second".to_vec()];
+
+    let cbor = json_to_cbor_with_bytes_many(&payload, "Records.*.Data", &raw_payloads);
+
+    let records = match cbor_field(&cbor, "Records") {
+        Some(ciborium::Value::Array(records)) => records,
+        other => panic!("expected Records array, got {other:?}"),
+    };
+    assert_eq!(records.len(), raw_payloads.len());
+
+    for (record, expected_bytes) in records.iter().zip(raw_payloads.iter()) {
+        match cbor_field(record, "Data") {
+            Some(ciborium::Value::Bytes(actual_bytes)) => assert_eq!(actual_bytes, expected_bytes),
+            other => panic!("expected Data to be CBOR bytes, got {other:?}"),
+        }
+
+        match cbor_field(record, "PartitionKey") {
+            Some(ciborium::Value::Text(_)) => {}
+            other => panic!("expected PartitionKey to remain CBOR text, got {other:?}"),
+        }
+    }
+}
 
 // ─── Group A: Read-only operation equivalence ────────────────────────────────
 
