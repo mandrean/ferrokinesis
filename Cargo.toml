@@ -46,6 +46,7 @@ access-log = ["dep:tower-http"]
 wasm = [
     "dep:getrandom",
     "dep:js-sys",
+    "dep:wasm-bindgen",
     "dep:wasm-bindgen-futures",
     "getrandom/wasm_js",
     "uuid/js",
@@ -100,6 +101,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 url = { version = "2", optional = true }
 uuid = { version = "1", features = ["v4"] }
+wasm-bindgen = { version = "0.2", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

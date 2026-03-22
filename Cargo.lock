@@ -1293,6 +1293,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "wasm-bindgen",
  "wasm-bindgen-futures",
 ]
 
@@ -1320,6 +1321,7 @@ dependencies = [
  "console_error_panic_hook",
  "ferrokinesis",
  "js-sys",
+ "num-bigint",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",

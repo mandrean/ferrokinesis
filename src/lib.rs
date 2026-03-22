@@ -49,7 +49,6 @@ pub mod health;
 #[cfg(feature = "mirror")]
 #[doc(hidden)]
 pub mod mirror;
-#[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod retention;
 #[doc(hidden)]

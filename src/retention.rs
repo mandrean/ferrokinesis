@@ -2,9 +2,10 @@ use crate::store::Store;
 use crate::types::StreamStatus;
 
 pub async fn run_reaper(store: Store, interval_secs: u64) {
-    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(interval_secs));
+    let interval_ms = interval_secs.saturating_mul(1000);
+    sweep_once(&store).await;
     loop {
-        interval.tick().await;
+        crate::runtime::sleep_ms(interval_ms).await;
         sweep_once(&store).await;
     }
 }

@@ -78,6 +78,12 @@ impl Kinesis {
             .map_err(|_| js_error("maxRequestBodyMb overflows usize"))?;
 
         let store = Store::new(store_options);
+        if store.options.retention_check_interval_secs > 0 {
+            ferrokinesis::runtime::spawn_background(ferrokinesis::retention::run_reaper(
+                store.clone(),
+                store.options.retention_check_interval_secs,
+            ));
+        }
         let app =
             ferrokinesis::create_router(store.clone()).layer(DefaultBodyLimit::max(max_bytes));
 
@@ -139,4 +145,130 @@ fn parse_options(options: Option<JsValue>) -> Result<KinesisOptions, JsValue> {
 
 fn js_error(message: impl Into<String>) -> JsValue {
     JsValue::from_str(&message.into())
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod tests {
+    use super::*;
+    use ferrokinesis::sequence;
+    use ferrokinesis::types::StoredRecord;
+    use num_bigint::BigUint;
+    use serde::Deserialize;
+    use serde_json::json;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[derive(Deserialize)]
+    struct Response {
+        status: u16,
+        body: String,
+    }
+
+    #[wasm_bindgen_test(async)]
+    async fn retention_reaper_runs_on_wasm() {
+        let kinesis = new_kinesis(json!({
+            "createStreamMs": 0,
+            "retentionCheckIntervalSecs": 0,
+        }));
+
+        let create = request(
+            &kinesis,
+            "Kinesis_20131202.CreateStream",
+            json!({
+                "StreamName": "retention-stream",
+                "ShardCount": 1,
+            }),
+        )
+        .await;
+        assert_eq!(create.status, 200);
+
+        wait_until_stream_active(&kinesis, "retention-stream").await;
+
+        let stream = kinesis._store.get_stream("retention-stream").await.unwrap();
+        let shard = stream.shards.first().unwrap();
+        let start_seq = &shard.sequence_number_range.starting_sequence_number;
+        let shard_create_time = sequence::parse_sequence(start_seq)
+            .unwrap()
+            .shard_create_time;
+        let old_time = ferrokinesis::util::current_time_ms() - 25 * 60 * 60 * 1000;
+        let seq_num = sequence::stringify_sequence(&sequence::SeqObj {
+            shard_create_time,
+            seq_ix: Some(BigUint::from(0u64)),
+            byte1: None,
+            seq_time: Some(old_time),
+            seq_rand: None,
+            shard_ix: 0,
+            version: 2,
+        });
+        let key = format!("{}/{}", sequence::shard_ix_to_hex(0), seq_num);
+        let record = StoredRecord {
+            partition_key: "pk-1".to_string(),
+            data: "aGVsbG8=".to_string(),
+            approximate_arrival_timestamp: (old_time / 1000) as f64,
+        };
+        kinesis
+            ._store
+            .put_record("retention-stream", &key, &record)
+            .await;
+
+        assert_eq!(
+            kinesis
+                ._store
+                .get_record_store("retention-stream")
+                .await
+                .len(),
+            1
+        );
+
+        ferrokinesis::runtime::spawn_background(ferrokinesis::retention::run_reaper(
+            kinesis._store.clone(),
+            1,
+        ));
+
+        for _ in 0..80 {
+            if kinesis
+                ._store
+                .get_record_store("retention-stream")
+                .await
+                .is_empty()
+            {
+                return;
+            }
+
+            ferrokinesis::runtime::sleep_ms(25).await;
+        }
+
+        panic!("retention reaper did not remove expired record");
+    }
+
+    fn new_kinesis(options: serde_json::Value) -> Kinesis {
+        let options = serde_wasm_bindgen::to_value(&options).unwrap();
+        Kinesis::new(Some(options)).unwrap()
+    }
+
+    async fn request(kinesis: &Kinesis, target: &str, body: serde_json::Value) -> Response {
+        let response = kinesis.request(target, &body.to_string()).await.unwrap();
+        serde_wasm_bindgen::from_value(response).unwrap()
+    }
+
+    async fn wait_until_stream_active(kinesis: &Kinesis, stream_name: &str) {
+        for _ in 0..40 {
+            let response = request(
+                kinesis,
+                "Kinesis_20131202.DescribeStream",
+                json!({ "StreamName": stream_name }),
+            )
+            .await;
+
+            if response.status == 200 {
+                let body: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+                if body["StreamDescription"]["StreamStatus"].as_str() == Some("ACTIVE") {
+                    return;
+                }
+            }
+
+            ferrokinesis::runtime::sleep_ms(25).await;
+        }
+
+        panic!("stream did not become ACTIVE");
+    }
 }
