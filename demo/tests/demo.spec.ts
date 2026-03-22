@@ -26,6 +26,29 @@ test("guided browser flow works end to end", async ({ page }) => {
   await expect(page.getByTestId("response-body")).toContainText("browser-demo-stream");
 });
 
+test("reset recovers after an initial wasm bootstrap failure", async ({ page }) => {
+  let aborted = false;
+  await page.route("**/*.wasm", async (route) => {
+    if (!aborted) {
+      aborted = true;
+      await route.abort();
+      return;
+    }
+
+    await route.continue();
+  });
+
+  await page.goto("/");
+
+  await expect(page.getByTestId("banner")).toContainText("Failed to fetch");
+
+  await page.getByTestId("reset-state").click();
+  await expect(page.getByTestId("banner")).toContainText("State reset");
+
+  await runPreset(page, "preset-create-stream");
+  await expect(page.getByTestId("response-status")).toHaveText("200");
+});
+
 async function runPreset(page: Page, presetTestId: string) {
   await page.getByTestId(presetTestId).click();
   await page.getByTestId("send-request").click();

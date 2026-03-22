@@ -228,7 +228,10 @@ async function createKinesis(): Promise<Kinesis> {
 }
 
 async function ensureWasmInitialized(): Promise<void> {
-  wasmInitPromise ??= init();
+  wasmInitPromise ??= init().catch((error) => {
+    wasmInitPromise = null;
+    throw error;
+  });
   await wasmInitPromise;
 }
 
