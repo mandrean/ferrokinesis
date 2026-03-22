@@ -161,7 +161,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     if !keys_to_delete.is_empty() {
         let store_clone = store.clone();
         let name = stream_name.to_string();
-        tokio::spawn(async move {
+        crate::runtime::spawn_background(async move {
             store_clone.delete_record_keys(&name, &keys_to_delete).await;
         });
     }

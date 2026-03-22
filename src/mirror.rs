@@ -254,7 +254,7 @@ impl Mirror {
             }
         };
         let mirror = Arc::clone(self);
-        tokio::spawn(async move {
+        crate::runtime::spawn_background(async move {
             mirror
                 .forward(&target, &content_type, body, local_result)
                 .await;

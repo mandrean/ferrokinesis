@@ -1,3 +1,4 @@
+#[cfg(feature = "server")]
 use crate::capture::{CaptureOp, CaptureRecordRef};
 use crate::constants;
 use crate::error::KinesisErrorResponse;
@@ -6,6 +7,7 @@ use crate::store::Store;
 use crate::types::StoredRecordRef;
 use crate::util::current_time_ms;
 use serde_json::{Value, json};
+#[cfg(feature = "server")]
 use std::borrow::Cow;
 
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
@@ -66,6 +68,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         .put_record(&stream_name, &alloc.stream_key, &record)
         .await;
 
+    #[cfg(feature = "server")]
     if let Some(ref writer) = store.capture_writer {
         let capture_record = CaptureRecordRef {
             op: CaptureOp::PutRecord,

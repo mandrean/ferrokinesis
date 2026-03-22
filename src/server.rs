@@ -357,6 +357,7 @@ pub async fn handler(
 
     // Handle SubscribeToShard separately (streaming response)
     if operation == Operation::SubscribeToShard {
+        #[cfg(not(target_arch = "wasm32"))]
         return match actions::subscribe_to_shard::execute_streaming(
             &store,
             data,
@@ -377,6 +378,15 @@ pub async fn handler(
                 log_and_send_error(&span, &response_headers, response_content_type, err)
             }
         };
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            let err = KinesisErrorResponse::client_error(
+                constants::INVALID_ARGUMENT,
+                Some("SubscribeToShard is not supported in this build."),
+            );
+            return log_and_send_error(&span, &response_headers, response_content_type, &err);
+        }
     }
 
     // Execute action
