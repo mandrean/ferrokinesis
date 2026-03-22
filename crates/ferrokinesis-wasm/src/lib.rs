@@ -152,7 +152,6 @@ mod tests {
     use super::*;
     use ferrokinesis::sequence;
     use ferrokinesis::types::StoredRecord;
-    use num_bigint::BigUint;
     use serde::Deserialize;
     use serde_json::json;
     use wasm_bindgen_test::wasm_bindgen_test;
@@ -192,7 +191,7 @@ mod tests {
         let old_time = ferrokinesis::util::current_time_ms() - 25 * 60 * 60 * 1000;
         let seq_num = sequence::stringify_sequence(&sequence::SeqObj {
             shard_create_time,
-            seq_ix: Some(BigUint::from(0u64)),
+            seq_ix: Some(0),
             byte1: None,
             seq_time: Some(old_time),
             seq_rand: None,
