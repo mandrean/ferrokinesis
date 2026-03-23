@@ -40,6 +40,10 @@ jobs:
         run: cargo test --no-default-features --lib
       - name: Ferrokinesis (wasm32 library)
         run: cargo check --target wasm32-unknown-unknown --no-default-features --features wasm
+      - name: Ferrokinesis WASI binary
+        run: |
+          rustup target add wasm32-wasip2
+          cargo build --target wasm32-wasip2 --no-default-features --features wasi --bin ferrokinesis-wasi
       - name: Install wasm-pack
         run: cargo install wasm-pack
       - name: Ferrokinesis WASM wrapper

@@ -1,6 +1,9 @@
 use std::future::Future;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(
+    not(target_arch = "wasm32"),
+    all(target_os = "wasi", target_env = "p2", feature = "rt"),
+))]
 pub fn spawn_background<F>(future: F)
 where
     F: Future<Output = ()> + Send + 'static,
@@ -8,7 +11,11 @@ where
     tokio::spawn(future);
 }
 
-#[cfg(all(target_arch = "wasm32", feature = "wasm"))]
+#[cfg(all(
+    target_arch = "wasm32",
+    feature = "wasm",
+    not(all(target_os = "wasi", target_env = "p2"))
+))]
 pub fn spawn_background<F>(future: F)
 where
     F: Future<Output = ()> + 'static,
@@ -16,12 +23,19 @@ where
     wasm_bindgen_futures::spawn_local(future);
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(
+    not(target_arch = "wasm32"),
+    all(target_os = "wasi", target_env = "p2", feature = "rt"),
+))]
 pub async fn sleep_ms(ms: u64) {
     tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
 }
 
-#[cfg(all(target_arch = "wasm32", feature = "wasm"))]
+#[cfg(all(
+    target_arch = "wasm32",
+    feature = "wasm",
+    not(all(target_os = "wasi", target_env = "p2"))
+))]
 pub async fn sleep_ms(ms: u64) {
     use js_sys::{Function, Promise, Reflect};
     use wasm_bindgen::{JsCast, JsValue};

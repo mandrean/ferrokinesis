@@ -49,6 +49,11 @@ pub mod health;
 #[cfg(feature = "mirror")]
 #[doc(hidden)]
 pub mod mirror;
+#[cfg(any(
+    not(target_arch = "wasm32"),
+    all(target_arch = "wasm32", feature = "wasm"),
+    all(target_os = "wasi", target_env = "p2", feature = "wasi"),
+))]
 #[doc(hidden)]
 pub mod retention;
 #[doc(hidden)]
@@ -69,7 +74,10 @@ use axum::Router;
 use axum::middleware;
 use axum::routing::{any, get};
 use store::Store;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(
+    not(target_arch = "wasm32"),
+    all(target_os = "wasi", target_env = "p2", feature = "wasi"),
+))]
 use store::StoreOptions;
 #[cfg(feature = "access-log")]
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
@@ -99,7 +107,10 @@ use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 ///     axum::serve(listener, app).await.unwrap();
 /// }
 /// ```
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(
+    not(target_arch = "wasm32"),
+    all(target_os = "wasi", target_env = "p2", feature = "wasi"),
+))]
 pub fn create_app(options: StoreOptions) -> (Router, Store) {
     let store = Store::new(options.clone());
     let app = create_router(store.clone());
@@ -123,7 +134,8 @@ pub fn create_app_with_capture(
 /// Creates an Axum [`Router`] around an existing [`store::Store`].
 ///
 /// Unlike [`create_app`], this does not spawn any background maintenance tasks.
-/// It is intended for embedded or in-process use cases, including the wasm wrapper.
+/// It is intended for embedded or in-process use cases, including the wasm wrapper
+/// and the WASI TCP listener.
 pub fn create_router(store: Store) -> Router {
     let app = Router::new()
         .route("/_health", get(health::health))
@@ -143,7 +155,10 @@ pub fn create_router(store: Store) -> Router {
     app
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(
+    not(target_arch = "wasm32"),
+    all(target_os = "wasi", target_env = "p2", feature = "wasi"),
+))]
 fn spawn_retention_reaper(store: &Store, options: &StoreOptions) {
     if options.retention_check_interval_secs > 0 {
         let reaper_store = store.clone();
