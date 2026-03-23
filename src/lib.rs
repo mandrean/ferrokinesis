@@ -51,6 +51,7 @@ pub mod health;
 pub mod mirror;
 #[cfg(any(
     not(target_arch = "wasm32"),
+    all(target_arch = "wasm32", feature = "wasm"),
     all(target_os = "wasi", target_env = "p2", feature = "wasi"),
 ))]
 #[doc(hidden)]
