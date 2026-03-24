@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "WASM wrapper for the ferrokinesis in-process Kinesis emulator"
+publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]
