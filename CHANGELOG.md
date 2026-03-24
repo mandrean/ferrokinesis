@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/mandrean/ferrokinesis/compare/v0.5.0...v0.6.0) - 2026-03-24
+
+### Added
+
+- *(wasm)* Add GitHub Pages browser demo ([#193](https://github.com/mandrean/ferrokinesis/pull/193))
+- Add experimental WASI TCP listener binary ([#192](https://github.com/mandrean/ferrokinesis/pull/192))
+- Add WASM wrapper and runtime split ([#191](https://github.com/mandrean/ferrokinesis/pull/191))
+
+### Fixed
+
+- exclude ferrokinesis-wasm from release-plz publishing
+
+### Other
+
+- Add cross-format CBOR/JSON property tests ([#194](https://github.com/mandrean/ferrokinesis/pull/194))
+- eliminate BigUint heap allocations on write hot path ([#190](https://github.com/mandrean/ferrokinesis/pull/190))
+- use v{version} format for GitHub release name ([#188](https://github.com/mandrean/ferrokinesis/pull/188))
+
 ## [0.5.0](https://github.com/mandrean/ferrokinesis/compare/v0.4.0...v0.5.0) - 2026-03-20
 
 ### Added
