@@ -46,3 +46,8 @@ examples/node/node_modules/
 examples/go/quickstart
 examples/go/quickstart_tls
 examples/python/__pycache__/
+demo/node_modules/
+demo/dist/
+demo/playwright-report/
+demo/test-results/
+demo/src/generated/
