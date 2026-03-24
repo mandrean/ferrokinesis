@@ -15,8 +15,41 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  pages:
+    name: Check Pages Configuration
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - name: Check if GitHub Pages is enabled
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          status=$(curl --silent --show-error --output /tmp/pages.json --write-out "%{http_code}" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/pages")
+
+          if [ "${status}" = "200" ]; then
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          if [ "${status}" = "404" ]; then
+            echo "::warning::GitHub Pages is not enabled for ${GITHUB_REPOSITORY}; skipping browser demo deploy."
+            echo "enabled=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          cat /tmp/pages.json
+          echo "::error::Unexpected response checking GitHub Pages configuration (HTTP ${status})."
+          exit 1
+
   build:
     name: Build Pages Artifact
+    needs: pages
+    if: needs.pages.outputs.enabled == 'true'
     runs-on: ubuntu-latest
     env:
       VITE_BASE_PATH: /${{ github.event.repository.name }}/
@@ -45,7 +78,8 @@ jobs:
 
   deploy:
     name: Deploy Pages
-    needs: build
+    if: needs.pages.outputs.enabled == 'true'
+    needs: [pages, build]
     runs-on: ubuntu-latest
     environment:
       name: github-pages
