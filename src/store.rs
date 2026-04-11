@@ -17,6 +17,11 @@
 
 use crate::constants;
 use crate::error::KinesisErrorResponse;
+use crate::metrics::AppMetrics;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::persistence::{
+    Persistence, PersistentSnapshot, PersistentStream, SnapshotShardRecords, WalEntry,
+};
 use crate::sequence;
 use crate::types::{Consumer, StoredRecord, Stream, StreamStatus};
 use crate::util::current_time_ms;
@@ -24,8 +29,10 @@ use dashmap::DashMap;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::RwLock as StdRwLock;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::{Mutex, RwLock};
 
 const DEFAULT_SHARD_WRITE_BYTES_PER_SEC: u64 = 1024 * 1024;
@@ -40,6 +47,21 @@ pub enum StoreHealthError {
     /// A required table could not be opened within the read transaction.
     #[error("table open failed: {0}")]
     TableOpenFailed(String),
+}
+
+#[derive(Default)]
+struct StoreHealthState {
+    replay_complete: AtomicBool,
+    durable_ok: AtomicBool,
+    last_error: StdRwLock<Option<String>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct PersistenceState {
+    backend: Persistence,
+    io_lock: Mutex<()>,
+    snapshot_interval_secs: u64,
+    last_snapshot_ms: AtomicU64,
 }
 
 /// Runtime configuration passed to [`crate::create_app`].
@@ -74,6 +96,12 @@ pub struct StoreOptions {
     pub retention_check_interval_secs: u64,
     /// Enable AWS-like shard write throughput throttling. Disabled by default.
     pub enforce_limits: bool,
+    /// Directory used to persist state with WAL + snapshots.
+    pub state_dir: Option<PathBuf>,
+    /// Snapshot interval in seconds when durable mode is enabled.
+    pub snapshot_interval_secs: u64,
+    /// Hard cap on retained serialized record bytes.
+    pub max_retained_bytes: Option<u64>,
     /// Simulated AWS account ID (12 digits). Defaults to `"000000000000"`.
     pub aws_account_id: String,
     /// Simulated AWS region. Defaults to `"us-east-1"`.
@@ -90,6 +118,9 @@ impl Default for StoreOptions {
             iterator_ttl_seconds: 300,
             retention_check_interval_secs: 0,
             enforce_limits: false,
+            state_dir: None,
+            snapshot_interval_secs: 30,
+            max_retained_bytes: None,
             aws_account_id: "000000000000".to_string(),
             aws_region: "us-east-1".to_string(),
         }
@@ -162,6 +193,10 @@ pub struct Store {
     /// The simulated AWS region.
     pub aws_region: String,
     inner: Arc<StoreInner>,
+    metrics: Arc<AppMetrics>,
+    health: Arc<StoreHealthState>,
+    #[cfg(not(target_arch = "wasm32"))]
+    persistence: Option<Arc<PersistenceState>>,
     /// Optional capture writer for recording PutRecord/PutRecords calls.
     #[cfg(feature = "server")]
     pub(crate) capture_writer: Option<crate::capture::CaptureWriter>,
@@ -231,23 +266,350 @@ impl Store {
         }
 
         let aws_region = options.aws_region.clone();
+        let metrics = AppMetrics::new(options.iterator_ttl_seconds);
+        let health = Arc::new(StoreHealthState {
+            replay_complete: AtomicBool::new(true),
+            durable_ok: AtomicBool::new(true),
+            last_error: StdRwLock::new(None),
+        });
 
-        Self {
+        let inner = Arc::new(StoreInner {
+            streams: DashMap::new(),
+            stream_records: DashMap::new(),
+            consumers: DashMap::new(),
+            policies: DashMap::new(),
+            resource_tags: DashMap::new(),
+            account_settings: RwLock::new(Value::Object(Default::default())),
+        });
+
+        let store = Self {
             options,
             aws_account_id,
             aws_region,
-            inner: Arc::new(StoreInner {
-                streams: DashMap::new(),
-                stream_records: DashMap::new(),
-                consumers: DashMap::new(),
-                policies: DashMap::new(),
-                resource_tags: DashMap::new(),
-                account_settings: RwLock::new(Value::Object(Default::default())),
-                throughput_windows: DashMap::new(),
-            }),
+            inner,
+            metrics,
+            health,
+            #[cfg(not(target_arch = "wasm32"))]
+            persistence: None,
             #[cfg(feature = "server")]
             capture_writer,
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut store = store;
+
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(state_dir) = store.options.state_dir.clone() {
+            match Persistence::new(state_dir) {
+                Ok(backend) => {
+                    let persistence = Arc::new(PersistenceState {
+                        backend,
+                        io_lock: Mutex::new(()),
+                        snapshot_interval_secs: store.options.snapshot_interval_secs,
+                        last_snapshot_ms: AtomicU64::new(0),
+                    });
+                    if let Err(err) = store.load_persistent_state(&persistence) {
+                        store.mark_unhealthy(err);
+                    }
+                    store.persistence = Some(persistence);
+                }
+                Err(err) => {
+                    store.mark_unhealthy(format!("failed to initialize durable state: {err}"))
+                }
+            }
         }
+
+        store.refresh_topology_metrics_sync();
+        store
+    }
+
+    /// Returns the shared application metrics registry.
+    pub fn metrics(&self) -> Arc<AppMetrics> {
+        Arc::clone(&self.metrics)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn load_persistent_state(&mut self, persistence: &Arc<PersistenceState>) -> Result<(), String> {
+        let Some((snapshot, entries)) =
+            persistence.backend.load().map_err(|err| err.to_string())?
+        else {
+            return Ok(());
+        };
+
+        persistence
+            .last_snapshot_ms
+            .store(snapshot.created_at_ms, Ordering::Relaxed);
+        self.metrics.set_last_snapshot_ms(snapshot.created_at_ms);
+        self.restore_snapshot(snapshot)?;
+        self.metrics.set_replay_complete(false);
+        self.health.replay_complete.store(false, Ordering::Relaxed);
+
+        for entry in entries {
+            self.apply_wal_entry(entry)?;
+        }
+
+        self.metrics.set_replay_complete(true);
+        self.health.replay_complete.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn apply_wal_entry(&self, entry: WalEntry) -> Result<(), String> {
+        match entry {
+            WalEntry::Snapshot(snapshot) => self.restore_snapshot(snapshot),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn restore_snapshot(&self, snapshot: PersistentSnapshot) -> Result<(), String> {
+        self.inner.streams.clear();
+        self.inner.stream_records.clear();
+        self.inner.consumers.clear();
+        self.inner.policies.clear();
+        self.inner.resource_tags.clear();
+        if let Ok(mut settings) = self.inner.account_settings.try_write() {
+            *settings = if snapshot.account_settings_json.is_empty() {
+                Value::Object(Default::default())
+            } else {
+                serde_json::from_slice(&snapshot.account_settings_json)
+                    .map_err(|err| format!("failed to decode persisted account settings: {err}"))?
+            };
+        }
+
+        for stream in snapshot.streams {
+            let (name, stream_value, shard_counters) = stream.into_parts();
+            let entry = Arc::new(StreamEntry {
+                stream: RwLock::new(stream_value),
+                shard_seq: RwLock::new(
+                    shard_counters
+                        .into_iter()
+                        .map(|counter| ShardSeqState {
+                            counter: AtomicU64::new(counter),
+                        })
+                        .collect(),
+                ),
+            });
+            self.inner.streams.insert(name, entry);
+        }
+
+        for shard_records in snapshot.records {
+            let shard_map = self
+                .inner
+                .stream_records
+                .entry(shard_records.stream_name)
+                .or_default();
+            let records = shard_records.records.into_iter().collect();
+            shard_map.insert(shard_records.shard_hex, Arc::new(RwLock::new(records)));
+        }
+
+        for (consumer_arn, bytes) in snapshot.consumers {
+            self.inner.consumers.insert(consumer_arn, bytes);
+        }
+        for (resource_arn, policy) in snapshot.policies {
+            self.inner.policies.insert(resource_arn, policy);
+        }
+        for (resource_arn, tags) in snapshot.resource_tags {
+            self.inner.resource_tags.insert(resource_arn, tags);
+        }
+
+        self.metrics
+            .set_retained(snapshot.retained_bytes, snapshot.retained_records);
+        self.refresh_topology_metrics_sync();
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn export_snapshot(&self) -> Result<PersistentSnapshot, String> {
+        let mut streams = Vec::new();
+        for entry in self.inner.streams.iter() {
+            let stream = entry.value().stream.read().await.clone();
+            let shard_seq = entry
+                .value()
+                .shard_seq
+                .read()
+                .await
+                .iter()
+                .map(|state| state.counter.load(Ordering::Relaxed))
+                .collect();
+            streams.push(PersistentStream::from_stream(
+                entry.key().clone(),
+                &stream,
+                shard_seq,
+            ));
+        }
+
+        let mut records = Vec::new();
+        for stream_entry in self.inner.stream_records.iter() {
+            for shard_entry in stream_entry.value().iter() {
+                let shard_records_map = shard_entry.value().read().await.clone();
+                let shard_records = shard_records_map.into_iter().collect();
+                records.push(SnapshotShardRecords {
+                    stream_name: stream_entry.key().clone(),
+                    shard_hex: shard_entry.key().clone(),
+                    records: shard_records,
+                });
+            }
+        }
+
+        Ok(PersistentSnapshot {
+            created_at_ms: current_time_ms(),
+            streams,
+            records,
+            consumers: self
+                .inner
+                .consumers
+                .iter()
+                .map(|entry| (entry.key().clone(), entry.value().clone()))
+                .collect(),
+            policies: self
+                .inner
+                .policies
+                .iter()
+                .map(|entry| (entry.key().clone(), entry.value().clone()))
+                .collect(),
+            resource_tags: self
+                .inner
+                .resource_tags
+                .iter()
+                .map(|entry| (entry.key().clone(), entry.value().clone()))
+                .collect(),
+            account_settings_json: {
+                let account_settings = self.inner.account_settings.read().await.clone();
+                serde_json::to_vec(&account_settings)
+                    .map_err(|err| format!("failed to encode snapshot account settings: {err}"))?
+            },
+            retained_bytes: self.metrics.retained_bytes(),
+            retained_records: self.metrics.retained_records(),
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn persist_snapshot(&self, snapshot: &PersistentSnapshot) {
+        let Some(persistence) = &self.persistence else {
+            return;
+        };
+        let backend = persistence.backend.clone();
+        let snapshot = snapshot.clone();
+        if let Err(err) = tokio::task::spawn_blocking(move || {
+            backend.append_wal_entry(&WalEntry::Snapshot(snapshot))
+        })
+        .await
+        .map_err(|err| err.to_string())
+        .and_then(|res| res.map_err(|err| err.to_string()))
+        {
+            self.mark_unhealthy(format!("failed to persist wal entry: {err}"));
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn persist_current_state(&self) {
+        if self.persistence.is_none() {
+            return;
+        }
+        let Some(persistence) = &self.persistence else {
+            return;
+        };
+        let _guard = persistence.io_lock.lock().await;
+        let snapshot = match self.export_snapshot().await {
+            Ok(snapshot) => snapshot,
+            Err(err) => {
+                self.mark_unhealthy(err.clone());
+                tracing::warn!("{err}");
+                return;
+            }
+        };
+
+        self.persist_snapshot(&snapshot).await;
+        if !self.health.durable_ok.load(Ordering::Relaxed) {
+            return;
+        }
+
+        if persistence.snapshot_interval_secs == 0 {
+            return;
+        }
+
+        let now = snapshot.created_at_ms;
+        let last_snapshot = persistence.last_snapshot_ms.load(Ordering::Relaxed);
+        if now.saturating_sub(last_snapshot)
+            < persistence.snapshot_interval_secs.saturating_mul(1000)
+        {
+            return;
+        }
+
+        let backend = persistence.backend.clone();
+        match tokio::task::spawn_blocking(move || backend.write_snapshot(&snapshot)).await {
+            Ok(Ok(())) => {
+                persistence.last_snapshot_ms.store(now, Ordering::Relaxed);
+                self.metrics.set_last_snapshot_ms(now);
+            }
+            Ok(Err(err)) => {
+                let message = format!("failed to write snapshot: {err}");
+                self.mark_unhealthy(message.clone());
+                tracing::warn!("{message}");
+            }
+            Err(err) => {
+                let message = format!("snapshot task failed: {err}");
+                self.mark_unhealthy(message.clone());
+                tracing::warn!("{message}");
+            }
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    async fn persist_current_state(&self) {}
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn mark_unhealthy(&self, message: String) {
+        self.health.durable_ok.store(false, Ordering::Relaxed);
+        if let Ok(mut guard) = self.health.last_error.write() {
+            *guard = Some(message);
+        }
+        self.health.replay_complete.store(false, Ordering::Relaxed);
+        self.metrics.set_replay_complete(false);
+    }
+
+    fn refresh_topology_metrics_sync(&self) {
+        let streams = self.inner.streams.len() as u64;
+        let mut open_shards = 0u64;
+        for entry in self.inner.streams.iter() {
+            if let Ok(stream) = entry.value().stream.try_read() {
+                open_shards += stream
+                    .shards
+                    .iter()
+                    .filter(|s| s.sequence_number_range.ending_sequence_number.is_none())
+                    .count() as u64;
+            }
+        }
+        self.metrics.set_topology(streams, open_shards);
+    }
+
+    async fn refresh_topology_metrics(&self) {
+        let streams = self.inner.streams.len() as u64;
+        let mut open_shards = 0u64;
+        for entry in self.inner.streams.iter() {
+            let stream = entry.value().stream.read().await;
+            open_shards += stream
+                .shards
+                .iter()
+                .filter(|s| s.sequence_number_range.ending_sequence_number.is_none())
+                .count() as u64;
+        }
+        self.metrics.set_topology(streams, open_shards);
+    }
+
+    /// Renders the current metrics registry in Prometheus text format.
+    pub async fn render_metrics(&self) -> String {
+        self.metrics.render(current_time_ms()).await
+    }
+
+    /// Records the creation time for a new shard iterator.
+    pub async fn record_iterator_created(&self, now_ms: u64) {
+        self.metrics.record_iterator(now_ms).await;
+    }
+
+    fn retained_capacity_exceeded(&self) -> bool {
+        self.options
+            .max_retained_bytes
+            .is_some_and(|limit| self.metrics.retained_bytes() > limit)
     }
 
     // --- Stream operations ---
@@ -281,13 +643,33 @@ impl Store {
             });
             self.inner.streams.insert(name.to_string(), entry);
         }
+        self.refresh_topology_metrics().await;
+        self.persist_current_state().await;
     }
 
     /// Deletes a stream and all of its records.
     pub async fn delete_stream(&self, name: &str) {
+        if let Some(records) = self.inner.stream_records.get(name) {
+            let mut bytes = 0u64;
+            let mut count = 0u64;
+            for shard in records.iter() {
+                if let Ok(shard_records) = shard.value().try_read() {
+                    count += shard_records.len() as u64;
+                    bytes += shard_records
+                        .values()
+                        .map(|value| value.len() as u64)
+                        .sum::<u64>();
+                }
+            }
+            self.metrics.remove_retained(bytes, count);
+        }
         self.inner.streams.remove(name);
         self.inner.stream_records.remove(name);
         self.clear_throughput_windows_for_stream(name);
+        self.refresh_topology_metrics().await;
+        self.persist_current_state().await;
+        self.refresh_topology_metrics().await;
+        self.persist_current_state().await;
     }
 
     /// Returns `true` if a stream with the given name exists.
@@ -338,6 +720,9 @@ impl Store {
         let result = f(&mut stream)?;
         // Sync shard_seq if the closure added shards (split/merge/reshard).
         sync_shard_seq(&entry, &stream).await;
+        drop(stream);
+        self.refresh_topology_metrics().await;
+        self.persist_current_state().await;
         Ok(result)
     }
 
@@ -401,7 +786,12 @@ impl Store {
             .clone();
         drop(shard_map);
         let mut records = records_arc.write().await;
-        records.insert(key.to_string(), bytes);
+        if let Some(previous) = records.insert(key.to_string(), bytes.clone()) {
+            self.metrics.remove_retained(previous.len() as u64, 1);
+        }
+        self.metrics.add_retained(bytes.len() as u64, 1);
+        drop(records);
+        self.persist_current_state().await;
         Ok(())
     }
 
@@ -436,8 +826,12 @@ impl Store {
         // Phase 2: insert records under per-shard write locks only.
         for (records_arc, key, bytes) in pending {
             let mut records = records_arc.write().await;
-            records.insert(key, bytes);
+            if let Some(previous) = records.insert(key, bytes.clone()) {
+                self.metrics.remove_retained(previous.len() as u64, 1);
+            }
+            self.metrics.add_retained(bytes.len() as u64, 1);
         }
+        self.persist_current_state().await;
         Ok(())
     }
 
@@ -455,6 +849,7 @@ impl Store {
 
         // Phase 2: scan and delete under per-shard locks only.
         let mut total_deleted = 0;
+        let mut bytes_deleted = 0u64;
         for records_arc in shard_arcs {
             let keys_to_delete: Vec<String> = {
                 let records = records_arc.read().await;
@@ -475,12 +870,19 @@ impl Store {
             if !keys_to_delete.is_empty() {
                 let mut records = records_arc.write().await;
                 for key in &keys_to_delete {
-                    records.remove(key);
+                    if let Some(bytes) = records.remove(key) {
+                        bytes_deleted += bytes.len() as u64;
+                    }
                 }
                 total_deleted += keys_to_delete.len();
             }
         }
 
+        if total_deleted > 0 {
+            self.metrics
+                .remove_retained(bytes_deleted, total_deleted as u64);
+            self.persist_current_state().await;
+        }
         total_deleted
     }
 
@@ -503,9 +905,17 @@ impl Store {
         }; // DashMap Ref dropped here.
 
         // Phase 2: delete under per-shard write locks only.
+        let pending_len = pending.len() as u64;
+        let mut bytes_deleted = 0u64;
         for (records_arc, key) in pending {
             let mut records = records_arc.write().await;
-            records.remove(&key);
+            if let Some(bytes) = records.remove(&key) {
+                bytes_deleted += bytes.len() as u64;
+            }
+        }
+        if pending_len > 0 {
+            self.metrics.remove_retained(bytes_deleted, pending_len);
+            self.persist_current_state().await;
         }
     }
 
@@ -597,6 +1007,7 @@ impl Store {
     pub async fn put_consumer(&self, consumer_arn: &str, consumer: Consumer) {
         let bytes = serde_json::to_vec(&consumer).unwrap();
         self.inner.consumers.insert(consumer_arn.to_string(), bytes);
+        self.persist_current_state().await;
     }
 
     /// Returns the consumer with the given ARN, or `None` if not found.
@@ -610,6 +1021,7 @@ impl Store {
     /// Deletes the consumer with the given ARN.
     pub async fn delete_consumer(&self, consumer_arn: &str) {
         self.inner.consumers.remove(consumer_arn);
+        self.persist_current_state().await;
     }
 
     /// Returns all consumers whose ARN belongs to the given stream ARN.
@@ -640,6 +1052,7 @@ impl Store {
         self.inner
             .policies
             .insert(resource_arn.to_string(), policy.to_string());
+        self.persist_current_state().await;
     }
 
     /// Returns the resource policy for the given ARN, or `None` if none is set.
@@ -653,6 +1066,7 @@ impl Store {
     /// Deletes the resource policy for the given ARN.
     pub async fn delete_policy(&self, resource_arn: &str) {
         self.inner.policies.remove(resource_arn);
+        self.persist_current_state().await;
     }
 
     /// Extracts the stream name from a Kinesis stream ARN.
@@ -719,6 +1133,7 @@ impl Store {
         self.inner
             .resource_tags
             .insert(resource_arn.to_string(), tags.clone());
+        self.persist_current_state().await;
     }
 
     // --- Account settings operations ---
@@ -732,6 +1147,8 @@ impl Store {
     pub async fn put_account_settings(&self, settings: &Value) {
         let mut guard = self.inner.account_settings.write().await;
         *guard = settings.clone();
+        drop(guard);
+        self.persist_current_state().await;
     }
 
     /// Probes store health. Always succeeds for the in-memory store.
@@ -742,6 +1159,29 @@ impl Store {
     /// in-memory implementation this never happens, but the signature is kept
     /// for API compatibility.
     pub fn check_ready(&self) -> Result<(), StoreHealthError> {
+        if !self.health.durable_ok.load(Ordering::Relaxed) {
+            let detail = self
+                .health
+                .last_error
+                .read()
+                .ok()
+                .and_then(|guard| guard.clone())
+                .unwrap_or_else(|| "durable state is not ready".to_string());
+            return Err(StoreHealthError::ReadFailed(detail));
+        }
+        if !self.health.replay_complete.load(Ordering::Relaxed) {
+            return Err(StoreHealthError::ReadFailed(
+                "durable replay is not complete".to_string(),
+            ));
+        }
+        if self.retained_capacity_exceeded() {
+            let limit = self.options.max_retained_bytes.unwrap();
+            return Err(StoreHealthError::ReadFailed(format!(
+                "retained bytes limit exceeded: {} > {}",
+                self.metrics.retained_bytes(),
+                limit
+            )));
+        }
         Ok(())
     }
 

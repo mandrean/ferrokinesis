@@ -60,6 +60,7 @@ pub async fn handler(
     body: Bytes,
 ) -> Response {
     let request_id = uuid::Uuid::new_v4().to_string();
+    let request_started_ms = crate::util::current_time_ms();
 
     let mut response_headers = HeaderMap::new();
     response_headers.insert("x-amzn-RequestId", request_id.parse().unwrap());
@@ -358,26 +359,34 @@ pub async fn handler(
     // Handle SubscribeToShard separately (streaming response)
     if operation == Operation::SubscribeToShard {
         #[cfg(not(target_arch = "wasm32"))]
-        return match actions::subscribe_to_shard::execute_streaming(
-            &store,
-            data,
-            response_content_type,
-        )
-        .instrument(span.clone())
-        .await
         {
-            Ok(body) => {
-                tracing::debug!(parent: &span, "ok");
-                response_headers.insert(
-                    "Content-Type",
-                    "application/vnd.amazon.eventstream".parse().unwrap(),
-                );
-                (StatusCode::OK, response_headers, body).into_response()
-            }
-            Err(ref err) => {
-                log_and_send_error(&span, &response_headers, response_content_type, err)
-            }
-        };
+            let response = match actions::subscribe_to_shard::execute_streaming(
+                &store,
+                data,
+                response_content_type,
+            )
+            .instrument(span.clone())
+            .await
+            {
+                Ok(body) => {
+                    tracing::debug!(parent: &span, "ok");
+                    response_headers.insert(
+                        "Content-Type",
+                        "application/vnd.amazon.eventstream".parse().unwrap(),
+                    );
+                    (StatusCode::OK, response_headers, body).into_response()
+                }
+                Err(ref err) => {
+                    log_and_send_error(&span, &response_headers, response_content_type, err)
+                }
+            };
+            store.metrics().record_request(
+                operation,
+                response.status().is_success(),
+                elapsed_request_micros(request_started_ms),
+            );
+            return response;
+        }
 
         #[cfg(target_arch = "wasm32")]
         {
@@ -385,7 +394,14 @@ pub async fn handler(
                 constants::INVALID_ARGUMENT,
                 Some("SubscribeToShard is not supported in this build."),
             );
-            return log_and_send_error(&span, &response_headers, response_content_type, &err);
+            let response =
+                log_and_send_error(&span, &response_headers, response_content_type, &err);
+            store.metrics().record_request(
+                operation,
+                false,
+                elapsed_request_micros(request_started_ms),
+            );
+            return response;
         }
     }
 
@@ -440,7 +456,19 @@ pub async fn handler(
         let _ = (mirror, mirrorable_result);
     }
 
+    store.metrics().record_request(
+        operation,
+        response.status().is_success(),
+        elapsed_request_micros(request_started_ms),
+    );
+
     response
+}
+
+fn elapsed_request_micros(request_started_ms: u64) -> u64 {
+    crate::util::current_time_ms()
+        .saturating_sub(request_started_ms)
+        .saturating_mul(1000)
 }
 
 fn send_kinesis_error(

@@ -92,6 +92,17 @@ struct ServeArgs {
     #[arg(long, env = "FERROKINESIS_ENFORCE_LIMITS",
           default_missing_value = "true", num_args = 0..=1)]
     enforce_limits: Option<bool>,
+    /// Directory used to persist state with WAL + snapshots
+    #[arg(long, env = "FERROKINESIS_STATE_DIR")]
+    state_dir: Option<PathBuf>,
+
+    /// Snapshot interval in seconds when durable mode is enabled (0 = disabled)
+    #[arg(long, env = "FERROKINESIS_SNAPSHOT_INTERVAL_SECS", value_parser = clap::value_parser!(u64).range(0..=86400))]
+    snapshot_interval_secs: Option<u64>,
+
+    /// Hard cap on retained serialized record bytes
+    #[arg(long, env = "FERROKINESIS_MAX_RETAINED_BYTES", value_parser = clap::value_parser!(u64).range(1..))]
+    max_retained_bytes: Option<u64>,
 
     /// Log level (off, error, warn, info, debug, trace)
     #[arg(long, env = "FERROKINESIS_LOG_LEVEL",
@@ -193,6 +204,20 @@ fn resolve_store_options(
         enforce_limits: resolve(args.enforce_limits, file_cfg.enforce_limits, || {
             defaults.enforce_limits
         }),
+        state_dir: args
+            .state_dir
+            .clone()
+            .or(file_cfg.state_dir.clone())
+            .or(defaults.state_dir.clone()),
+        snapshot_interval_secs: resolve(
+            args.snapshot_interval_secs,
+            file_cfg.snapshot_interval_secs,
+            || defaults.snapshot_interval_secs,
+        ),
+        max_retained_bytes: args
+            .max_retained_bytes
+            .or(file_cfg.max_retained_bytes)
+            .or(defaults.max_retained_bytes),
         aws_account_id: resolve(args.account_id.clone(), file_cfg.account_id.clone(), || {
             defaults.aws_account_id.clone()
         }),

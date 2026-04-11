@@ -187,6 +187,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                 let result =
                     shard_iterator::create_shard_iterator(stream_name, &shard_id, &seq, now);
                 tracing::trace!(stream = %stream_name, shard = %shard_id, iterator_type = %iterator_type_raw, "shard iterator created");
+                store.record_iterator_created(now).await;
                 return Ok(Some(json!({ "ShardIterator": result })));
             }
             ShardIteratorType::AtSequenceNumber | ShardIteratorType::AfterSequenceNumber => {
@@ -205,5 +206,6 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
 
     let result = shard_iterator::create_shard_iterator(stream_name, &shard_id, &iterator_seq, now);
     tracing::trace!(stream = %stream_name, shard = %shard_id, iterator_type = %iterator_type_raw, "shard iterator created");
+    store.record_iterator_created(now).await;
     Ok(Some(json!({ "ShardIterator": result })))
 }

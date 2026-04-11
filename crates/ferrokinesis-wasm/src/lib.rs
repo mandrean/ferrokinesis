@@ -68,6 +68,9 @@ impl Kinesis {
                 .retention_check_interval_secs
                 .unwrap_or(defaults.retention_check_interval_secs),
             enforce_limits: options.enforce_limits.unwrap_or(defaults.enforce_limits),
+            state_dir: defaults.state_dir,
+            snapshot_interval_secs: defaults.snapshot_interval_secs,
+            max_retained_bytes: defaults.max_retained_bytes,
             aws_account_id: options.account_id.unwrap_or(defaults.aws_account_id),
             aws_region: options.region.unwrap_or(defaults.aws_region),
         };

@@ -215,6 +215,11 @@ impl WasiConfig {
                 .unwrap_or(defaults.retention_check_interval_secs),
                 enforce_limits: read_parsed_env(&mut read, "FERROKINESIS_ENFORCE_LIMITS")?
                     .unwrap_or(defaults.enforce_limits),
+                state_dir: read_env("FERROKINESIS_STATE_DIR")?.or(defaults.state_dir.clone()),
+                snapshot_interval_secs: read_env("FERROKINESIS_SNAPSHOT_INTERVAL_SECS")?
+                    .unwrap_or(defaults.snapshot_interval_secs),
+                max_retained_bytes: read_env("FERROKINESIS_MAX_RETAINED_BYTES")?
+                    .or(defaults.max_retained_bytes),
                 aws_account_id: read("AWS_ACCOUNT_ID")?
                     .unwrap_or_else(|| defaults.aws_account_id.clone()),
                 aws_region,
