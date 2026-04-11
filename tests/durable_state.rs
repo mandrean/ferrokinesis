@@ -174,6 +174,12 @@ fn write_legacy_snapshot(state_dir: &Path, mut snapshot: Value) {
     fs::write(state_dir.join("wal.log"), []).unwrap();
 }
 
+fn break_wal(state_dir: &Path) {
+    let wal_path = state_dir.join("wal.log");
+    let _ = fs::remove_file(&wal_path);
+    fs::create_dir(&wal_path).unwrap();
+}
+
 #[tokio::test]
 async fn durable_store_replays_wal_after_restart() {
     let dir = tempdir().unwrap();
@@ -528,6 +534,104 @@ async fn durable_store_rejects_put_record_after_wal_failure_and_rolls_back_state
     assert_eq!(batch_err.status_code, 500);
     assert!(store.check_ready().is_err());
     assert!(store.get_record_store("wal-failure").await.is_empty());
+}
+
+#[tokio::test]
+async fn durable_store_rolls_back_create_stream_when_persistence_fails() {
+    let dir = tempdir().unwrap();
+    let options = durable_options(dir.path(), 0);
+    let store = Store::new(options);
+
+    break_wal(dir.path());
+
+    let err = dispatch(
+        &store,
+        Operation::CreateStream,
+        json!({
+            "StreamName": "create-rollback",
+            "ShardCount": 1,
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.status_code, 500);
+    assert!(!store.contains_stream("create-rollback").await);
+}
+
+#[tokio::test]
+async fn durable_store_rolls_back_delete_stream_when_persistence_fails() {
+    let dir = tempdir().unwrap();
+    let options = durable_options(dir.path(), 0);
+    let store = Store::new(options);
+    create_active_stream(&store, "delete-rollback").await;
+
+    break_wal(dir.path());
+
+    let err = dispatch(
+        &store,
+        Operation::DeleteStream,
+        json!({
+            "StreamName": "delete-rollback",
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.status_code, 500);
+
+    let stream = store.get_stream("delete-rollback").await.unwrap();
+    assert_eq!(stream.stream_status, StreamStatus::Active);
+}
+
+#[tokio::test]
+async fn durable_store_rolls_back_register_consumer_when_persistence_fails() {
+    let dir = tempdir().unwrap();
+    let options = durable_options(dir.path(), 0);
+    let store = Store::new(options);
+    let stream_arn = create_active_stream(&store, "consumer-rollback").await;
+
+    break_wal(dir.path());
+
+    let err = dispatch(
+        &store,
+        Operation::RegisterStreamConsumer,
+        json!({
+            "StreamARN": stream_arn,
+            "ConsumerName": "consumer-a",
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.status_code, 500);
+    assert!(
+        store
+            .list_consumers_for_stream(&stream_arn)
+            .await
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn durable_store_rolls_back_account_settings_when_persistence_fails() {
+    let dir = tempdir().unwrap();
+    let options = durable_options(dir.path(), 0);
+    let store = Store::new(options);
+
+    break_wal(dir.path());
+
+    let err = dispatch(
+        &store,
+        Operation::UpdateAccountSettings,
+        json!({
+            "MinimumThroughputBillingCommitment": {
+                "Status": "ACTIVE",
+                "CommitmentDuration": "P30D"
+            }
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.status_code, 500);
+    assert_eq!(store.get_account_settings().await, json!({}));
 }
 
 #[tokio::test]

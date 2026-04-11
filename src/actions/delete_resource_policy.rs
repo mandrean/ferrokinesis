@@ -13,7 +13,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         ));
     }
 
-    store.delete_policy(resource_arn).await;
+    store.delete_policy(resource_arn).await?;
     tracing::trace!(resource_arn, "resource policy deleted");
     Ok(None)
 }

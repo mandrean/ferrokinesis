@@ -35,7 +35,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         settings = commitment.clone();
     }
 
-    store.put_account_settings(&settings).await;
+    store.put_account_settings(&settings).await?;
 
     tracing::trace!("account settings updated");
     Ok(Some(json!({

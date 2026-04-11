@@ -61,7 +61,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
             consumer.clone(),
             TransitionMutation::Upsert(transition.clone()),
         )
-        .await;
+        .await?;
     tracing::info!(
         stream = stream_arn,
         consumer = consumer_name,

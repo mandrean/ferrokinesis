@@ -287,7 +287,8 @@ async fn subscribe_stream_not_found_from_consumer_arn() {
                 consumer_creation_timestamp: EpochSeconds(1.0),
             },
         )
-        .await;
+        .await
+        .unwrap();
 
     let result = ferrokinesis::actions::subscribe_to_shard::execute_streaming(
         &store,
@@ -321,7 +322,8 @@ async fn subscribe_consumer_arn_missing_consumer_segment() {
                 consumer_creation_timestamp: EpochSeconds(1.0),
             },
         )
-        .await;
+        .await
+        .unwrap();
 
     let result = ferrokinesis::actions::subscribe_to_shard::execute_streaming(
         &store,
@@ -355,7 +357,8 @@ async fn subscribe_consumer_arn_unresolvable_stream_name() {
                 consumer_creation_timestamp: EpochSeconds(1.0),
             },
         )
-        .await;
+        .await
+        .unwrap();
 
     let result = ferrokinesis::actions::subscribe_to_shard::execute_streaming(
         &store,
@@ -494,7 +497,8 @@ async fn subscribe_unknown_position_type_direct() {
                 consumer_creation_timestamp: EpochSeconds(1.0),
             },
         )
-        .await;
+        .await
+        .unwrap();
 
     let result = ferrokinesis::actions::subscribe_to_shard::execute_streaming(
         &store,

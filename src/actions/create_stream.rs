@@ -105,7 +105,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
             stream,
             TransitionMutation::Upsert(transition.clone()),
         )
-        .await;
+        .await?;
     tracing::info!(stream = stream_name, shards = shard_count, "stream created");
     store.schedule_transition(transition);
 

@@ -82,7 +82,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
             Some("A resource cannot have more than 50 tags."),
         ));
     }
-    store.put_resource_tags(resource_arn, &existing).await;
+    store.put_resource_tags(resource_arn, &existing).await?;
 
     tracing::trace!(resource_arn, tags = tags.len(), "resource tagged");
     Ok(None)

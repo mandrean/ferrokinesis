@@ -50,7 +50,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
             updated,
             TransitionMutation::Upsert(transition.clone()),
         )
-        .await;
+        .await?;
     tracing::info!(consumer_arn = %resolved_arn, "consumer deregistered");
     store.schedule_transition(transition);
 
