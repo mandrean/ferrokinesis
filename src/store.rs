@@ -997,11 +997,25 @@ impl Store {
         stream: Stream,
         transition: TransitionMutation,
     ) -> Result<(), KinesisErrorResponse> {
+        self.put_stream_with_transition_internal(name, stream, transition, false)
+            .await
+    }
+
+    async fn put_stream_with_transition_internal(
+        &self,
+        name: &str,
+        stream: Stream,
+        transition: TransitionMutation,
+        skip_write_lock: bool,
+    ) -> Result<(), KinesisErrorResponse> {
         #[cfg(not(target_arch = "wasm32"))]
-        let _write_guard = if self.persistence.is_some() {
+        let _write_guard = if self.persistence.is_some() && !skip_write_lock {
             self.check_persistent_mutation_allowed()?;
             Some(self.inner.write_lock.lock().await)
         } else {
+            if self.persistence.is_some() {
+                self.check_persistent_mutation_allowed()?;
+            }
             None
         };
 
@@ -1050,6 +1064,92 @@ impl Store {
         self.persist_current_state().await;
 
         Ok(())
+    }
+
+    fn shard_limit_error(
+        &self,
+        current_shards: u32,
+        requested_shards: u32,
+    ) -> KinesisErrorResponse {
+        KinesisErrorResponse::client_error(
+            constants::LIMIT_EXCEEDED,
+            Some(&format!(
+                "This request would exceed the shard limit for the account {} in {}. \
+                 Current shard count for the account: {}. Limit: {}. \
+                 Number of additional shards that would have resulted from this request: {}. \
+                 Refer to the AWS Service Limits page \
+                 (http://docs.aws.amazon.com/general/latest/gr/aws_service_limits.html) \
+                 for current limits and how to request higher limits.",
+                self.aws_account_id,
+                self.aws_region,
+                current_shards,
+                self.options.shard_limit,
+                requested_shards
+            )),
+        )
+    }
+
+    async fn sum_account_shards_including_pending_creates(&self) -> u32 {
+        let mut total = self.sum_open_shards().await;
+        let pending = self.inner.pending_transitions.read().await;
+        for transition in pending.values() {
+            let PendingTransition::CreateStream {
+                stream_name,
+                shards,
+                ..
+            } = transition
+            else {
+                continue;
+            };
+
+            let mut count_pending = true;
+            if let Some(entry) = self.inner.streams.get(stream_name) {
+                let stream = entry.value().stream.read().await;
+                let open_shards = stream
+                    .shards
+                    .iter()
+                    .filter(|s| s.sequence_number_range.ending_sequence_number.is_none())
+                    .count();
+                if open_shards > 0 {
+                    count_pending = false;
+                }
+            }
+
+            if count_pending {
+                total = total.saturating_add(shards.len() as u32);
+            }
+        }
+        total
+    }
+
+    pub(crate) async fn create_stream_with_reservation(
+        &self,
+        name: &str,
+        shard_count: u32,
+        stream: Stream,
+        transition: PendingTransition,
+    ) -> Result<(), KinesisErrorResponse> {
+        let _write_guard = self.inner.write_lock.lock().await;
+
+        if self.inner.streams.contains_key(name) {
+            return Err(KinesisErrorResponse::stream_in_use(
+                name,
+                &self.aws_account_id,
+            ));
+        }
+
+        let reserved = self.sum_account_shards_including_pending_creates().await;
+        if reserved.saturating_add(shard_count) > self.options.shard_limit {
+            return Err(self.shard_limit_error(reserved, shard_count));
+        }
+
+        self.put_stream_with_transition_internal(
+            name,
+            stream,
+            TransitionMutation::Upsert(transition),
+            true,
+        )
+        .await
     }
 
     /// Deletes a stream and all of its records.

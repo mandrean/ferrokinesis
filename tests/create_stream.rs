@@ -231,3 +231,97 @@ async fn create_stream_creating_then_active() {
         1
     );
 }
+
+#[tokio::test]
+async fn create_stream_pending_reserves_shard_capacity() {
+    let server = TestServer::with_options(ferrokinesis::store::StoreOptions {
+        create_stream_ms: 200,
+        delete_stream_ms: 0,
+        update_stream_ms: 0,
+        shard_limit: 1,
+        ..Default::default()
+    })
+    .await;
+
+    let res = server
+        .request(
+            "CreateStream",
+            &json!({"StreamName": "pending-limit-1", "ShardCount": 1}),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+
+    let res = server
+        .request(
+            "CreateStream",
+            &json!({"StreamName": "pending-limit-2", "ShardCount": 1}),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "LimitExceededException");
+}
+
+#[tokio::test]
+async fn create_stream_pending_reserves_mixed_counts() {
+    let server = TestServer::with_options(ferrokinesis::store::StoreOptions {
+        create_stream_ms: 200,
+        delete_stream_ms: 0,
+        update_stream_ms: 0,
+        shard_limit: 3,
+        ..Default::default()
+    })
+    .await;
+
+    let res = server
+        .request(
+            "CreateStream",
+            &json!({"StreamName": "pending-mixed-a", "ShardCount": 2}),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+
+    let res = server
+        .request(
+            "CreateStream",
+            &json!({"StreamName": "pending-mixed-b", "ShardCount": 2}),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "LimitExceededException");
+
+    let res = server
+        .request(
+            "CreateStream",
+            &json!({"StreamName": "pending-mixed-c", "ShardCount": 1}),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+}
+
+#[tokio::test]
+async fn create_stream_concurrent_admission_respects_limit() {
+    let server = TestServer::with_options(ferrokinesis::store::StoreOptions {
+        create_stream_ms: 200,
+        delete_stream_ms: 0,
+        update_stream_ms: 0,
+        shard_limit: 1,
+        ..Default::default()
+    })
+    .await;
+
+    let req_a = json!({"StreamName": "pending-concurrent-a", "ShardCount": 1});
+    let req_b = json!({"StreamName": "pending-concurrent-b", "ShardCount": 1});
+
+    let (res_a, res_b) = tokio::join!(
+        server.request("CreateStream", &req_a),
+        server.request("CreateStream", &req_b),
+    );
+
+    let codes = [res_a.status().as_u16(), res_b.status().as_u16()];
+    let success = codes.iter().filter(|&&code| code == 200).count();
+    let limit = codes.iter().filter(|&&code| code == 400).count();
+    assert_eq!(success, 1, "expected exactly one success: {codes:?}");
+    assert_eq!(limit, 1, "expected exactly one limit failure: {codes:?}");
+}

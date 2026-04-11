@@ -559,6 +559,40 @@ async fn durable_store_rolls_back_create_stream_when_persistence_fails() {
 }
 
 #[tokio::test]
+async fn durable_store_reserves_pending_create_shards_after_restart() {
+    let dir = tempdir().unwrap();
+    let mut options = durable_options(dir.path(), 0);
+    options.create_stream_ms = 500;
+    options.shard_limit = 1;
+
+    let store = Store::new(options.clone());
+    dispatch(
+        &store,
+        Operation::CreateStream,
+        json!({
+            "StreamName": "pending-reserved",
+            "ShardCount": 1,
+        }),
+    )
+    .await
+    .unwrap();
+    drop(store);
+
+    let recovered = Store::new(options);
+    let err = dispatch(
+        &recovered,
+        Operation::CreateStream,
+        json!({
+            "StreamName": "pending-second",
+            "ShardCount": 1,
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.body.error_type, "LimitExceededException");
+}
+
+#[tokio::test]
 async fn durable_store_rolls_back_delete_stream_when_persistence_fails() {
     let dir = tempdir().unwrap();
     let options = durable_options(dir.path(), 0);
