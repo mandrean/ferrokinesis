@@ -9,9 +9,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 use tokio::time::{Instant, MissedTickBehavior};
 
 const CONTENT_TYPE: &str = "application/x-amz-json-1.1";
@@ -21,6 +21,8 @@ const AMZ_DATE: &str = "20150101T000000Z";
 const STREAM_COUNT: usize = 2;
 const SHARDS_PER_STREAM: u32 = 2;
 const RECORD_DATA: &str = "AAAA";
+const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum ProfileName {
@@ -77,7 +79,7 @@ struct Cli {
     duration_secs: Option<u64>,
 
     /// Override sample interval in seconds
-    #[arg(long)]
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
     sample_interval_secs: Option<u64>,
 
     /// Restart the server once at this point in the run (0 disables restart)
@@ -146,10 +148,13 @@ struct WorkloadStats {
     put_requests_ok: u64,
     put_requests_error: u64,
     put_records_sent: u64,
+    put_records_ok: u64,
+    put_records_failed: u64,
     get_records_ok: u64,
     get_records_error: u64,
     unexpected_5xx: u64,
     readiness_failures: u64,
+    planned_restart_readiness_failures: u64,
     restart_count: u32,
     restart_recovery_ms: Option<u64>,
 }
@@ -212,6 +217,43 @@ struct Summary {
     replay_complete_final: Option<u64>,
 }
 
+struct ServerProcess {
+    child: Option<Child>,
+}
+
+impl ServerProcess {
+    fn spawn(cfg: &RunConfig, log_path: &Path) -> Result<Self, Box<dyn Error>> {
+        Ok(Self {
+            child: Some(spawn_server(cfg, log_path)?),
+        })
+    }
+
+    fn id(&self) -> u32 {
+        self.child
+            .as_ref()
+            .expect("server process should be present")
+            .id()
+    }
+
+    fn restart(&mut self, cfg: &RunConfig, log_path: &Path) -> Result<(), Box<dyn Error>> {
+        self.stop();
+        self.child = Some(spawn_server(cfg, log_path)?);
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            stop_server(&mut child);
+        }
+    }
+}
+
+impl Drop for ServerProcess {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
@@ -266,37 +308,48 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 async fn run_soak(cfg: RunConfig) -> Result<(), Box<dyn Error>> {
-    let client = Client::new();
+    let client = build_http_client()?;
     let server_log_path = cfg.output_dir.join("server.log");
-    let mut child = spawn_server(&cfg, &server_log_path)?;
-    let pid_cell = Arc::new(AtomicU32::new(child.id()));
+    let mut server = ServerProcess::spawn(&cfg, &server_log_path)?;
+    let pid_cell = Arc::new(AtomicU32::new(server.id()));
     wait_ready(&client, &cfg.base_url, Duration::from_secs(90)).await?;
 
     let mut streams = create_streams(&client, &cfg.base_url).await?;
 
+    let start = Instant::now();
     let samples = Arc::new(Mutex::new(Vec::<Sample>::new()));
-    let sampler_stop = Arc::new(AtomicBool::new(false));
+    let (sampler_stop_tx, sampler_stop_rx) = watch::channel(false);
     let sampler_task = {
         let samples = Arc::clone(&samples);
-        let stop = Arc::clone(&sampler_stop);
         let pid = Arc::clone(&pid_cell);
         let base_url = cfg.base_url.clone();
         let state_dir = cfg.state_dir.clone();
         let interval = cfg.profile.sample_interval;
         let client = client.clone();
+        let start = start;
         tokio::spawn(async move {
-            sample_loop(client, base_url, state_dir, pid, stop, samples, interval).await;
+            sample_loop(
+                client,
+                base_url,
+                state_dir,
+                pid,
+                sampler_stop_rx,
+                samples,
+                interval,
+                start,
+            )
+            .await;
         })
     };
 
     let mut stats = WorkloadStats::default();
-    let start = Instant::now();
     let mut put_tick = tokio::time::interval(cfg.profile.put_interval);
     put_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut get_tick = tokio::time::interval(cfg.profile.get_interval);
     get_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let deadline = start + cfg.profile.duration;
     let mut restart_done = false;
+    let mut restart_window_secs: Option<(f64, f64)> = None;
 
     loop {
         let now = Instant::now();
@@ -309,9 +362,8 @@ async fn run_soak(cfg: RunConfig) -> Result<(), Box<dyn Error>> {
             && now.duration_since(start) >= restart_at
         {
             let restart_started = Instant::now();
-            stop_server(&mut child);
-            child = spawn_server(&cfg, &server_log_path)?;
-            pid_cell.store(child.id(), Ordering::Relaxed);
+            server.restart(&cfg, &server_log_path)?;
+            pid_cell.store(server.id(), Ordering::Relaxed);
             wait_ready(&client, &cfg.base_url, Duration::from_secs(90)).await?;
             for stream in &mut streams {
                 stream.shard_iterators =
@@ -319,6 +371,10 @@ async fn run_soak(cfg: RunConfig) -> Result<(), Box<dyn Error>> {
             }
             stats.restart_count += 1;
             stats.restart_recovery_ms = Some(restart_started.elapsed().as_millis() as u64);
+            restart_window_secs = Some((
+                restart_started.duration_since(start).as_secs_f64(),
+                Instant::now().duration_since(start).as_secs_f64(),
+            ));
             restart_done = true;
         }
 
@@ -339,22 +395,31 @@ async fn run_soak(cfg: RunConfig) -> Result<(), Box<dyn Error>> {
         }
     }
 
-    sampler_stop.store(true, Ordering::Relaxed);
-    let _ = sampler_task.await;
+    let _ = sampler_stop_tx.send(true);
+    sampler_task
+        .await
+        .map_err(|err| format!("sampler task failed: {err}"))?;
 
     let final_metrics = fetch_metrics_text(&client, &cfg.base_url)
         .await
         .unwrap_or_default();
-    stop_server(&mut child);
+    server.stop();
 
     let samples = samples.lock().await;
-    stats.readiness_failures = samples
-        .iter()
-        .filter(|sample| sample.ready_status != 200)
-        .count() as u64;
+    let (readiness_failures, planned_restart_readiness_failures) =
+        classify_readiness_failures(&samples, restart_window_secs);
+    stats.readiness_failures = readiness_failures;
+    stats.planned_restart_readiness_failures = planned_restart_readiness_failures;
     write_artifacts(&cfg, &stats, &samples, &final_metrics)?;
 
     Ok(())
+}
+
+fn build_http_client() -> Result<Client, Box<dyn Error>> {
+    Ok(Client::builder()
+        .connect_timeout(HTTP_CONNECT_TIMEOUT)
+        .timeout(HTTP_REQUEST_TIMEOUT)
+        .build()?)
 }
 
 fn build_server_binary() -> Result<(), Box<dyn Error>> {
@@ -586,14 +651,20 @@ async fn run_put_batch(
         }),
     )
     .await?;
+    let attempted_records = u64::from(records_per_put);
+    let status = response.status();
+    stats.put_records_sent += attempted_records;
 
-    if response.status().is_success() {
+    if status.is_success() {
+        let body: Value = response.json().await?;
+        let (ok_records, failed_records) = parse_put_records_outcomes(&body, records_per_put)?;
         stats.put_requests_ok += 1;
-        stats.put_records_sent += u64::from(records_per_put);
+        stats.put_records_ok += ok_records;
+        stats.put_records_failed += failed_records;
     } else {
         stats.put_requests_error += 1;
     }
-    if response.status().is_server_error() {
+    if status.is_server_error() {
         stats.unexpected_5xx += 1;
     }
     Ok(())
@@ -648,12 +719,12 @@ async fn sample_loop(
     base_url: String,
     state_dir: PathBuf,
     pid: Arc<AtomicU32>,
-    stop: Arc<AtomicBool>,
+    mut stop: watch::Receiver<bool>,
     samples: Arc<Mutex<Vec<Sample>>>,
     interval: Duration,
+    start: Instant,
 ) {
-    let start = Instant::now();
-    let mut ticker = tokio::time::interval(interval);
+    let mut ticker = tokio::time::interval_at(start + interval, interval);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     loop {
@@ -683,10 +754,14 @@ async fn sample_loop(
         };
 
         samples.lock().await.push(sample);
-        if stop.load(Ordering::Relaxed) {
-            break;
+        tokio::select! {
+            _ = ticker.tick() => {}
+            changed = stop.changed() => {
+                if changed.is_err() || *stop.borrow() {
+                    break;
+                }
+            }
         }
-        ticker.tick().await;
     }
 }
 
@@ -751,10 +826,13 @@ fn write_artifacts(
             put_requests_ok: stats.put_requests_ok,
             put_requests_error: stats.put_requests_error,
             put_records_sent: stats.put_records_sent,
+            put_records_ok: stats.put_records_ok,
+            put_records_failed: stats.put_records_failed,
             get_records_ok: stats.get_records_ok,
             get_records_error: stats.get_records_error,
             unexpected_5xx: stats.unexpected_5xx,
             readiness_failures: stats.readiness_failures,
+            planned_restart_readiness_failures: stats.planned_restart_readiness_failures,
             restart_count: stats.restart_count,
             restart_recovery_ms: stats.restart_recovery_ms,
         },
@@ -822,6 +900,61 @@ fn parse_metrics(text: &str) -> MetricsSnapshot {
         streams: metric_sum_as_u64(text, "ferrokinesis_streams"),
         open_shards: metric_sum_as_u64(text, "ferrokinesis_open_shards"),
     }
+}
+
+fn parse_put_records_outcomes(body: &Value, requested_records: u32) -> Result<(u64, u64), String> {
+    let requested_records = u64::from(requested_records);
+    let failed_record_count = body["FailedRecordCount"].as_u64();
+
+    if let Some(records) = body["Records"].as_array() {
+        let failed_from_records = records
+            .iter()
+            .filter(|record| {
+                record
+                    .get("ErrorCode")
+                    .is_some_and(|value| !value.is_null())
+            })
+            .count() as u64;
+        if let Some(reported_failed) = failed_record_count
+            && reported_failed != failed_from_records
+        {
+            return Err(format!(
+                "PutRecords response mismatch: FailedRecordCount={reported_failed}, failed records={failed_from_records}"
+            ));
+        }
+        let total_records = records.len() as u64;
+        return Ok((
+            total_records.saturating_sub(failed_from_records),
+            failed_from_records,
+        ));
+    }
+
+    if let Some(failed_record_count) = failed_record_count {
+        return Ok((
+            requested_records.saturating_sub(failed_record_count),
+            failed_record_count,
+        ));
+    }
+
+    Err("PutRecords response missing Records and FailedRecordCount".into())
+}
+
+fn classify_readiness_failures(
+    samples: &[Sample],
+    restart_window_secs: Option<(f64, f64)>,
+) -> (u64, u64) {
+    let mut unexpected = 0;
+    let mut planned = 0;
+    for sample in samples.iter().filter(|sample| sample.ready_status != 200) {
+        let during_restart = restart_window_secs
+            .is_some_and(|(start, end)| sample.elapsed_secs >= start && sample.elapsed_secs <= end);
+        if during_restart {
+            planned += 1;
+        } else {
+            unexpected += 1;
+        }
+    }
+    (unexpected, planned)
 }
 
 fn metric_sum_as_u64(text: &str, metric_name: &str) -> Option<u64> {
@@ -920,7 +1053,12 @@ fn file_size(path: PathBuf) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{directory_size_bytes, metric_sum_as_u64};
+    use super::{
+        Cli, Sample, classify_readiness_failures, directory_size_bytes, metric_sum_as_u64,
+        parse_put_records_outcomes,
+    };
+    use clap::Parser;
+    use serde_json::json;
     use std::fs;
 
     #[test]
@@ -954,5 +1092,99 @@ ferrokinesis_requests_total{operation=\"PutRecord\",result=\"error\"} 3
         fs::write(&file2, vec![0_u8; 7]).expect("write file2");
 
         assert_eq!(directory_size_bytes(temp.path()), 17);
+    }
+
+    #[test]
+    fn parses_put_records_partial_failures() {
+        let response = json!({
+            "FailedRecordCount": 1,
+            "Records": [
+                {"SequenceNumber": "1", "ShardId": "shardId-000000000000"},
+                {"ErrorCode": "ProvisionedThroughputExceededException", "ErrorMessage": "Rate exceeded"},
+                {"SequenceNumber": "3", "ShardId": "shardId-000000000000"}
+            ]
+        });
+
+        assert_eq!(parse_put_records_outcomes(&response, 3).unwrap(), (2, 1));
+    }
+
+    #[test]
+    fn rejects_inconsistent_put_records_response() {
+        let response = json!({
+            "FailedRecordCount": 2,
+            "Records": [
+                {"SequenceNumber": "1", "ShardId": "shardId-000000000000"},
+                {"ErrorCode": "ProvisionedThroughputExceededException", "ErrorMessage": "Rate exceeded"}
+            ]
+        });
+
+        assert!(parse_put_records_outcomes(&response, 2).is_err());
+    }
+
+    #[test]
+    fn ignores_planned_restart_window_in_readiness_failures() {
+        let samples = vec![
+            Sample {
+                elapsed_secs: 1.0,
+                ready_status: 503,
+                rss_bytes: None,
+                open_fds: None,
+                state_dir_bytes: 0,
+                wal_bytes: None,
+                snapshot_bytes: None,
+                retained_bytes: None,
+                retained_records: None,
+                rejected_writes_total: None,
+                replay_complete: None,
+                last_snapshot_timestamp_ms: None,
+                active_iterators: None,
+                streams: None,
+                open_shards: None,
+            },
+            Sample {
+                elapsed_secs: 10.0,
+                ready_status: 503,
+                rss_bytes: None,
+                open_fds: None,
+                state_dir_bytes: 0,
+                wal_bytes: None,
+                snapshot_bytes: None,
+                retained_bytes: None,
+                retained_records: None,
+                rejected_writes_total: None,
+                replay_complete: None,
+                last_snapshot_timestamp_ms: None,
+                active_iterators: None,
+                streams: None,
+                open_shards: None,
+            },
+            Sample {
+                elapsed_secs: 11.0,
+                ready_status: 200,
+                rss_bytes: None,
+                open_fds: None,
+                state_dir_bytes: 0,
+                wal_bytes: None,
+                snapshot_bytes: None,
+                retained_bytes: None,
+                retained_records: None,
+                rejected_writes_total: None,
+                replay_complete: None,
+                last_snapshot_timestamp_ms: None,
+                active_iterators: None,
+                streams: None,
+                open_shards: None,
+            },
+        ];
+
+        assert_eq!(
+            classify_readiness_failures(&samples, Some((9.0, 10.5))),
+            (1, 1)
+        );
+    }
+
+    #[test]
+    fn cli_rejects_zero_sample_interval() {
+        assert!(Cli::try_parse_from(["soak", "--sample-interval-secs", "0"]).is_err());
     }
 }
