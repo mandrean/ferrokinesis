@@ -334,6 +334,12 @@ type RestoredShardRecords = Vec<(String, BTreeMap<String, Vec<u8>>)>;
 #[cfg(not(target_arch = "wasm32"))]
 type RestoredStreamRecords = Vec<(String, RestoredShardRecords)>;
 
+#[cfg(not(target_arch = "wasm32"))]
+type RestoredShardRecords = Vec<(String, BTreeMap<String, Vec<u8>>)>;
+
+#[cfg(not(target_arch = "wasm32"))]
+type RestoredStreamRecords = Vec<(String, RestoredShardRecords)>;
+
 struct ShardThroughputWindow {
     window_start_ms: u64,
     bytes: u64,
