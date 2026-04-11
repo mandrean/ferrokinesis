@@ -2,6 +2,7 @@
 
 extern crate alloc;
 
+pub mod capture;
 pub mod constants;
 pub mod error;
 pub mod operation;

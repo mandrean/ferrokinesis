@@ -48,10 +48,6 @@ enum Command {
     /// Run a health check against a running server (for Docker HEALTHCHECK)
     HealthCheck(HealthCheckArgs),
 
-    /// Replay captured PutRecord data against a running server
-    #[cfg(feature = "replay")]
-    Replay(ReplayArgs),
-
     /// Generate a self-signed TLS certificate and key
     #[cfg(feature = "tls")]
     GenerateCert(GenerateCertArgs),
@@ -518,41 +514,6 @@ struct HealthCheckArgs {
     tls: bool,
 }
 
-#[cfg(feature = "replay")]
-#[derive(Args, Debug)]
-struct ReplayArgs {
-    /// Path to the NDJSON capture file
-    #[arg(long)]
-    file: PathBuf,
-
-    /// Host of the target server
-    #[arg(long, default_value = "127.0.0.1")]
-    host: String,
-
-    /// Port of the target server
-    #[arg(long, default_value_t = 4567)]
-    port: u16,
-
-    /// Replay speed multiplier (e.g. "1x", "10x", "max")
-    #[arg(long, default_value = "1x")]
-    replay_speed: String,
-
-    /// Use TLS (HTTPS) when connecting to the target server
-    #[arg(long)]
-    tls: bool,
-
-    /// Skip TLS certificate verification (for self-signed certificates)
-    #[arg(long, requires = "tls")]
-    tls_insecure: bool,
-}
-
-#[cfg(feature = "replay")]
-#[derive(Debug)]
-enum ReplaySpeed {
-    Max,
-    Multiplier(f64),
-}
-
 #[cfg(feature = "tls")]
 #[derive(Args, Debug)]
 struct GenerateCertArgs {
@@ -575,8 +536,6 @@ fn main() -> ExitCode {
     match cli.command {
         Some(Command::HealthCheck(args)) => run_health_check(&args),
         Some(Command::Serve(args)) => run_serve(*args),
-        #[cfg(feature = "replay")]
-        Some(Command::Replay(args)) => run_replay(args),
         #[cfg(feature = "tls")]
         Some(Command::GenerateCert(args)) => run_generate_cert(&args),
         None => run_serve(cli.serve_args),
@@ -825,123 +784,6 @@ fn parse_health_response(reader: BufReader<impl std::io::Read>) -> ExitCode {
         eprintln!("health check failed: {status_line}");
         ExitCode::FAILURE
     }
-}
-
-#[cfg(feature = "replay")]
-#[tokio::main]
-async fn run_replay(args: ReplayArgs) -> ExitCode {
-    use ferrokinesis::constants;
-
-    let speed = match parse_replay_speed(&args.replay_speed) {
-        Ok(s) => s,
-        Err(()) => {
-            eprintln!(
-                "invalid replay speed {:?}: expected \"<N>x\" (e.g. \"1x\", \"10x\") or \"max\"",
-                args.replay_speed
-            );
-            return ExitCode::FAILURE;
-        }
-    };
-
-    let mut records = match ferrokinesis::capture::read_capture_file(&args.file) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("failed to read capture file: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    if records.is_empty() {
-        println!("capture file is empty, nothing to replay");
-        return ExitCode::SUCCESS;
-    }
-
-    records.sort_by_key(|r| r.ts);
-
-    let scheme = if args.tls { "https" } else { "http" };
-    let base_url = format!("{scheme}://{}:{}", args.host, args.port);
-    let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(args.tls_insecure)
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(30))
-        .build()
-        .expect("failed to build HTTP client");
-    let total = records.len();
-    let start = std::time::Instant::now();
-
-    // Replay always uses individual PutRecord calls regardless of the original
-    // CaptureOp. Batching captured PutRecords back into PutRecords batches
-    // could be a future optimization.
-    for (i, record) in records.iter().enumerate() {
-        // Sleep based on timestamp delta
-        if let ReplaySpeed::Multiplier(multiplier) = speed
-            && i > 0
-        {
-            let delta_ms = record.ts.saturating_sub(records[i - 1].ts);
-            if delta_ms > 0 {
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                let sleep_ms = (delta_ms as f64 / multiplier) as u64;
-                if sleep_ms > 0 {
-                    tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
-                }
-            }
-        }
-
-        let mut body = serde_json::json!({
-            constants::STREAM_NAME: record.stream,
-            constants::DATA: record.data,
-            constants::PARTITION_KEY: record.partition_key,
-        });
-        if let Some(ref ehk) = record.explicit_hash_key {
-            body[constants::EXPLICIT_HASH_KEY] = serde_json::Value::String(ehk.clone());
-        }
-
-        let resp = client
-            .post(&base_url)
-            .header("Content-Type", constants::CONTENT_TYPE_JSON)
-            .header("X-Amz-Target", format!("{}.PutRecord", constants::KINESIS_API))
-            .header(
-                "Authorization",
-                "AWS4-HMAC-SHA256 Credential=AKID/20150101/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=abcd1234",
-            )
-            .header("X-Amz-Date", "20150101T000000Z")
-            .json(&body)
-            .send()
-            .await;
-
-        match resp {
-            Ok(r) if r.status().is_success() => {}
-            Ok(r) => {
-                let status = r.status();
-                let body = r.text().await.unwrap_or_default();
-                eprintln!("record {}/{total}: HTTP {status}: {body}", i + 1);
-            }
-            Err(e) => {
-                eprintln!("record {}/{total}: request failed: {e}", i + 1);
-            }
-        }
-    }
-
-    let elapsed = start.elapsed();
-    println!("replayed {total} records in {:.2}s", elapsed.as_secs_f64());
-    ExitCode::SUCCESS
-}
-
-/// Parse a replay speed string like "1x", "10x", "0.5x", or "max".
-/// Returns `Ok(ReplaySpeed)` on success, `Err(())` on invalid input.
-#[cfg(feature = "replay")]
-fn parse_replay_speed(s: &str) -> Result<ReplaySpeed, ()> {
-    if s == "max" {
-        return Ok(ReplaySpeed::Max);
-    }
-    let Some(s) = s.strip_suffix('x') else {
-        return Err(());
-    };
-    s.parse::<f64>()
-        .ok()
-        .filter(|v| *v > 0.0)
-        .map(ReplaySpeed::Multiplier)
-        .ok_or(())
 }
 
 async fn shutdown_signal() {

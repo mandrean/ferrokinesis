@@ -6,7 +6,7 @@
 [![docs.rs](https://docs.rs/ferrokinesis/badge.svg)](https://docs.rs/ferrokinesis)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A local AWS Kinesis mock server for testing, written in Rust.
+A local AWS Kinesis mock server for testing, written in Rust, with a companion `ferro` CLI for local stream workflows.
 
 ## Browser Demo
 
@@ -26,6 +26,7 @@ npm --prefix demo run dev
 ## Features
 
 - Pure Rust implementation
+- Companion `ferro` CLI for streams, consumers, puts, tails, replay, and raw API calls
 - Fully in-memory storage using [DashMap](https://github.com/xacrimon/dashmap) + per-stream `RwLock` with lock-free per-shard sequence generation
 - Implements all 39 Kinesis Data Streams API operations
 - Supports both JSON and CBOR content types
@@ -48,21 +49,30 @@ Download pre-built binaries from [GitHub Releases](https://github.com/mandrean/f
 ```sh
 # macOS (Apple Silicon)
 curl -L https://github.com/mandrean/ferrokinesis/releases/latest/download/ferrokinesis-macos-arm64 -o ferrokinesis
-chmod +x ferrokinesis
+curl -L https://github.com/mandrean/ferrokinesis/releases/latest/download/ferro-macos-arm64 -o ferro
+chmod +x ferrokinesis ferro
 
 # macOS (Intel)
 curl -L https://github.com/mandrean/ferrokinesis/releases/latest/download/ferrokinesis-macos-amd64 -o ferrokinesis
-chmod +x ferrokinesis
+curl -L https://github.com/mandrean/ferrokinesis/releases/latest/download/ferro-macos-amd64 -o ferro
+chmod +x ferrokinesis ferro
 
 # Linux (amd64)
 curl -L https://github.com/mandrean/ferrokinesis/releases/latest/download/ferrokinesis-linux-amd64 -o ferrokinesis
-chmod +x ferrokinesis
+curl -L https://github.com/mandrean/ferrokinesis/releases/latest/download/ferro-linux-amd64 -o ferro
+chmod +x ferrokinesis ferro
 ```
 
 ### Cargo
 
 ```sh
 cargo install ferrokinesis
+```
+
+The companion CLI ships in GitHub release assets and can also be installed from a checkout of this repository:
+
+```sh
+cargo install --path crates/ferro-cli --locked
 ```
 
 To enable traffic mirroring, install with one of the mirror feature sets:
@@ -106,6 +116,8 @@ npm --prefix demo run build
 docker run -p 4567:4567 ghcr.io/mandrean/ferrokinesis
 ```
 
+The container image includes both `/ferrokinesis` and `/ferro`.
+
 ## Quick Start
 
 Start the server:
@@ -114,30 +126,48 @@ Start the server:
 docker run -p 4567:4567 ghcr.io/mandrean/ferrokinesis
 ```
 
-Example using `aws` CLI:
+Example using `ferro`:
 
 ```sh
-# Create a stream with 2 shards
-aws kinesis create-stream \
-    --stream-name example-stream \
-    --shard-count 2 \
-    --endpoint-url http://localhost:4567 \
-    --region us-east-1
+# Create a stream with 2 shards and wait until it is ACTIVE
+ferro streams create example-stream --shards 2 --wait
 
 # Publish a record
-aws kinesis put-record \
-    --stream-name example-stream \
-    --partition-key pk1 \
-    --data $(echo -n "hello world" | base64) \
-    --endpoint-url http://localhost:4567 \
-    --region us-east-1
+ferro put example-stream "hello world" --partition-key pk1
+
+# Tail from the beginning and stop after one record
+ferro tail example-stream --from trim-horizon --limit 1 --no-follow
 ```
 
-See the full example with get-records and cleanup: [`examples/aws-cli/quickstart.sh`](examples/aws-cli/quickstart.sh)
-
-More examples using [Rust](examples/rust/src/main.rs), [Python](examples/python/quickstart.py), [Node.js](examples/node/quickstart.mjs), [Go](examples/go/quickstart.go), and [Java](examples/java/src/main/java/example/Quickstart.java) are available in the [`examples/`](examples/) directory.
+The AWS CLI and SDK examples still work unchanged. See [`examples/aws-cli/quickstart.sh`](examples/aws-cli/quickstart.sh) for the raw AWS CLI flow, or browse the rest of [`examples/`](examples/) for Rust, Python, Node.js, Go, and Java clients.
 
 ## Usage
+
+```
+$ ferro --help
+
+Companion CLI for ferrokinesis
+
+Usage: ferro [OPTIONS] <COMMAND>
+
+Commands:
+  streams
+  shards
+  consumers
+  put
+  tail
+  replay
+  api
+  health
+  help       Print this message or the help of the given subcommand(s)
+
+Options:
+      --endpoint <ENDPOINT>  ferrokinesis endpoint [env: FERROKINESIS_ENDPOINT=] [default: http://127.0.0.1:4567]
+      --insecure             Skip TLS certificate validation
+      --json                 Print machine-readable JSON
+      --ndjson               Print newline-delimited JSON when the command emits multiple records
+  -h, --help                 Print help
+```
 
 ```
 $ ferrokinesis --help
@@ -180,6 +210,20 @@ Options:
           [env: FERROKINESIS_RETENTION_CHECK_INTERVAL_SECS=]
   -h, --help
           Print help
+```
+
+## Capture And Replay
+
+Capture write traffic from the server:
+
+```sh
+ferrokinesis --capture capture.ndjson
+```
+
+Replay that capture through the companion CLI:
+
+```sh
+ferro replay capture.ndjson --stream example-stream --speed max
 ```
 
 ## Mirror Credentials
