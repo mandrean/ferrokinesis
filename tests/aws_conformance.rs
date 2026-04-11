@@ -1,7 +1,9 @@
 mod common;
 
 use common::{TestServer, decode_body};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 
 #[derive(serde::Deserialize)]
 struct GoldenFile {
@@ -10,7 +12,10 @@ struct GoldenFile {
     #[allow(dead_code)]
     scenario: String,
     http_status: u16,
+    #[serde(default)]
     required_headers: Vec<String>,
+    #[serde(default)]
+    expected_headers: BTreeMap<String, String>,
     body: Value,
 }
 
@@ -30,7 +35,6 @@ const DYNAMIC_FIELDS: &[&str] = &[
     "StreamCreationTimestamp",
     "StartingSequenceNumber",
     "EndingSequenceNumber",
-    "StreamARN",
 ];
 
 fn value_type_name(v: &Value) -> &'static str {
@@ -131,13 +135,37 @@ fn assert_conformance(
         );
     }
 
-    // 3. Body shape
+    // 3. Exact header values
+    for (header_name, expected_value) in &golden.expected_headers {
+        let actual_value = headers
+            .get(header_name.as_str())
+            .unwrap_or_else(|| panic!("Missing exact-match header: {header_name}"))
+            .to_str()
+            .unwrap_or_else(|err| panic!("Header {header_name} is not valid UTF-8: {err}"));
+        assert_eq!(
+            actual_value, expected_value,
+            "Header value mismatch for {header_name}: expected {expected_value:?}, got {actual_value:?}",
+        );
+    }
+
+    // 4. Body shape
     match (&golden.body, body) {
         (Value::Null, Value::Null) => {} // both empty — OK
         (Value::Null, _) => panic!("Expected empty body but got: {body}"),
         (_, Value::Null) => panic!("Expected body but got empty response"),
         _ => assert_shape_matches(&golden.body, body, "$"),
     }
+}
+
+fn header_map(entries: &[(&str, &str)]) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    for (name, value) in entries {
+        headers.insert(
+            HeaderName::from_bytes(name.as_bytes()).expect("valid header name"),
+            HeaderValue::from_str(value).expect("valid header value"),
+        );
+    }
+    headers
 }
 
 #[test]
@@ -204,6 +232,146 @@ fn shape_matches_checks_error_messages_exactly() {
         String::new()
     };
     assert!(msg.contains("$.message"));
+}
+
+#[test]
+fn shape_matches_requires_exact_stream_arn_values() {
+    let golden = json!({
+        "StreamDescription": {
+            "StreamARN": "arn:aws:kinesis:us-east-1:000000000000:stream/test-stream"
+        }
+    });
+    let actual = json!({
+        "StreamDescription": {
+            "StreamARN": "arn:aws:kinesis:us-east-1:000000000000:stream/other-stream"
+        }
+    });
+
+    let err = std::panic::catch_unwind(|| assert_shape_matches(&golden, &actual, "$"))
+        .expect_err("wrong StreamARN should fail");
+    let msg = if let Some(msg) = err.downcast_ref::<String>() {
+        msg.clone()
+    } else if let Some(msg) = err.downcast_ref::<&str>() {
+        msg.to_string()
+    } else {
+        String::new()
+    };
+    assert!(msg.contains("$.StreamDescription.StreamARN"));
+}
+
+#[test]
+fn conformance_rejects_wrong_content_type_header_value() {
+    let golden = GoldenFile {
+        operation: "DescribeStream".into(),
+        scenario: "happy_path".into(),
+        http_status: 200,
+        required_headers: vec!["x-amzn-RequestId".into()],
+        expected_headers: BTreeMap::from([(
+            "Content-Type".into(),
+            "application/x-amz-json-1.1".into(),
+        )]),
+        body: json!({"ok": true}),
+    };
+    let headers = header_map(&[
+        ("x-amzn-RequestId", "req-123"),
+        ("Content-Type", "application/json"),
+    ]);
+
+    let err = std::panic::catch_unwind(|| {
+        assert_conformance(&golden, 200, &headers, &json!({"ok": true}));
+    })
+    .expect_err("wrong Content-Type should fail");
+    let msg = if let Some(msg) = err.downcast_ref::<String>() {
+        msg.clone()
+    } else if let Some(msg) = err.downcast_ref::<&str>() {
+        msg.to_string()
+    } else {
+        String::new()
+    };
+    assert!(msg.contains("Content-Type"));
+}
+
+#[test]
+fn conformance_rejects_wrong_error_type_header_value() {
+    let golden = GoldenFile {
+        operation: "DescribeStream".into(),
+        scenario: "not_found".into(),
+        http_status: 400,
+        required_headers: vec!["x-amzn-RequestId".into()],
+        expected_headers: BTreeMap::from([(
+            "x-amzn-ErrorType".into(),
+            "ResourceNotFoundException".into(),
+        )]),
+        body: json!({
+            "__type": "ResourceNotFoundException",
+            "message": "missing"
+        }),
+    };
+    let headers = header_map(&[
+        ("x-amzn-RequestId", "req-123"),
+        ("x-amzn-ErrorType", "ValidationException"),
+    ]);
+
+    let err = std::panic::catch_unwind(|| {
+        assert_conformance(
+            &golden,
+            400,
+            &headers,
+            &json!({
+                "__type": "ResourceNotFoundException",
+                "message": "missing"
+            }),
+        );
+    })
+    .expect_err("wrong x-amzn-ErrorType should fail");
+    let msg = if let Some(msg) = err.downcast_ref::<String>() {
+        msg.clone()
+    } else if let Some(msg) = err.downcast_ref::<&str>() {
+        msg.to_string()
+    } else {
+        String::new()
+    };
+    assert!(msg.contains("x-amzn-ErrorType"));
+}
+
+#[test]
+fn conformance_rejects_missing_error_type_header() {
+    let golden = GoldenFile {
+        operation: "DescribeStream".into(),
+        scenario: "not_found".into(),
+        http_status: 400,
+        required_headers: vec!["x-amzn-RequestId".into()],
+        expected_headers: BTreeMap::from([(
+            "x-amzn-ErrorType".into(),
+            "ResourceNotFoundException".into(),
+        )]),
+        body: json!({
+            "__type": "ResourceNotFoundException",
+            "message": "missing"
+        }),
+    };
+    let headers = header_map(&[("x-amzn-RequestId", "req-123")]);
+
+    let err = std::panic::catch_unwind(|| {
+        assert_conformance(
+            &golden,
+            400,
+            &headers,
+            &json!({
+                "__type": "ResourceNotFoundException",
+                "message": "missing"
+            }),
+        );
+    })
+    .expect_err("missing x-amzn-ErrorType should fail");
+    let msg = if let Some(msg) = err.downcast_ref::<String>() {
+        msg.clone()
+    } else if let Some(msg) = err.downcast_ref::<&str>() {
+        msg.to_string()
+    } else {
+        String::new()
+    };
+    assert!(msg.contains("x-amzn-ErrorType"));
 }
 
 // ─── Happy path tests ───────────────────────────────────────────────────────

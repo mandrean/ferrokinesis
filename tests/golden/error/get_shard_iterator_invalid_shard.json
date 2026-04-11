@@ -2,9 +2,17 @@
   "operation": "GetShardIterator",
   "scenario": "invalid_shard",
   "http_status": 400,
-  "required_headers": ["x-amzn-RequestId", "x-amz-id-2", "Content-Type"],
+  "required_headers": [
+    "x-amzn-RequestId",
+    "x-amz-id-2",
+    "Content-Type"
+  ],
   "body": {
     "__type": "ResourceNotFoundException",
     "message": "Shard shardId-000000000099 in stream test-stream under account 000000000000 does not exist"
+  },
+  "expected_headers": {
+    "Content-Type": "application/x-amz-json-1.1",
+    "x-amzn-ErrorType": "ResourceNotFoundException"
   }
 }
