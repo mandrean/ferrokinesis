@@ -52,6 +52,7 @@ server = [
     "tokio/signal",
 ]
 access-log = ["dep:tower-http"]
+chaos = ["server"]
 wasi = ["rt", "dep:httparse", "dep:tower", "dep:tracing-subscriber"]
 wasm = [
     "dep:getrandom",
