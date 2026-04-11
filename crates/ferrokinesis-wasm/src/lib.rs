@@ -4,7 +4,9 @@ use axum::body::{Body, to_bytes};
 use axum::extract::DefaultBodyLimit;
 use axum::http::Request;
 use ferrokinesis::constants;
-use ferrokinesis::store::{DurableStateOptions, Store, StoreOptions};
+use ferrokinesis::store::{
+    DurableStateOptions, Store, StoreOptions, validate_durable_settings,
+};
 use js_sys::Reflect;
 use serde::{Serialize, de::DeserializeOwned};
 use tower::util::ServiceExt;
@@ -51,7 +53,7 @@ impl Kinesis {
 
         let options = parse_options(options)?;
         let defaults = StoreOptions::default();
-        let store_options = build_store_options(&options, &defaults);
+        let store_options = build_store_options(&options, &defaults).map_err(js_error)?;
 
         let max_bytes: usize = options
             .max_request_body_mb
@@ -151,9 +153,19 @@ fn js_error(message: impl Into<String>) -> JsValue {
     JsValue::from_str(&message.into())
 }
 
-fn build_store_options(options: &KinesisOptions, defaults: &StoreOptions) -> StoreOptions {
+fn build_store_options(
+    options: &KinesisOptions,
+    defaults: &StoreOptions,
+) -> Result<StoreOptions, String> {
     let max_retained_bytes = options.max_retained_bytes.or(defaults.max_retained_bytes);
-    StoreOptions {
+    let snapshot_interval_secs = defaults
+        .durable
+        .as_ref()
+        .map(|durable| durable.snapshot_interval_secs);
+    validate_durable_settings(snapshot_interval_secs, max_retained_bytes)
+        .map_err(|err| err.to_string())?;
+
+    Ok(StoreOptions {
         create_stream_ms: options
             .create_stream_ms
             .unwrap_or(defaults.create_stream_ms),
@@ -188,7 +200,7 @@ fn build_store_options(options: &KinesisOptions, defaults: &StoreOptions) -> Sto
             .region
             .clone()
             .unwrap_or_else(|| defaults.aws_region.clone()),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -203,8 +215,20 @@ mod native_tests {
             ..KinesisOptions::default()
         };
 
-        let store_options = build_store_options(&options, &defaults);
+        let store_options = build_store_options(&options, &defaults).unwrap();
         assert_eq!(store_options.max_retained_bytes, Some(1234));
+    }
+
+    #[test]
+    fn build_store_options_rejects_zero_max_retained_bytes() {
+        let defaults = StoreOptions::default();
+        let options = KinesisOptions {
+            max_retained_bytes: Some(0),
+            ..KinesisOptions::default()
+        };
+
+        let err = build_store_options(&options, &defaults).unwrap_err();
+        assert!(err.contains("max_retained_bytes must be greater than 0"));
     }
 }
 
