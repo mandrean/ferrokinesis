@@ -1,7 +1,7 @@
 use ferrokinesis::actions::{Operation, dispatch};
 use ferrokinesis::persistence::{Persistence, WalEntry};
 use ferrokinesis::sequence;
-use ferrokinesis::store::{Store, StoreOptions};
+use ferrokinesis::store::{DurableStateOptions, Store, StoreOptions};
 use ferrokinesis::types::{ConsumerStatus, EncryptionType, StoredRecord, StreamStatus};
 use ferrokinesis::util::current_time_ms;
 use serde_json::{Value, json};
@@ -17,8 +17,11 @@ fn durable_options(state_dir: &Path, snapshot_interval_secs: u64) -> StoreOption
         delete_stream_ms: 50,
         update_stream_ms: 50,
         shard_limit: 50,
-        state_dir: Some(state_dir.to_path_buf()),
-        snapshot_interval_secs,
+        durable: Some(DurableStateOptions {
+            state_dir: state_dir.to_path_buf(),
+            snapshot_interval_secs,
+            max_retained_bytes: None,
+        }),
         ..Default::default()
     }
 }
@@ -191,9 +194,10 @@ fn latest_snapshot_from_wal(state_dir: &Path) -> Value {
     let snapshot = entries
         .into_iter()
         .rev()
-        .find_map(|entry| match entry {
-            WalEntry::Snapshot(snapshot) => Some(snapshot),
+        .map(|entry| match entry {
+            WalEntry::Snapshot(snapshot) => snapshot,
         })
+        .next()
         .expect("wal snapshot");
     serde_json::to_value(snapshot).unwrap()
 }
@@ -215,6 +219,16 @@ fn break_wal(state_dir: &Path) {
     let wal_path = state_dir.join("wal.log");
     let _ = fs::remove_file(&wal_path);
     fs::create_dir(&wal_path).unwrap();
+}
+
+fn append_malformed_wal_entry(state_dir: &Path) {
+    let mut wal = OpenOptions::new()
+        .append(true)
+        .open(state_dir.join("wal.log"))
+        .unwrap();
+    wal.write_all(&(3_u64).to_le_bytes()).unwrap();
+    wal.write_all(&[0xde, 0xad, 0xbe]).unwrap();
+    wal.sync_all().unwrap();
 }
 
 async fn insert_backdated_record(store: &Store, stream_name: &str, seq_ix: u64, seq_time: u64) {
@@ -302,6 +316,52 @@ async fn durable_store_restores_from_snapshot_after_restart() {
 }
 
 #[tokio::test]
+async fn durable_store_ignores_truncated_final_wal_entry_after_restart() {
+    let dir = tempdir().unwrap();
+    let options = durable_options(dir.path(), 0);
+    let stream_name = "durable-truncated-tail";
+
+    let store = Store::new(options.clone());
+    create_active_stream(&store, stream_name).await;
+    put_record(&store, stream_name, "AAAA", "pk").await.unwrap();
+    store
+        .put_account_settings(&json!({"status": "still-recoverable"}))
+        .await
+        .unwrap();
+    drop(store);
+
+    let wal_path = dir.path().join("wal.log");
+    let wal_bytes = fs::read(&wal_path).unwrap();
+    fs::write(&wal_path, &wal_bytes[..wal_bytes.len() - 3]).unwrap();
+
+    let recovered = Store::new(options);
+    let ready = recovered.check_ready();
+    assert!(ready.is_ok(), "{ready:?}");
+    assert_eq!(recovered.get_record_store(stream_name).await.len(), 1);
+}
+
+#[tokio::test]
+async fn durable_store_recovers_from_empty_wal_after_snapshot_compaction() {
+    let dir = tempdir().unwrap();
+    let options = durable_options(dir.path(), 1);
+    let stream_name = "durable-empty-wal-after-snapshot";
+
+    let store = Store::new(options.clone());
+    create_active_stream(&store, stream_name).await;
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+    put_record(&store, stream_name, "AAAA", "pk").await.unwrap();
+    drop(store);
+
+    assert!(dir.path().join("snapshot.bin").exists());
+    fs::write(dir.path().join("wal.log"), []).unwrap();
+
+    let recovered = Store::new(options);
+    let ready = recovered.check_ready();
+    assert!(ready.is_ok(), "{ready:?}");
+    assert_eq!(recovered.get_record_store(stream_name).await.len(), 1);
+}
+
+#[tokio::test]
 async fn durable_store_marks_itself_unready_when_wal_is_corrupted() {
     let dir = tempdir().unwrap();
     let options = durable_options(dir.path(), 0);
@@ -312,12 +372,7 @@ async fn durable_store_marks_itself_unready_when_wal_is_corrupted() {
     put_record(&store, stream_name, "AAAA", "pk").await.unwrap();
     drop(store);
 
-    let mut wal = OpenOptions::new()
-        .append(true)
-        .open(dir.path().join("wal.log"))
-        .unwrap();
-    wal.write_all(&[0xde, 0xad, 0xbe]).unwrap();
-    wal.sync_all().unwrap();
+    append_malformed_wal_entry(dir.path());
 
     let recovered = Store::new(options);
     let err = recovered.check_ready().unwrap_err().to_string();
@@ -1045,12 +1100,7 @@ async fn recovered_store_rejects_writes_when_replay_failed() {
         .unwrap();
     drop(store);
 
-    let mut wal = OpenOptions::new()
-        .append(true)
-        .open(dir.path().join("wal.log"))
-        .unwrap();
-    wal.write_all(&[0xde, 0xad, 0xbe]).unwrap();
-    wal.sync_all().unwrap();
+    append_malformed_wal_entry(dir.path());
 
     let recovered = Store::new(options);
     assert!(!recovered.contains_stream("replay-failure").await);

@@ -42,6 +42,10 @@ use tokio::sync::{Mutex, RwLock};
 
 const DEFAULT_SHARD_WRITE_BYTES_PER_SEC: u64 = 1024 * 1024;
 const DEFAULT_SHARD_WRITE_RECORDS_PER_SEC: u64 = 1000;
+/// Default snapshot interval, in seconds, for durable mode.
+pub const DEFAULT_DURABLE_SNAPSHOT_INTERVAL_SECS: u64 = 30;
+/// Upper bound for externally configured durable snapshot intervals.
+pub const MAX_DURABLE_SNAPSHOT_INTERVAL_SECS: u64 = 86_400;
 
 /// Errors that can occur when probing store health.
 #[derive(Debug, thiserror::Error)]
@@ -52,6 +56,37 @@ pub enum StoreHealthError {
     /// A required table could not be opened within the read transaction.
     #[error("table open failed: {0}")]
     TableOpenFailed(String),
+}
+
+/// Errors that can occur when validating externally supplied durable settings.
+#[derive(Debug, thiserror::Error)]
+pub enum DurableSettingsValidationError {
+    /// Snapshot intervals must stay within the supported range.
+    #[error(
+        "snapshot_interval_secs must be between 0 and {MAX_DURABLE_SNAPSHOT_INTERVAL_SECS}, got {0}"
+    )]
+    SnapshotIntervalSecsOutOfRange(u64),
+    /// Zero would make the retained-cap parser silently disable the limit.
+    #[error("max_retained_bytes must be greater than 0")]
+    MaxRetainedBytesMustBePositive,
+}
+
+/// Validate snapshot and retained-byte settings loaded from config/env sources.
+pub fn validate_durable_settings(
+    snapshot_interval_secs: Option<u64>,
+    max_retained_bytes: Option<u64>,
+) -> Result<(), DurableSettingsValidationError> {
+    if let Some(snapshot_interval_secs) = snapshot_interval_secs
+        && snapshot_interval_secs > MAX_DURABLE_SNAPSHOT_INTERVAL_SECS
+    {
+        return Err(
+            DurableSettingsValidationError::SnapshotIntervalSecsOutOfRange(snapshot_interval_secs),
+        );
+    }
+    if max_retained_bytes == Some(0) {
+        return Err(DurableSettingsValidationError::MaxRetainedBytesMustBePositive);
+    }
+    Ok(())
 }
 
 #[derive(Default)]
@@ -164,14 +199,32 @@ pub(crate) enum TransitionMutation {
 /// # Examples
 ///
 /// ```rust
-/// use ferrokinesis::store::StoreOptions;
+/// use ferrokinesis::store::{DurableStateOptions, StoreOptions};
+/// use std::path::PathBuf;
 ///
 /// let opts = StoreOptions {
 ///     shard_limit: 50,
 ///     aws_region: "eu-west-1".to_string(),
+///     durable: Some(DurableStateOptions {
+///         state_dir: PathBuf::from("/tmp/ferrokinesis-state"),
+///         snapshot_interval_secs: 10,
+///         max_retained_bytes: Some(1024),
+///     }),
 ///     ..StoreOptions::default()
 /// };
 /// ```
+/// Configuration for on-disk durable state.
+#[derive(Debug, Clone)]
+pub struct DurableStateOptions {
+    /// Directory used to persist state with WAL + snapshots.
+    pub state_dir: PathBuf,
+    /// Snapshot interval in seconds when durable mode is enabled.
+    pub snapshot_interval_secs: u64,
+    /// Optional retained-bytes cap to apply alongside durable mode.
+    pub max_retained_bytes: Option<u64>,
+}
+
+/// Runtime configuration passed to [`crate::create_app`].
 #[derive(Debug, Clone)]
 pub struct StoreOptions {
     /// Simulated delay for `CreateStream` in milliseconds. Defaults to `500`.
@@ -189,10 +242,8 @@ pub struct StoreOptions {
     pub retention_check_interval_secs: u64,
     /// Enable AWS-like shard write throughput throttling. Disabled by default.
     pub enforce_limits: bool,
-    /// Directory used to persist state with WAL + snapshots.
-    pub state_dir: Option<PathBuf>,
-    /// Snapshot interval in seconds when durable mode is enabled.
-    pub snapshot_interval_secs: u64,
+    /// Durable persistence settings. When omitted, the store remains in-memory only.
+    pub durable: Option<DurableStateOptions>,
     /// Hard cap on retained serialized record bytes.
     pub max_retained_bytes: Option<u64>,
     /// Simulated AWS account ID (12 digits). Defaults to `"000000000000"`.
@@ -211,12 +262,20 @@ impl Default for StoreOptions {
             iterator_ttl_seconds: 300,
             retention_check_interval_secs: 0,
             enforce_limits: false,
-            state_dir: None,
-            snapshot_interval_secs: 30,
+            durable: None,
             max_retained_bytes: None,
             aws_account_id: "000000000000".to_string(),
             aws_region: "us-east-1".to_string(),
         }
+    }
+}
+
+impl StoreOptions {
+    fn effective_max_retained_bytes(&self) -> Option<u64> {
+        self.max_retained_bytes.or(self
+            .durable
+            .as_ref()
+            .and_then(|durable| durable.max_retained_bytes))
     }
 }
 
@@ -270,6 +329,10 @@ impl ThroughputReservation {
 
 /// Per-shard record map: shard_hex → sorted records.
 type ShardRecords = DashMap<String, Arc<RwLock<BTreeMap<String, Vec<u8>>>>>;
+#[cfg(not(target_arch = "wasm32"))]
+type RestoredShardRecords = Vec<(String, BTreeMap<String, Vec<u8>>)>;
+#[cfg(not(target_arch = "wasm32"))]
+type RestoredStreamRecords = Vec<(String, RestoredShardRecords)>;
 
 struct ShardThroughputWindow {
     window_start_ms: u64,
@@ -295,7 +358,7 @@ struct AppliedDeleteChange {
 #[cfg(not(target_arch = "wasm32"))]
 struct RestoredState {
     streams: Vec<(String, Stream, Vec<u64>)>,
-    records: Vec<(String, Vec<(String, BTreeMap<String, Vec<u8>>)>)>,
+    records: RestoredStreamRecords,
     consumers: Vec<(String, Vec<u8>)>,
     policies: Vec<(String, String)>,
     resource_tags: Vec<(String, BTreeMap<String, String>)>,
@@ -500,13 +563,13 @@ impl Store {
         let mut store = store;
 
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(state_dir) = store.options.state_dir.clone() {
-            match Persistence::new(state_dir) {
+        if let Some(durable) = store.options.durable.clone() {
+            match Persistence::new(durable.state_dir) {
                 Ok(backend) => {
                     let persistence = Arc::new(PersistenceState {
                         backend,
                         io_lock: Mutex::new(()),
-                        snapshot_interval_secs: store.options.snapshot_interval_secs,
+                        snapshot_interval_secs: durable.snapshot_interval_secs,
                         last_snapshot_ms: AtomicU64::new(0),
                     });
                     store.persistence = Some(Arc::clone(&persistence));
@@ -912,7 +975,7 @@ impl Store {
 
     fn retained_capacity_exceeded(&self) -> bool {
         self.options
-            .max_retained_bytes
+            .effective_max_retained_bytes()
             .is_some_and(|limit| self.metrics.retained_bytes() > limit)
     }
 
@@ -922,7 +985,7 @@ impl Store {
         additional_bytes: u64,
     ) -> KinesisErrorResponse {
         self.metrics.increment_rejected_writes();
-        let limit = self.options.max_retained_bytes.unwrap();
+        let limit = self.options.effective_max_retained_bytes().unwrap();
         KinesisErrorResponse::client_error(
             constants::LIMIT_EXCEEDED,
             Some(&format!(
@@ -933,7 +996,7 @@ impl Store {
     }
 
     fn durable_state_requested(&self) -> bool {
-        self.options.state_dir.is_some()
+        self.options.durable.is_some()
     }
 
     fn durable_state_error_detail(&self) -> String {
@@ -1654,9 +1717,9 @@ impl Store {
         })?;
         #[cfg(not(target_arch = "wasm32"))]
         let needs_write_lock =
-            self.persistence.is_some() || self.options.max_retained_bytes.is_some();
+            self.persistence.is_some() || self.options.effective_max_retained_bytes().is_some();
         #[cfg(target_arch = "wasm32")]
-        let needs_write_lock = self.options.max_retained_bytes.is_some();
+        let needs_write_lock = self.options.effective_max_retained_bytes().is_some();
         let _write_guard = if needs_write_lock {
             Some(self.inner.write_lock.lock().await)
         } else {
@@ -1666,7 +1729,7 @@ impl Store {
         self.check_writable()?;
 
         let current_bytes = self.metrics.retained_bytes();
-        if let Some(limit) = self.options.max_retained_bytes
+        if let Some(limit) = self.options.effective_max_retained_bytes()
             && current_bytes.saturating_add(bytes.len() as u64) > limit
         {
             return Err(self.retained_limit_error(current_bytes, bytes.len() as u64));
@@ -1710,9 +1773,9 @@ impl Store {
     ) -> Result<(), KinesisErrorResponse> {
         #[cfg(not(target_arch = "wasm32"))]
         let needs_write_lock =
-            self.persistence.is_some() || self.options.max_retained_bytes.is_some();
+            self.persistence.is_some() || self.options.effective_max_retained_bytes().is_some();
         #[cfg(target_arch = "wasm32")]
-        let needs_write_lock = self.options.max_retained_bytes.is_some();
+        let needs_write_lock = self.options.effective_max_retained_bytes().is_some();
         let _write_guard = if needs_write_lock {
             Some(self.inner.write_lock.lock().await)
         } else {
@@ -1744,7 +1807,7 @@ impl Store {
 
         let additional_bytes: u64 = pending.iter().map(|(_, _, bytes)| bytes.len() as u64).sum();
         let current_bytes = self.metrics.retained_bytes();
-        if let Some(limit) = self.options.max_retained_bytes
+        if let Some(limit) = self.options.effective_max_retained_bytes()
             && current_bytes.saturating_add(additional_bytes) > limit
         {
             return Err(self.retained_limit_error(current_bytes, additional_bytes));

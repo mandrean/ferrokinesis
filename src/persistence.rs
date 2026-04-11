@@ -13,6 +13,7 @@ use crate::types::{
 const SNAPSHOT_FILE: &str = "snapshot.bin";
 const SNAPSHOT_TMP_FILE: &str = "snapshot.bin.tmp";
 const WAL_FILE: &str = "wal.log";
+const WAL_TMP_FILE: &str = "wal.log.tmp";
 const WAL_MAGIC: &[u8; 8] = b"FKWALv2\n";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -177,17 +178,23 @@ impl Persistence {
                 "serialized wal entry exceeds u64 length prefix",
             )
         })?;
+        let wal_path = self.state_dir.join(WAL_FILE);
+        let created_wal = !wal_path.exists();
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .read(true)
-            .open(self.state_dir.join(WAL_FILE))?;
+            .open(&wal_path)?;
         if file.metadata()?.len() == 0 {
             file.write_all(WAL_MAGIC)?;
         }
         file.write_all(&len.to_le_bytes())?;
         file.write_all(&bytes)?;
-        file.sync_all()
+        file.sync_all()?;
+        if created_wal {
+            sync_directory(&self.state_dir)?;
+        }
+        Ok(())
     }
 
     pub fn write_snapshot(&self, snapshot: &PersistentSnapshot) -> io::Result<()> {
@@ -206,10 +213,13 @@ impl Persistence {
         sync_directory(&self.state_dir)?;
 
         let wal_path = self.state_dir.join(WAL_FILE);
-        let mut wal = File::create(wal_path)?;
-        wal.write_all(WAL_MAGIC)?;
-        wal.flush()?;
-        wal.sync_all()?;
+        let wal_tmp_path = self.state_dir.join(WAL_TMP_FILE);
+        {
+            let mut wal = File::create(&wal_tmp_path)?;
+            wal.write_all(WAL_MAGIC)?;
+            wal.sync_all()?;
+        }
+        fs::rename(&wal_tmp_path, &wal_path)?;
         sync_directory(&self.state_dir)
     }
 
@@ -230,6 +240,9 @@ impl Persistence {
         }
 
         let file = File::open(path)?;
+        if file.metadata()?.len() == 0 {
+            return Ok(Vec::new());
+        }
         let mut reader = BufReader::new(file);
         let mut entries = Vec::new();
         let mut magic = [0u8; WAL_MAGIC.len()];
@@ -248,29 +261,23 @@ impl Persistence {
 
         loop {
             let mut len_buf = [0u8; 8];
-            let read = match reader.read(&mut len_buf) {
-                Ok(0) => break,
-                Ok(read) => read,
-                Err(err) => return Err(LoadError::Io(err)),
-            };
-            if read < len_buf.len() {
-                reader
-                    .read_exact(&mut len_buf[read..])
-                    .map_err(|err| match err.kind() {
-                        io::ErrorKind::UnexpectedEof => LoadError::TruncatedWal,
-                        _ => LoadError::Io(err),
-                    })?;
+            if let Err(err) = reader.read_exact(&mut len_buf) {
+                return match err.kind() {
+                    io::ErrorKind::UnexpectedEof => Ok(entries),
+                    _ => Err(LoadError::Io(err)),
+                };
             }
             let len = decode_wal_entry_len(len_buf)?;
             let mut entry_buf = vec![0u8; len];
-            if reader.read_exact(&mut entry_buf).is_err() {
-                return Err(LoadError::TruncatedWal);
+            if let Err(err) = reader.read_exact(&mut entry_buf) {
+                return match err.kind() {
+                    io::ErrorKind::UnexpectedEof => Ok(entries),
+                    _ => Err(LoadError::Io(err)),
+                };
             }
             let entry = serde_json::from_slice(&entry_buf).map_err(LoadError::Wal)?;
             entries.push(entry);
         }
-
-        Ok(entries)
     }
 }
 
@@ -376,7 +383,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let persistence = Persistence::new(dir.path().to_path_buf()).unwrap();
 
-        fs::write(dir.path().join(WAL_FILE), []).unwrap();
+        fs::write(dir.path().join(WAL_FILE), b"FKWALv2").unwrap();
 
         let err = persistence.load().unwrap_err();
         assert!(matches!(err, LoadError::UnsupportedWalFormat));
@@ -384,6 +391,72 @@ mod tests {
             err.to_string(),
             "unsupported wal format; recreate state dir"
         );
+    }
+
+    #[test]
+    fn empty_wal_is_treated_as_no_entries() {
+        let dir = tempdir().unwrap();
+        let persistence = Persistence::new(dir.path().to_path_buf()).unwrap();
+
+        fs::write(dir.path().join(WAL_FILE), []).unwrap();
+
+        assert!(persistence.load().unwrap().is_none());
+    }
+
+    #[test]
+    fn truncated_final_wal_entry_is_ignored() {
+        let dir = tempdir().unwrap();
+        let persistence = Persistence::new(dir.path().to_path_buf()).unwrap();
+        let first_snapshot = PersistentSnapshot {
+            created_at_ms: 1,
+            ..PersistentSnapshot::default()
+        };
+        let second_snapshot = PersistentSnapshot {
+            created_at_ms: 2,
+            ..PersistentSnapshot::default()
+        };
+
+        persistence
+            .append_wal_entry(&WalEntry::Snapshot(first_snapshot.clone()))
+            .unwrap();
+        persistence
+            .append_wal_entry(&WalEntry::Snapshot(second_snapshot.clone()))
+            .unwrap();
+
+        let wal_path = dir.path().join(WAL_FILE);
+        let wal_bytes = fs::read(&wal_path).unwrap();
+        fs::write(&wal_path, &wal_bytes[..wal_bytes.len() - 3]).unwrap();
+
+        let (loaded_snapshot, loaded_entries) = persistence.load().unwrap().unwrap();
+        assert_eq!(loaded_snapshot.created_at_ms, 0);
+        assert_eq!(loaded_entries.len(), 1);
+        assert!(matches!(
+            &loaded_entries[0],
+            WalEntry::Snapshot(entry) if entry.created_at_ms == first_snapshot.created_at_ms
+        ));
+    }
+
+    #[test]
+    fn write_snapshot_replaces_wal_with_header_only_file() {
+        let dir = tempdir().unwrap();
+        let persistence = Persistence::new(dir.path().to_path_buf()).unwrap();
+        let snapshot = PersistentSnapshot {
+            created_at_ms: 99,
+            ..PersistentSnapshot::default()
+        };
+
+        persistence
+            .append_wal_entry(&WalEntry::Snapshot(PersistentSnapshot {
+                created_at_ms: 1,
+                ..PersistentSnapshot::default()
+            }))
+            .unwrap();
+        persistence.write_snapshot(&snapshot).unwrap();
+
+        assert_eq!(fs::read(dir.path().join(WAL_FILE)).unwrap(), WAL_MAGIC);
+        let (loaded_snapshot, loaded_entries) = persistence.load().unwrap().unwrap();
+        assert_eq!(loaded_snapshot.created_at_ms, 99);
+        assert!(loaded_entries.is_empty());
     }
 
     #[cfg(target_pointer_width = "64")]

@@ -1,7 +1,7 @@
 mod common;
 
 use common::*;
-use ferrokinesis::store::StoreOptions;
+use ferrokinesis::store::{DurableStateOptions, StoreOptions};
 use reqwest::Method;
 use reqwest::header::HeaderMap;
 use serde_json::{Value, json};
@@ -110,7 +110,11 @@ async fn health_ready_returns_503_when_durable_state_fails_to_initialize() {
         delete_stream_ms: 0,
         update_stream_ms: 0,
         shard_limit: 50,
-        state_dir: Some(state_file.path().to_path_buf()),
+        durable: Some(DurableStateOptions {
+            state_dir: state_file.path().to_path_buf(),
+            snapshot_interval_secs: 0,
+            max_retained_bytes: None,
+        }),
         ..Default::default()
     })
     .await;
@@ -160,6 +164,36 @@ async fn health_ready_returns_503_when_durable_state_fails_to_initialize() {
             .contains_stream("blocked-during-durable-init-failure")
             .await
     );
+
+    let mut headers = HeaderMap::new();
+    headers.insert("Content-Type", AMZ_JSON.parse().unwrap());
+    headers.insert(
+        "X-Amz-Target",
+        format!("{VERSION}.CreateStream").parse().unwrap(),
+    );
+    let (status, body) = decode_body(
+        server
+            .raw_request(
+                Method::POST,
+                "/",
+                headers,
+                serde_json::to_vec(&json!({
+                    "StreamName": "blocked-before-auth-check",
+                    "ShardCount": 1,
+                }))
+                .unwrap(),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(status, 500);
+    assert_eq!(body["__type"], "InternalFailure");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("failed to initialize durable state")
+    );
 }
 
 #[tokio::test]
@@ -201,6 +235,100 @@ async fn metrics_count_known_operation_failures_before_dispatch() {
         .unwrap();
     assert!(
         body.contains("ferrokinesis_requests_total{operation=\"CreateStream\",result=\"error\"} 1")
+    );
+}
+
+#[tokio::test]
+async fn metrics_count_known_operation_auth_and_signature_failures() {
+    let server = TestServer::new().await;
+
+    let mut missing_auth_headers = HeaderMap::new();
+    missing_auth_headers.insert("Content-Type", AMZ_JSON.parse().unwrap());
+    missing_auth_headers.insert(
+        "X-Amz-Target",
+        format!("{VERSION}.CreateStream").parse().unwrap(),
+    );
+
+    let mut invalid_signature_headers = missing_auth_headers.clone();
+    invalid_signature_headers.insert(
+        "Authorization",
+        "AWS4-HMAC-SHA256 Credential=AKID/20150101/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=abcd1234"
+            .parse()
+            .unwrap(),
+    );
+    invalid_signature_headers.insert("X-Amz-Date", "20150101T000000Z".parse().unwrap());
+
+    let mut incomplete_signature_headers = missing_auth_headers.clone();
+    incomplete_signature_headers.insert(
+        "Authorization",
+        "AWS4-HMAC-SHA256 Credential=AKID/20150101/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target"
+            .parse()
+            .unwrap(),
+    );
+    incomplete_signature_headers.insert("X-Amz-Date", "20150101T000000Z".parse().unwrap());
+
+    assert_eq!(
+        server
+            .raw_request(
+                Method::POST,
+                "/",
+                missing_auth_headers,
+                serde_json::to_vec(&json!({
+                    "StreamName": "metrics-missing-auth",
+                    "ShardCount": 1,
+                }))
+                .unwrap(),
+            )
+            .await
+            .status(),
+        400
+    );
+    assert_eq!(
+        server
+            .raw_request(
+                Method::POST,
+                "/?X-Amz-Algorithm=AWS4-HMAC-SHA256",
+                invalid_signature_headers,
+                serde_json::to_vec(&json!({
+                    "StreamName": "metrics-invalid-signature",
+                    "ShardCount": 1,
+                }))
+                .unwrap(),
+            )
+            .await
+            .status(),
+        400
+    );
+    assert_eq!(
+        server
+            .raw_request(
+                Method::POST,
+                "/",
+                incomplete_signature_headers,
+                serde_json::to_vec(&json!({
+                    "StreamName": "metrics-incomplete-signature",
+                    "ShardCount": 1,
+                }))
+                .unwrap(),
+            )
+            .await
+            .status(),
+        403
+    );
+
+    let body = server
+        .raw_request(Method::GET, "/metrics", HeaderMap::new(), vec![])
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        body.contains("ferrokinesis_requests_total{operation=\"CreateStream\",result=\"error\"} 3")
+    );
+    assert!(body.contains("ferrokinesis_request_failures_total{reason=\"missing_auth_token\"} 1"));
+    assert!(body.contains("ferrokinesis_request_failures_total{reason=\"invalid_signature\"} 1"));
+    assert!(
+        body.contains("ferrokinesis_request_failures_total{reason=\"incomplete_signature\"} 1")
     );
 }
 

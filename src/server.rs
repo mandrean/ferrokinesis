@@ -295,6 +295,16 @@ pub async fn handler(
         );
     };
 
+    if let Err(err) = store.check_available() {
+        return finalize_response(
+            &store,
+            Some(operation),
+            None,
+            request_started_ms,
+            send_kinesis_error(&response_headers, response_content_type, &err),
+        );
+    }
+
     if !service_valid {
         let err = KinesisErrorResponse::client_error(constants::UNKNOWN_OPERATION, None);
         return finalize_response(
@@ -315,7 +325,7 @@ pub async fn handler(
         return finalize_response(
             &store,
             Some(operation),
-            None,
+            Some(PreOperationFailureReason::InvalidSignature),
             request_started_ms,
             send_error_response(
                 &response_headers,
@@ -332,7 +342,7 @@ pub async fn handler(
         return finalize_response(
             &store,
             Some(operation),
-            None,
+            Some(PreOperationFailureReason::MissingAuthToken),
             request_started_ms,
             send_error_response(
                 &response_headers,
@@ -374,7 +384,7 @@ pub async fn handler(
             return finalize_response(
                 &store,
                 Some(operation),
-                None,
+                Some(PreOperationFailureReason::IncompleteSignature),
                 request_started_ms,
                 send_error_response(
                     &response_headers,
@@ -421,7 +431,7 @@ pub async fn handler(
             return finalize_response(
                 &store,
                 Some(operation),
-                None,
+                Some(PreOperationFailureReason::IncompleteSignature),
                 request_started_ms,
                 send_error_response(
                     &response_headers,
@@ -581,7 +591,8 @@ fn finalize_response(
         store
             .metrics()
             .record_request(operation, response.status().is_success(), duration_micros);
-    } else if let Some(reason) = pre_operation_failure {
+    }
+    if let Some(reason) = pre_operation_failure {
         store
             .metrics()
             .record_pre_operation_failure(reason, duration_micros);

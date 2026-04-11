@@ -4,7 +4,7 @@ use axum::body::{Body, to_bytes};
 use axum::extract::DefaultBodyLimit;
 use axum::http::Request;
 use ferrokinesis::constants;
-use ferrokinesis::store::{Store, StoreOptions};
+use ferrokinesis::store::{DurableStateOptions, Store, StoreOptions};
 use js_sys::Reflect;
 use serde::{Serialize, de::DeserializeOwned};
 use tower::util::ServiceExt;
@@ -152,6 +152,7 @@ fn js_error(message: impl Into<String>) -> JsValue {
 }
 
 fn build_store_options(options: &KinesisOptions, defaults: &StoreOptions) -> StoreOptions {
+    let max_retained_bytes = options.max_retained_bytes.or(defaults.max_retained_bytes);
     StoreOptions {
         create_stream_ms: options
             .create_stream_ms
@@ -170,9 +171,15 @@ fn build_store_options(options: &KinesisOptions, defaults: &StoreOptions) -> Sto
             .retention_check_interval_secs
             .unwrap_or(defaults.retention_check_interval_secs),
         enforce_limits: options.enforce_limits.unwrap_or(defaults.enforce_limits),
-        state_dir: defaults.state_dir.clone(),
-        snapshot_interval_secs: defaults.snapshot_interval_secs,
-        max_retained_bytes: options.max_retained_bytes.or(defaults.max_retained_bytes),
+        durable: defaults
+            .durable
+            .as_ref()
+            .map(|durable| DurableStateOptions {
+                state_dir: durable.state_dir.clone(),
+                snapshot_interval_secs: durable.snapshot_interval_secs,
+                max_retained_bytes,
+            }),
+        max_retained_bytes,
         aws_account_id: options
             .account_id
             .clone()

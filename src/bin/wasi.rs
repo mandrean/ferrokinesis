@@ -1,7 +1,10 @@
 use axum::body::{Body, to_bytes};
 use axum::extract::DefaultBodyLimit;
 use axum::http::{HeaderName, HeaderValue, Request, StatusCode, Version};
-use ferrokinesis::store::StoreOptions;
+use ferrokinesis::store::{
+    DEFAULT_DURABLE_SNAPSHOT_INTERVAL_SECS, DurableStateOptions, StoreOptions,
+    validate_durable_settings,
+};
 use std::env;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -188,6 +191,22 @@ impl WasiConfig {
         let aws_region = read("AWS_REGION")?
             .or(read("AWS_DEFAULT_REGION")?)
             .unwrap_or_else(|| defaults.aws_region.clone());
+        let state_dir = read("FERROKINESIS_STATE_DIR")?.map(std::path::PathBuf::from);
+        let snapshot_interval_secs =
+            read_parsed_env(&mut read, "FERROKINESIS_SNAPSHOT_INTERVAL_SECS")?.unwrap_or_else(
+                || {
+                    defaults
+                        .durable
+                        .as_ref()
+                        .map_or(DEFAULT_DURABLE_SNAPSHOT_INTERVAL_SECS, |durable| {
+                            durable.snapshot_interval_secs
+                        })
+                },
+            );
+        let max_retained_bytes = read_parsed_env(&mut read, "FERROKINESIS_MAX_RETAINED_BYTES")?
+            .or(defaults.max_retained_bytes);
+        validate_durable_settings(Some(snapshot_interval_secs), max_retained_bytes)
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
 
         Ok(Self {
             port,
@@ -215,16 +234,12 @@ impl WasiConfig {
                 .unwrap_or(defaults.retention_check_interval_secs),
                 enforce_limits: read_parsed_env(&mut read, "FERROKINESIS_ENFORCE_LIMITS")?
                     .unwrap_or(defaults.enforce_limits),
-                state_dir: read("FERROKINESIS_STATE_DIR")?
-                    .map(std::path::PathBuf::from)
-                    .or(defaults.state_dir.clone()),
-                snapshot_interval_secs: read_parsed_env(
-                    &mut read,
-                    "FERROKINESIS_SNAPSHOT_INTERVAL_SECS",
-                )?
-                .unwrap_or(defaults.snapshot_interval_secs),
-                max_retained_bytes: read_parsed_env(&mut read, "FERROKINESIS_MAX_RETAINED_BYTES")?
-                    .or(defaults.max_retained_bytes),
+                durable: state_dir.map(|state_dir| DurableStateOptions {
+                    state_dir,
+                    snapshot_interval_secs,
+                    max_retained_bytes,
+                }),
+                max_retained_bytes,
                 aws_account_id: read("AWS_ACCOUNT_ID")?
                     .unwrap_or_else(|| defaults.aws_account_id.clone()),
                 aws_region,
@@ -717,11 +732,41 @@ mod tests {
         ]);
 
         let config = WasiConfig::from_reader(|key| Ok(env.remove(key))).unwrap();
+        let durable = config.store_options.durable.expect("durable settings");
         assert_eq!(
-            config.store_options.state_dir,
-            Some(std::path::PathBuf::from("/tmp/ferrokinesis-state"))
+            durable.state_dir,
+            std::path::PathBuf::from("/tmp/ferrokinesis-state")
         );
-        assert_eq!(config.store_options.snapshot_interval_secs, 17);
+        assert_eq!(durable.snapshot_interval_secs, 17);
+        assert_eq!(durable.max_retained_bytes, Some(2048));
         assert_eq!(config.store_options.max_retained_bytes, Some(2048));
+    }
+
+    #[test]
+    fn from_reader_rejects_zero_max_retained_bytes() {
+        let mut env = std::collections::HashMap::from([(
+            "FERROKINESIS_MAX_RETAINED_BYTES".to_string(),
+            "0".to_string(),
+        )]);
+
+        let err = WasiConfig::from_reader(|key| Ok(env.remove(key))).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("max_retained_bytes must be greater than 0")
+        );
+    }
+
+    #[test]
+    fn from_reader_rejects_out_of_range_snapshot_interval() {
+        let mut env = std::collections::HashMap::from([(
+            "FERROKINESIS_SNAPSHOT_INTERVAL_SECS".to_string(),
+            "86401".to_string(),
+        )]);
+
+        let err = WasiConfig::from_reader(|key| Ok(env.remove(key))).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("snapshot_interval_secs must be between 0 and 86400")
+        );
     }
 }
