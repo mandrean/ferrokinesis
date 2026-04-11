@@ -504,7 +504,17 @@ pub async fn handler(
                     log_and_send_error(&span, &response_headers, response_content_type, &err)
                 }
             };
-            return finalize_response(&store, Some(operation), None, request_started_ms, response);
+            let response = finalize_response(&store, Some(operation), None, request_started_ms, response);
+            let latency_us = elapsed_request_micros(request_started_ms);
+            log_request_completion(
+                &span,
+                operation,
+                &request_id,
+                response.status(),
+                latency_us,
+                None,
+            );
+            return response;
         }
 
         #[cfg(target_arch = "wasm32")]
@@ -515,7 +525,17 @@ pub async fn handler(
             );
             let response =
                 log_and_send_error(&span, &response_headers, response_content_type, &err);
-            return finalize_response(&store, Some(operation), None, request_started_ms, response);
+            let response = finalize_response(&store, Some(operation), None, request_started_ms, response);
+            let latency_us = elapsed_request_micros(request_started_ms);
+            log_request_completion(
+                &span,
+                operation,
+                &request_id,
+                response.status(),
+                latency_us,
+                Some(err.body.error_type.as_str()),
+            );
+            return response;
         }
     }
 
@@ -525,7 +545,7 @@ pub async fn handler(
         .await;
 
     // Build response first (borrows result), then move result into the mirror
-    let (response, mirrorable_result) = match dispatch_result {
+    let (response, error_type, mirrorable_result) = match dispatch_result {
         Ok(opt_result) => {
             tracing::debug!(parent: &span, "ok");
             let response = match &opt_result {
@@ -538,12 +558,12 @@ pub async fn handler(
                     (StatusCode::OK, response_headers, "").into_response()
                 }
             };
-            (response, Ok(opt_result))
+            (response, None, Ok(opt_result))
         }
         Err(err) => {
             let response =
                 log_and_send_error(&span, &response_headers, response_content_type, &err);
-            (response, Err(err))
+            (response, Some(err.body.error_type.clone()), Err(err))
         }
     };
 
@@ -570,7 +590,18 @@ pub async fn handler(
         let _ = (mirror, mirrorable_result);
     }
 
-    finalize_response(&store, Some(operation), None, request_started_ms, response)
+    let response = finalize_response(&store, Some(operation), None, request_started_ms, response);
+    let latency_us = elapsed_request_micros(request_started_ms);
+    log_request_completion(
+        &span,
+        operation,
+        &request_id,
+        response.status(),
+        latency_us,
+        error_type.as_deref(),
+    );
+
+    response
 }
 
 fn elapsed_request_micros(request_started_ms: u64) -> u64 {
@@ -614,6 +645,36 @@ fn send_kinesis_error(
             .expect("error_type must be valid ASCII"),
     );
     send_json_response(headers, content_type, &err.body, err.status_code)
+}
+
+fn log_request_completion(
+    span: &tracing::Span,
+    operation: Operation,
+    request_id: &str,
+    status: StatusCode,
+    latency_us: u64,
+    error_type: Option<&str>,
+) {
+    if let Some(error_type) = error_type {
+        tracing::info!(
+            parent: span,
+            %operation,
+            request_id,
+            status_code = status.as_u16(),
+            latency_us,
+            error_type,
+            "request completed"
+        );
+    } else {
+        tracing::info!(
+            parent: span,
+            %operation,
+            request_id,
+            status_code = status.as_u16(),
+            latency_us,
+            "request completed"
+        );
+    }
 }
 
 fn log_and_send_error(

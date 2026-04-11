@@ -55,6 +55,7 @@
 # log_format = "plain"
 
 # Optional OTLP endpoint for trace export (disabled when omitted)
+# For OTLP/HTTP, a base URL like http://localhost:4318 automatically uses /v1/traces.
 # CLI: --otlp-endpoint | Env: FERROKINESIS_OTLP_ENDPOINT
 # otlp_endpoint = "http://localhost:4317"
 

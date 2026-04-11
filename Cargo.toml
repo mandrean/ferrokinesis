@@ -45,6 +45,7 @@ server = [
     "dep:tracing-subscriber",
     "dep:tracing-opentelemetry",
     "dep:tower",
+    "dep:url",
     "axum/http1",
     "axum/http2",
     "axum/tokio",

@@ -226,6 +226,7 @@ ferrokinesis \
 ```
 
 If `--otlp-endpoint` is omitted, no OTLP exporter is started.
+When `--otlp-protocol http` is used with a base collector URL such as `http://localhost:4318`, ferrokinesis appends the standard `/v1/traces` path automatically.
 
 ## API & Test Coverage
 
