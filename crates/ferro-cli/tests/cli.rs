@@ -8,6 +8,10 @@ use std::process::Stdio;
 use tempfile::NamedTempFile;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+fn parse_tail_json(stdout: &[u8]) -> Vec<Value> {
+    serde_json::from_slice(stdout).unwrap()
+}
+
 #[tokio::test]
 async fn streams_create_list_describe_and_delete() {
     let server = TestServer::new().await;
@@ -175,6 +179,57 @@ async fn put_supports_text_file_stdin_and_base64() {
         .unwrap();
     assert!(output.status.success());
 
+    let base64_file = NamedTempFile::new().unwrap();
+    tokio::fs::write(base64_file.path(), b"YjY0LWZpbGUK\n")
+        .await
+        .unwrap();
+    let output = ferro_command(&server)
+        .args([
+            "put",
+            "puts",
+            "--file",
+            base64_file.path().to_str().unwrap(),
+            "--base64",
+            "--partition-key",
+            "pk5",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let mut child = ferro_command(&server)
+        .args([
+            "put",
+            "puts",
+            "--stdin",
+            "--base64",
+            "--partition-key",
+            "pk6",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"YjY0LXN0ZGluCg==\n")
+        .await
+        .unwrap();
+    let output = child.wait_with_output().await.unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
     let iterator = server
         .get_shard_iterator("puts", "shardId-000000000000", "TRIM_HORIZON")
         .await;
@@ -182,11 +237,13 @@ async fn put_supports_text_file_stdin_and_base64() {
         .as_array()
         .unwrap()
         .clone();
-    assert_eq!(records.len(), 4);
+    assert_eq!(records.len(), 6);
     assert_eq!(records[0]["Data"], "aGVsbG8=");
     assert_eq!(records[1]["Data"], "ZnJvbS1maWxl");
     assert_eq!(records[2]["Data"], "ZnJvbS1zdGRpbg==");
     assert_eq!(records[3]["Data"], "YjY0");
+    assert_eq!(records[4]["Data"], "YjY0LWZpbGUK");
+    assert_eq!(records[5]["Data"], "YjY0LXN0ZGluCg==");
 }
 
 #[tokio::test]
@@ -226,9 +283,10 @@ async fn tail_polling_reads_record_and_honors_limit() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let body: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(body["PartitionKey"], "pk1");
-    assert_eq!(body["Data"], "aGVsbG8=");
+    let body = parse_tail_json(&output.stdout);
+    assert_eq!(body.len(), 1);
+    assert_eq!(body[0]["PartitionKey"], "pk1");
+    assert_eq!(body[0]["Data"], "aGVsbG8=");
 }
 
 #[tokio::test]
@@ -277,8 +335,9 @@ async fn tail_polling_refreshes_expired_iterator() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let body: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(body["PartitionKey"], "pk-exp");
+    let body = parse_tail_json(&output.stdout);
+    assert_eq!(body.len(), 1);
+    assert_eq!(body[0]["PartitionKey"], "pk-exp");
 }
 
 #[tokio::test]
@@ -329,8 +388,41 @@ async fn tail_efo_reads_records_and_missing_consumer_is_helpful() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let body: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(body["PartitionKey"], "pk-efo");
+    let body = parse_tail_json(&output.stdout);
+    assert_eq!(body.len(), 1);
+    assert_eq!(body[0]["PartitionKey"], "pk-efo");
+}
+
+#[tokio::test]
+async fn tail_json_rejects_unbounded_follow() {
+    let server = TestServer::new().await;
+    server.create_stream("tail-json", 1).await;
+
+    let output = ferro_command(&server)
+        .args(["--json", "tail", "tail-json"])
+        .output()
+        .await
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--ndjson"));
+    assert!(stderr.contains("--limit") || stderr.contains("--no-follow"));
+}
+
+#[tokio::test]
+async fn tail_follow_flags_conflict() {
+    let server = TestServer::new().await;
+    server.create_stream("tail-conflict", 1).await;
+
+    let output = ferro_command(&server)
+        .args(["tail", "tail-conflict", "--follow", "--no-follow"])
+        .output()
+        .await
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("cannot be used with"));
 }
 
 #[tokio::test]

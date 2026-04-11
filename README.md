@@ -169,6 +169,8 @@ Options:
   -h, --help                 Print help
 ```
 
+`ferro --json tail ...` is for bounded reads and returns a JSON array. Use `--limit` or `--no-follow` to bound the run, and use `--ndjson` for streaming tails.
+
 ```
 $ ferrokinesis --help
 
