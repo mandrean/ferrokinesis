@@ -47,7 +47,9 @@ import {
 } from "@aws-sdk/client-kinesis";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 
-// SubscribeToShard is SKIPPED — requires HTTP/2 event-stream, server is HTTP/1.1 only
+// SubscribeToShard is still skipped here because Node SDK v3 uses the standard
+// Node HTTP transport in this suite; it does not exercise ferrokinesis' h2c
+// event-stream path.
 
 const ENDPOINT = process.env.KINESIS_ENDPOINT || "http://localhost:4567";
 const STREAM_NAME = "node-conformance";
@@ -59,7 +61,7 @@ const client = new KinesisClient({
     accessKeyId: "test",
     secretAccessKey: "test",
   },
-  // Force HTTP/1.1 — the server does not support HTTP/2
+  // Use the standard Node HTTP transport for the conformance suite.
   requestHandler: new NodeHttpHandler(),
 });
 
@@ -439,7 +441,7 @@ describe("Shard management", () => {
 });
 
 describe("Stream consumers", () => {
-  // SubscribeToShard is SKIPPED — HTTP/1.1 only, no event-stream support
+  // SubscribeToShard is SKIPPED — this suite still uses the default Node HTTP/1.1 handler.
   const streamName = "node-consumers";
   let streamArn: string;
 

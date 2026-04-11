@@ -8,7 +8,6 @@ import org.junit.jupiter.api.TestMethodOrder;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.core.SdkBytes;
-import software.amazon.awssdk.http.Protocol;
 import software.amazon.awssdk.http.nio.netty.NettyNioAsyncHttpClient;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.cloudwatch.CloudWatchAsyncClient;
@@ -68,18 +67,13 @@ public class KclV2IntegrationTest {
             StaticCredentialsProvider.create(AwsBasicCredentials.create("test", "test"));
 
     // KinesisAsyncClient used by both KCL and test setup.
-    // CRITICAL: Force HTTP/1.1. Ferrokinesis runs plain HTTP/1.1 (Axum, no TLS).
-    // AWS SDK v2's Netty client defaults to HTTP/2 for Kinesis (especially SubscribeToShard).
-    // HTTP/2 requires TLS (ALPN) or h2c — Axum supports neither without TLS.
-    // Forcing HTTP/1.1 makes the Netty client use chunked transfer encoding for the
-    // SubscribeToShard event stream, which ferrokinesis supports correctly.
+    // Leave protocol negotiation to the SDK. Ferrokinesis now auto-negotiates
+    // HTTP/1.1 and h2c on the plain listener, so KCL can use its default transport.
     private static final KinesisAsyncClient kinesisAsyncClient = KinesisAsyncClient.builder()
             .endpointOverride(URI.create(KINESIS_ENDPOINT))
             .region(Region.of(REGION))
             .credentialsProvider(CREDENTIALS)
-            .httpClient(NettyNioAsyncHttpClient.builder()
-                    .protocol(Protocol.HTTP1_1)
-                    .build())
+            .httpClient(NettyNioAsyncHttpClient.builder().build())
             .build();
 
     // DynamoDbAsyncClient for KCL lease management. KCL 3.x requires an async client.

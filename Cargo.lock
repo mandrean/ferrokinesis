@@ -1272,6 +1272,8 @@ dependencies = [
  "getrandom 0.3.4",
  "goose",
  "httparse",
+ "hyper 1.8.1",
+ "hyper-util",
  "js-sys",
  "md-5",
  "num-bigint",

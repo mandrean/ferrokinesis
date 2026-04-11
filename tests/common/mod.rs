@@ -72,7 +72,9 @@ impl TestServer {
         let addr = listener.local_addr().unwrap();
 
         tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
+            ferrokinesis::serve_plain_http(listener, app, std::future::pending())
+                .await
+                .unwrap();
         });
 
         TestServer {
@@ -91,7 +93,9 @@ impl TestServer {
         let addr = listener.local_addr().unwrap();
 
         tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
+            ferrokinesis::serve_plain_http(listener, app, std::future::pending())
+                .await
+                .unwrap();
         });
 
         TestServer {
@@ -108,7 +112,9 @@ impl TestServer {
         let addr = listener.local_addr().unwrap();
 
         tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
+            ferrokinesis::serve_plain_http(listener, app, std::future::pending())
+                .await
+                .unwrap();
         });
 
         TestServer {
