@@ -1,0 +1,247 @@
+name: Nightly Compatibility Matrix
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to verify
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-compatibility-matrix-${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-server:
+    name: Build Server
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.sha }}
+      - uses: ./.github/actions/setup-rust-toolchain
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+      - name: Build release binary
+        run: cargo build --release
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ferrokinesis-linux
+          path: target/release/ferrokinesis
+          retention-days: 1
+
+  compatibility:
+    name: Compatibility (${{ matrix.name }})
+    needs: build-server
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Go v2
+            slug: go-sdk-v2
+            lang: go
+            dir: tests/conformance/go-sdk-v2
+            setup: ""
+            run: go test -v -count=1 -timeout 120s ./...
+          - name: Python (boto3)
+            slug: python-boto3
+            lang: python
+            dir: tests/conformance/python-boto3
+            setup: pip install -r requirements.txt
+            run: pytest -v test_conformance.py
+          - name: Node.js v3
+            slug: node-sdk-v3
+            lang: node
+            dir: tests/conformance/node-sdk-v3
+            setup: npm ci
+            run: npx vitest run --reporter=verbose
+          - name: Java SDK v2
+            slug: java-sdk-v2
+            lang: java-v2
+            dir: tests/conformance/java-sdk-v2
+            setup: ""
+            run: mvn -B test
+          - name: Java SDK v1
+            slug: java-sdk-v1
+            lang: java-v1
+            dir: tests/conformance/java-sdk-v1
+            setup: ""
+            run: mvn -B test
+          - name: Java KCL v1
+            slug: java-kcl-v1
+            lang: java-kcl-v1
+            dir: tests/conformance/java-kcl-v1
+            setup: ""
+            run: mvn -B test
+            needs_dynamodb: true
+          - name: Java KCL v2
+            slug: java-kcl-v2
+            lang: java-kcl-v2
+            dir: tests/conformance/java-kcl-v2
+            setup: ""
+            run: mvn -B test
+            needs_dynamodb: true
+    env:
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+      KINESIS_ENDPOINT: http://localhost:4567
+      DYNAMODB_ENDPOINT: http://localhost:8000
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.sha }}
+
+      - name: Download server binary
+        uses: actions/download-artifact@v4
+        with:
+          name: ferrokinesis-linux
+
+      - name: Start server
+        run: |
+          chmod +x ferrokinesis
+          ./ferrokinesis \
+            --create-stream-ms 0 \
+            --delete-stream-ms 0 \
+            --update-stream-ms 0 &
+
+      - name: Wait for server
+        run: bash tests/conformance/wait-for-server.sh
+
+      - name: Start DynamoDB Local
+        if: matrix.needs_dynamodb
+        run: |
+          docker run -d --name dynamodb-local -p 8000:8000 amazon/dynamodb-local
+          for i in $(seq 1 15); do
+            if curl -sf -X POST http://localhost:8000 \
+              -H 'Content-Type: application/x-amz-json-1.0' \
+              -H 'X-Amz-Target: DynamoDB_20120810.ListTables' \
+              -d '{"Limit": 1}' > /dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Setup Go
+        if: matrix.lang == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+          cache-dependency-path: ${{ matrix.dir }}/go.sum
+
+      - name: Setup Node.js
+        if: matrix.lang == 'node'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: ${{ matrix.dir }}/package-lock.json
+
+      - name: Setup Java
+        if: startsWith(matrix.lang, 'java')
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "11"
+          cache: maven
+          cache-dependency-path: ${{ matrix.dir }}/pom.xml
+
+      - name: Setup Python
+        if: matrix.lang == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ${{ matrix.dir }}/requirements.txt
+
+      - name: Install dependencies
+        if: matrix.setup != ''
+        working-directory: ${{ matrix.dir }}
+        run: ${{ matrix.setup }}
+
+      - name: Run compatibility suite
+        id: compatibility
+        working-directory: ${{ matrix.dir }}
+        run: ${{ matrix.run }}
+
+      - name: Capture matrix row
+        if: always()
+        env:
+          NEEDS_DYNAMODB: ${{ matrix.needs_dynamodb || false }}
+        run: |
+          mkdir -p compatibility-results
+          cat > "compatibility-results/${{ matrix.slug }}.json" <<EOF
+          {
+            "suite": "${{ matrix.name }}",
+            "slug": "${{ matrix.slug }}",
+            "language": "${{ matrix.lang }}",
+            "directory": "${{ matrix.dir }}",
+            "needs_dynamodb": ${NEEDS_DYNAMODB},
+            "outcome": "${{ steps.compatibility.outcome }}"
+          }
+          EOF
+
+      - name: Upload matrix row
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compatibility-result-${{ matrix.slug }}
+          path: compatibility-results/${{ matrix.slug }}.json
+          retention-days: 7
+
+      - name: Stop DynamoDB Local
+        if: always() && matrix.needs_dynamodb
+        run: docker rm -f dynamodb-local || true
+
+      - name: Stop server
+        if: always()
+        run: pkill -f ferrokinesis || true
+
+  report:
+    name: Compatibility Report
+    needs: [build-server, compatibility]
+    if: always() && needs.build-server.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.sha }}
+
+      - name: Download matrix results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: compatibility-result-*
+          path: compatibility-results
+          merge-multiple: true
+
+      - name: Render markdown report
+        run: |
+          python3 .github/scripts/render-compatibility-matrix.py \
+            --template .github/compatibility-matrix.md \
+            --results-dir compatibility-results \
+            --output compatibility-matrix-report.md \
+            --ref "${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.sha }}"
+
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: compatibility-matrix-report
+          path: compatibility-matrix-report.md
+          retention-days: 30
+
+      - name: Append job summary
+        run: cat compatibility-matrix-report.md >> "$GITHUB_STEP_SUMMARY"

@@ -190,48 +190,91 @@ impl FromStr for Operation {
 }
 
 impl Operation {
+    /// Stable list of every supported Kinesis operation.
+    pub const ALL: [Self; 39] = [
+        Self::AddTagsToStream,
+        Self::CreateStream,
+        Self::DecreaseStreamRetentionPeriod,
+        Self::DeleteResourcePolicy,
+        Self::DeleteStream,
+        Self::DeregisterStreamConsumer,
+        Self::DescribeAccountSettings,
+        Self::DescribeLimits,
+        Self::DescribeStream,
+        Self::DescribeStreamConsumer,
+        Self::DescribeStreamSummary,
+        Self::DisableEnhancedMonitoring,
+        Self::EnableEnhancedMonitoring,
+        Self::GetRecords,
+        Self::GetResourcePolicy,
+        Self::GetShardIterator,
+        Self::IncreaseStreamRetentionPeriod,
+        Self::ListShards,
+        Self::ListStreamConsumers,
+        Self::ListStreams,
+        Self::ListTagsForResource,
+        Self::ListTagsForStream,
+        Self::MergeShards,
+        Self::PutRecord,
+        Self::PutRecords,
+        Self::PutResourcePolicy,
+        Self::RegisterStreamConsumer,
+        Self::RemoveTagsFromStream,
+        Self::SplitShard,
+        Self::StartStreamEncryption,
+        Self::StopStreamEncryption,
+        Self::SubscribeToShard,
+        Self::TagResource,
+        Self::UntagResource,
+        Self::UpdateAccountSettings,
+        Self::UpdateMaxRecordSize,
+        Self::UpdateShardCount,
+        Self::UpdateStreamMode,
+        Self::UpdateStreamWarmThroughput,
+    ];
+
     /// Returns the canonical operation name used in `X-Amz-Target`.
     pub const fn as_str(self) -> &'static str {
         match self {
-            Operation::AddTagsToStream => "AddTagsToStream",
-            Operation::CreateStream => "CreateStream",
-            Operation::DecreaseStreamRetentionPeriod => "DecreaseStreamRetentionPeriod",
-            Operation::DeleteResourcePolicy => "DeleteResourcePolicy",
-            Operation::DeleteStream => "DeleteStream",
-            Operation::DeregisterStreamConsumer => "DeregisterStreamConsumer",
-            Operation::DescribeAccountSettings => "DescribeAccountSettings",
-            Operation::DescribeLimits => "DescribeLimits",
-            Operation::DescribeStream => "DescribeStream",
-            Operation::DescribeStreamConsumer => "DescribeStreamConsumer",
-            Operation::DescribeStreamSummary => "DescribeStreamSummary",
-            Operation::DisableEnhancedMonitoring => "DisableEnhancedMonitoring",
-            Operation::EnableEnhancedMonitoring => "EnableEnhancedMonitoring",
-            Operation::GetRecords => "GetRecords",
-            Operation::GetResourcePolicy => "GetResourcePolicy",
-            Operation::GetShardIterator => "GetShardIterator",
-            Operation::IncreaseStreamRetentionPeriod => "IncreaseStreamRetentionPeriod",
-            Operation::ListShards => "ListShards",
-            Operation::ListStreamConsumers => "ListStreamConsumers",
-            Operation::ListStreams => "ListStreams",
-            Operation::ListTagsForResource => "ListTagsForResource",
-            Operation::ListTagsForStream => "ListTagsForStream",
-            Operation::MergeShards => "MergeShards",
-            Operation::PutRecord => "PutRecord",
-            Operation::PutRecords => "PutRecords",
-            Operation::PutResourcePolicy => "PutResourcePolicy",
-            Operation::RegisterStreamConsumer => "RegisterStreamConsumer",
-            Operation::RemoveTagsFromStream => "RemoveTagsFromStream",
-            Operation::SplitShard => "SplitShard",
-            Operation::StartStreamEncryption => "StartStreamEncryption",
-            Operation::StopStreamEncryption => "StopStreamEncryption",
-            Operation::SubscribeToShard => "SubscribeToShard",
-            Operation::TagResource => "TagResource",
-            Operation::UntagResource => "UntagResource",
-            Operation::UpdateAccountSettings => "UpdateAccountSettings",
-            Operation::UpdateMaxRecordSize => "UpdateMaxRecordSize",
-            Operation::UpdateShardCount => "UpdateShardCount",
-            Operation::UpdateStreamMode => "UpdateStreamMode",
-            Operation::UpdateStreamWarmThroughput => "UpdateStreamWarmThroughput",
+            Self::AddTagsToStream => "AddTagsToStream",
+            Self::CreateStream => "CreateStream",
+            Self::DecreaseStreamRetentionPeriod => "DecreaseStreamRetentionPeriod",
+            Self::DeleteResourcePolicy => "DeleteResourcePolicy",
+            Self::DeleteStream => "DeleteStream",
+            Self::DeregisterStreamConsumer => "DeregisterStreamConsumer",
+            Self::DescribeAccountSettings => "DescribeAccountSettings",
+            Self::DescribeLimits => "DescribeLimits",
+            Self::DescribeStream => "DescribeStream",
+            Self::DescribeStreamConsumer => "DescribeStreamConsumer",
+            Self::DescribeStreamSummary => "DescribeStreamSummary",
+            Self::DisableEnhancedMonitoring => "DisableEnhancedMonitoring",
+            Self::EnableEnhancedMonitoring => "EnableEnhancedMonitoring",
+            Self::GetRecords => "GetRecords",
+            Self::GetResourcePolicy => "GetResourcePolicy",
+            Self::GetShardIterator => "GetShardIterator",
+            Self::IncreaseStreamRetentionPeriod => "IncreaseStreamRetentionPeriod",
+            Self::ListShards => "ListShards",
+            Self::ListStreamConsumers => "ListStreamConsumers",
+            Self::ListStreams => "ListStreams",
+            Self::ListTagsForResource => "ListTagsForResource",
+            Self::ListTagsForStream => "ListTagsForStream",
+            Self::MergeShards => "MergeShards",
+            Self::PutRecord => "PutRecord",
+            Self::PutRecords => "PutRecords",
+            Self::PutResourcePolicy => "PutResourcePolicy",
+            Self::RegisterStreamConsumer => "RegisterStreamConsumer",
+            Self::RemoveTagsFromStream => "RemoveTagsFromStream",
+            Self::SplitShard => "SplitShard",
+            Self::StartStreamEncryption => "StartStreamEncryption",
+            Self::StopStreamEncryption => "StopStreamEncryption",
+            Self::SubscribeToShard => "SubscribeToShard",
+            Self::TagResource => "TagResource",
+            Self::UntagResource => "UntagResource",
+            Self::UpdateAccountSettings => "UpdateAccountSettings",
+            Self::UpdateMaxRecordSize => "UpdateMaxRecordSize",
+            Self::UpdateShardCount => "UpdateShardCount",
+            Self::UpdateStreamMode => "UpdateStreamMode",
+            Self::UpdateStreamWarmThroughput => "UpdateStreamWarmThroughput",
         }
     }
 
@@ -278,6 +321,30 @@ impl Operation {
             Operation::UpdateShardCount => rules::update_shard_count(),
             Operation::UpdateStreamMode => rules::update_stream_mode(),
             Operation::UpdateStreamWarmThroughput => rules::update_stream_warm_throughput(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Operation;
+    use alloc::vec::Vec;
+    use core::str::FromStr;
+
+    #[test]
+    fn all_operations_round_trip_through_canonical_name() {
+        let mut seen = Vec::new();
+
+        for operation in Operation::ALL {
+            let name = operation.as_str();
+
+            assert_eq!(Operation::from_str(name), Ok(operation));
+            assert!(
+                !seen.contains(&name),
+                "duplicate operation name in catalog: {name}"
+            );
+
+            seen.push(name);
         }
     }
 }
