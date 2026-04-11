@@ -1145,6 +1145,37 @@ async fn retained_bytes_cap_rejects_put_record_and_put_records_without_growth() 
     assert_eq!(err.body.error_type, "LimitExceededException");
     assert_eq!(store.metrics().retained_bytes(), 0);
     assert_eq!(store.metrics().retained_records(), 0);
+    let metrics = store.render_metrics().await;
+    assert!(metrics.contains("ferrokinesis_rejected_writes_total 2"));
+}
+
+#[tokio::test]
+async fn recovered_store_is_unready_when_replay_restores_data_above_retained_cap() {
+    let dir = tempdir().unwrap();
+    let mut options = durable_options(dir.path(), 0);
+    options.max_retained_bytes = Some(1_024);
+    let store = Store::new(options.clone());
+    create_active_stream(&store, "retained-cap-replay").await;
+    put_record(&store, "retained-cap-replay", "QUFBQQ==", "pk")
+        .await
+        .unwrap();
+    let retained_after_write = store.metrics().retained_bytes();
+    assert!(retained_after_write > 0);
+    drop(store);
+
+    options.max_retained_bytes = Some(retained_after_write.saturating_sub(1));
+    let recovered = Store::new(options);
+
+    let err = recovered.check_ready().unwrap_err().to_string();
+    assert!(err.contains("retained bytes limit exceeded"));
+
+    let write_err = put_record(&recovered, "retained-cap-replay", "QkJCQg==", "pk-2")
+        .await
+        .unwrap_err();
+    assert_eq!(write_err.body.error_type, "LimitExceededException");
+
+    let metrics = recovered.render_metrics().await;
+    assert!(metrics.contains("ferrokinesis_rejected_writes_total 1"));
 }
 
 #[tokio::test]
