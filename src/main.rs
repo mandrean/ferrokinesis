@@ -864,7 +864,7 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
         .unwrap_or_default();
 
     let defaults = StoreOptions::default();
-    let mut options = resolve_store_options(&args, &file_cfg, &defaults).unwrap_or_else(|err| {
+    let options = resolve_store_options(&args, &file_cfg, &defaults).unwrap_or_else(|err| {
         eprintln!("{err}");
         process::exit(1);
     });
@@ -892,9 +892,11 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
     };
 
     #[cfg(feature = "chaos")]
-    {
+    let options = {
+        let mut options = options;
         options.chaos = chaos;
-    }
+        options
+    };
     let port = resolve(args.port, file_cfg.port, || 4567);
     let max_request_body_mb = resolve(args.max_request_body_mb, file_cfg.max_request_body_mb, || 7);
     let log_level: String = resolve(args.log_level, file_cfg.log_level, || "info".into());
