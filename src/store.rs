@@ -2436,6 +2436,17 @@ impl Store {
         if let Some(detail) = self.availability_block_reason() {
             return Err(StoreHealthError::ReadFailed(detail));
         }
+        if self.durable_state_requested() {
+            if let Some(limit) = self.options.effective_max_retained_bytes() {
+                let current = self.metrics.retained_bytes();
+                if current > limit {
+                    return Err(StoreHealthError::ReadFailed(format!(
+                        "retained bytes limit exceeded: {} > {}",
+                        current, limit
+                    )));
+                }
+            }
+        }
         Ok(())
     }
 
