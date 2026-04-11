@@ -141,7 +141,6 @@ pub(crate) async fn execute_with_outcome(
             }
         } as u64;
 
-        let reservation = match store
         #[cfg(feature = "chaos")]
         if let Some(failure) = chaos_failures[i].as_ref() {
             failed_record_count += 1;

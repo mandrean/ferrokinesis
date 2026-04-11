@@ -569,11 +569,6 @@ impl Store {
             persistence: None,
             #[cfg(feature = "chaos")]
             chaos,
-            inner,
-            metrics,
-            health,
-            #[cfg(not(target_arch = "wasm32"))]
-            persistence: None,
             #[cfg(feature = "server")]
             capture_writer,
         };
