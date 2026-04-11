@@ -92,7 +92,7 @@ getrandom = { version = "0.3", default-features = false, optional = true }
 goose = { version = "0.18", optional = true }
 httparse = { version = "1", optional = true }
 hyper = { version = "1", default-features = false, optional = true, features = ["server", "http1", "http2"] }
-hyper-util = { version = "0.1", default-features = false, optional = true, features = ["server-auto", "tokio", "http1", "http2"] }
+hyper-util = { version = "0.1", default-features = false, optional = true, features = ["server-auto", "server-graceful", "tokio", "http1", "http2"] }
 js-sys = { version = "0.3", optional = true }
 md-5 = { version = "0.10", default-features = false }
 num-bigint = "0.4"

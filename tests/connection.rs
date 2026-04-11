@@ -1,9 +1,15 @@
 mod common;
 
+use axum::Router;
+use axum::routing::get;
 use common::*;
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::{Method, Version};
 use serde_json::{Value, json};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::net::TcpListener;
+use tokio::sync::{Notify, oneshot};
 
 // -- Basic connection tests --
 
@@ -55,6 +61,64 @@ async fn plain_listener_accepts_h2c_prior_knowledge() {
             .iter()
             .any(|name| name.as_str() == Some("h2c-stream"))
     );
+}
+
+#[tokio::test]
+async fn plain_listener_drains_in_flight_requests_during_shutdown() {
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+
+    let app = Router::new().route(
+        "/slow",
+        get({
+            let started = Arc::clone(&started);
+            let release = Arc::clone(&release);
+            move || {
+                let started = Arc::clone(&started);
+                let release = Arc::clone(&release);
+                async move {
+                    started.notify_one();
+                    release.notified().await;
+                    "done"
+                }
+            }
+        }),
+    );
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        ferrokinesis::serve_plain_http(listener, app, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let client = reqwest::Client::new();
+    let response = tokio::spawn(async move {
+        client
+            .get(format!("http://{addr}/slow"))
+            .send()
+            .await
+            .unwrap()
+    });
+
+    started.notified().await;
+    shutdown_tx.send(()).unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !server.is_finished(),
+        "server returned before the in-flight request drained"
+    );
+
+    release.notify_waiters();
+
+    let response = response.await.unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.text().await.unwrap(), "done");
+    server.await.unwrap();
 }
 
 #[tokio::test]

@@ -7,14 +7,18 @@
 //! ## Quick start
 //!
 //! ```no_run
-//! use ferrokinesis::{create_app, store::StoreOptions};
+//! use ferrokinesis::{create_app, serve_plain_http, store::StoreOptions};
 //!
 //! #[tokio::main]
 //! async fn main() {
 //!     let (app, _store) = create_app(StoreOptions::default());
 //!
 //!     let listener = tokio::net::TcpListener::bind("127.0.0.1:4567").await.unwrap();
-//!     axum::serve(listener, app).await.unwrap();
+//!     serve_plain_http(listener, app, async {
+//!         let _ = tokio::signal::ctrl_c().await;
+//!     })
+//!         .await
+//!         .unwrap();
 //! }
 //! ```
 //!
@@ -82,7 +86,11 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 #[cfg(all(feature = "server", not(target_arch = "wasm32")))]
 use hyper_util::server::conn::auto::Builder as AutoBuilder;
 #[cfg(all(feature = "server", not(target_arch = "wasm32")))]
+use hyper_util::server::graceful::GracefulShutdown;
+#[cfg(all(feature = "server", not(target_arch = "wasm32")))]
 use hyper_util::service::TowerToHyperService;
+#[cfg(all(feature = "server", not(target_arch = "wasm32")))]
+use std::time::Duration;
 use store::Store;
 #[cfg(any(
     not(target_arch = "wasm32"),
@@ -90,9 +98,14 @@ use store::Store;
 ))]
 use store::StoreOptions;
 #[cfg(all(feature = "server", not(target_arch = "wasm32")))]
+use tokio::task::JoinSet;
+#[cfg(all(feature = "server", not(target_arch = "wasm32")))]
 use tower::ServiceExt as _;
 #[cfg(feature = "access-log")]
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
+
+#[cfg(all(feature = "server", not(target_arch = "wasm32")))]
+const PLAIN_HTTP_GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Creates an Axum [`Router`] and a [`store::Store`] ready to serve the Kinesis emulator.
 ///
@@ -109,14 +122,18 @@ use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 /// # Examples
 ///
 /// ```no_run
-/// use ferrokinesis::{create_app, store::StoreOptions};
+/// use ferrokinesis::{create_app, serve_plain_http, store::StoreOptions};
 ///
 /// #[tokio::main]
 /// async fn main() {
 ///     let (app, _store) = create_app(StoreOptions::default());
 ///
 ///     let listener = tokio::net::TcpListener::bind("127.0.0.1:4567").await.unwrap();
-///     axum::serve(listener, app).await.unwrap();
+///     serve_plain_http(listener, app, async {
+///         let _ = tokio::signal::ctrl_c().await;
+///     })
+///         .await
+///         .unwrap();
 /// }
 /// ```
 #[cfg(any(
@@ -168,6 +185,12 @@ pub fn create_router(store: Store) -> Router {
 }
 
 /// Serve an Axum app over a plain TCP listener with HTTP/1.1 and h2c auto-negotiation.
+///
+/// Use this instead of [`axum::serve`] for ferrokinesis over plain TCP so
+/// `SubscribeToShard` and other HTTP/2-capable clients can negotiate h2c.
+/// Once `shutdown` resolves, the listener stops accepting new connections and
+/// existing connections are given up to 10 seconds to drain before the remaining
+/// tasks are aborted.
 #[cfg(all(feature = "server", not(target_arch = "wasm32")))]
 pub async fn serve_plain_http(
     listener: tokio::net::TcpListener,
@@ -175,10 +198,12 @@ pub async fn serve_plain_http(
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
     let mut shutdown = std::pin::pin!(shutdown);
+    let graceful = GracefulShutdown::new();
+    let mut connections = JoinSet::new();
 
     loop {
         tokio::select! {
-            _ = &mut shutdown => break Ok(()),
+            _ = &mut shutdown => break,
             accept = listener.accept() => {
                 let (stream, _addr) = accept?;
                 let io = TokioIo::new(stream);
@@ -187,15 +212,57 @@ pub async fn serve_plain_http(
                         .into_service::<Body>()
                         .map_request(|req: axum::http::Request<Incoming>| req.map(Body::new)),
                 );
-                tokio::spawn(async move {
-                    let builder = AutoBuilder::new(TokioExecutor::new());
-                    if let Err(err) = builder.serve_connection_with_upgrades(io, service).await {
+
+                let builder = AutoBuilder::new(TokioExecutor::new());
+                let connection = graceful.watch(
+                    builder
+                        .serve_connection_with_upgrades(io, service)
+                        .into_owned(),
+                );
+                connections.spawn(async move {
+                    if let Err(err) = connection.await {
                         tracing::debug!("plain connection closed with error: {err}");
                     }
                 });
             }
+            Some(result) = connections.join_next(), if !connections.is_empty() => {
+                if let Err(err) = result {
+                    tracing::debug!("plain connection task failed: {err}");
+                }
+            }
         }
     }
+
+    drop(listener);
+
+    let active_connections = graceful.count();
+    if active_connections > 0 {
+        tracing::info!(
+            connections = active_connections,
+            timeout_secs = PLAIN_HTTP_GRACEFUL_SHUTDOWN_TIMEOUT.as_secs(),
+            "draining plain HTTP connections"
+        );
+    }
+
+    if tokio::time::timeout(PLAIN_HTTP_GRACEFUL_SHUTDOWN_TIMEOUT, graceful.shutdown())
+        .await
+        .is_err()
+    {
+        tracing::warn!(
+            connections = connections.len(),
+            timeout_secs = PLAIN_HTTP_GRACEFUL_SHUTDOWN_TIMEOUT.as_secs(),
+            "timed out draining plain HTTP connections; aborting remaining tasks"
+        );
+        connections.abort_all();
+    }
+
+    while let Some(result) = connections.join_next().await {
+        if let Err(err) = result {
+            tracing::debug!("plain connection task failed during shutdown: {err}");
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(any(
