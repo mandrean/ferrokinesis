@@ -194,7 +194,7 @@ struct ServeArgs {
 
     /// Path to write mirror dead-letter records (NDJSON)
     #[cfg(feature = "mirror")]
-    #[arg(long, env = "FERROKINESIS_MIRROR_DEAD_LETTER", requires = "mirror_to")]
+    #[arg(long, env = "FERROKINESIS_MIRROR_DEAD_LETTER")]
     mirror_dead_letter: Option<PathBuf>,
 
     /// Path to TLS certificate PEM file (enables HTTPS)
@@ -940,6 +940,12 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
             initial_backoff: Duration::from_millis(mirror_initial_backoff_ms),
             max_backoff: Duration::from_millis(mirror_max_backoff_ms),
         };
+        if mirror_to.is_none() && mirror_dead_letter.is_some() {
+            tracing::error!(
+                "mirror dead-letter requires a mirror target from --mirror-to, FERROKINESIS_MIRROR_TO, or [mirror].to"
+            );
+            return ExitCode::FAILURE;
+        }
         if let Some(endpoint) = mirror_to {
             let dead_letter_writer = match mirror_dead_letter {
                 Some(ref path) => match ferrokinesis::mirror::MirrorDeadLetterWriter::new(path) {
@@ -1109,6 +1115,8 @@ mod tests {
             mirror_initial_backoff_ms: None,
             #[cfg(feature = "mirror")]
             mirror_max_backoff_ms: None,
+            #[cfg(feature = "mirror")]
+            mirror_dead_letter: None,
             #[cfg(feature = "tls")]
             tls_cert: None,
             #[cfg(feature = "tls")]
@@ -1211,5 +1219,22 @@ mod tests {
             normalize_otlp_http_endpoint("http://127.0.0.1:4318/custom").unwrap(),
             "http://127.0.0.1:4318/custom"
         );
+    }
+
+    #[cfg(feature = "mirror")]
+    #[test]
+    fn mirror_dead_letter_cli_parses_without_mirror_to() {
+        let cli = Cli::try_parse_from([
+            "ferrokinesis",
+            "--mirror-dead-letter",
+            "/tmp/mirror-dead-letter.ndjson",
+        ])
+        .expect("dead-letter path should not require --mirror-to at clap parse time");
+
+        assert_eq!(
+            cli.serve_args.mirror_dead_letter,
+            Some(PathBuf::from("/tmp/mirror-dead-letter.ndjson"))
+        );
+        assert_eq!(cli.serve_args.mirror_to, None);
     }
 }
