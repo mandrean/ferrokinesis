@@ -5,7 +5,8 @@ use axum::extract::DefaultBodyLimit;
 use axum::http::Request;
 use ferrokinesis::constants;
 use ferrokinesis::store::{Store, StoreOptions};
-use serde::{Deserialize, Serialize};
+use js_sys::Reflect;
+use serde::{Serialize, de::DeserializeOwned};
 use tower::util::ServiceExt;
 use wasm_bindgen::JsValue;
 use wasm_bindgen::prelude::wasm_bindgen;
@@ -14,8 +15,7 @@ const DEFAULT_MAX_REQUEST_BODY_MB: u64 = 7;
 const AUTHORIZATION: &str = "AWS4-HMAC-SHA256 Credential=AKID/20150101/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=abcd1234";
 const X_AMZ_DATE: &str = "20150101T000000Z";
 
-#[derive(Default, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
+#[derive(Default)]
 struct KinesisOptions {
     create_stream_ms: Option<u64>,
     delete_stream_ms: Option<u64>,
@@ -23,6 +23,7 @@ struct KinesisOptions {
     shard_limit: Option<u32>,
     iterator_ttl_seconds: Option<u64>,
     retention_check_interval_secs: Option<u64>,
+    enforce_limits: Option<bool>,
     account_id: Option<String>,
     region: Option<String>,
     max_request_body_mb: Option<u64>,
@@ -66,6 +67,7 @@ impl Kinesis {
             retention_check_interval_secs: options
                 .retention_check_interval_secs
                 .unwrap_or(defaults.retention_check_interval_secs),
+            enforce_limits: options.enforce_limits.unwrap_or(defaults.enforce_limits),
             aws_account_id: options.account_id.unwrap_or(defaults.aws_account_id),
             aws_region: options.region.unwrap_or(defaults.aws_region),
         };
@@ -136,11 +138,31 @@ impl Kinesis {
 
 fn parse_options(options: Option<JsValue>) -> Result<KinesisOptions, JsValue> {
     match options {
-        Some(value) if !value.is_null() && !value.is_undefined() => {
-            serde_wasm_bindgen::from_value(value).map_err(|err| js_error(err.to_string()))
-        }
+        Some(value) if !value.is_null() && !value.is_undefined() => Ok(KinesisOptions {
+            create_stream_ms: read_option(&value, "createStreamMs")?,
+            delete_stream_ms: read_option(&value, "deleteStreamMs")?,
+            update_stream_ms: read_option(&value, "updateStreamMs")?,
+            shard_limit: read_option(&value, "shardLimit")?,
+            iterator_ttl_seconds: read_option(&value, "iteratorTtlSeconds")?,
+            retention_check_interval_secs: read_option(&value, "retentionCheckIntervalSecs")?,
+            enforce_limits: read_option(&value, "enforceLimits")?,
+            account_id: read_option(&value, "accountId")?,
+            region: read_option(&value, "region")?,
+            max_request_body_mb: read_option(&value, "maxRequestBodyMb")?,
+        }),
         _ => Ok(KinesisOptions::default()),
     }
+}
+
+fn read_option<T: DeserializeOwned>(value: &JsValue, field: &str) -> Result<Option<T>, JsValue> {
+    let raw = Reflect::get(value, &JsValue::from_str(field))
+        .map_err(|_| js_error(format!("failed to read option {field}")))?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(None);
+    }
+    serde_wasm_bindgen::from_value(raw)
+        .map(Some)
+        .map_err(|err| js_error(format!("invalid value for {field}: {err}")))
 }
 
 fn js_error(message: impl Into<String>) -> JsValue {
@@ -239,8 +261,72 @@ mod tests {
         panic!("retention reaper did not remove expired record");
     }
 
+    #[wasm_bindgen_test(async)]
+    async fn enforce_limits_option_controls_put_record_throttling() {
+        let unlimited = new_kinesis(json!({
+            "createStreamMs": 0,
+            "enforceLimits": false,
+            "retentionCheckIntervalSecs": 0,
+        }));
+        let throttled = new_kinesis(json!({
+            "createStreamMs": 0,
+            "enforceLimits": true,
+            "retentionCheckIntervalSecs": 0,
+        }));
+
+        for (kinesis, stream_name) in [
+            (&unlimited, "wasm-no-throttle"),
+            (&throttled, "wasm-throttle"),
+        ] {
+            let create = request(
+                kinesis,
+                "Kinesis_20131202.CreateStream",
+                json!({
+                    "StreamName": stream_name,
+                    "ShardCount": 1,
+                }),
+            )
+            .await;
+            assert_eq!(create.status, 200);
+            wait_until_stream_active(kinesis, stream_name).await;
+        }
+
+        assert!(!unlimited._store.options.enforce_limits);
+        assert!(throttled._store.options.enforce_limits);
+
+        let shard_id = "shardId-000000000000";
+        let now_ms = 424_242_u64;
+
+        unlimited
+            ._store
+            .try_reserve_shard_throughput("wasm-no-throttle", shard_id, 600_000, now_ms)
+            .await
+            .unwrap();
+        unlimited
+            ._store
+            .try_reserve_shard_throughput("wasm-no-throttle", shard_id, 600_000, now_ms)
+            .await
+            .unwrap();
+
+        throttled
+            ._store
+            .try_reserve_shard_throughput("wasm-throttle", shard_id, 600_000, now_ms)
+            .await
+            .unwrap();
+
+        let err = throttled
+            ._store
+            .try_reserve_shard_throughput("wasm-throttle", shard_id, 600_000, now_ms)
+            .await
+            .expect_err("second same-window reservation should throttle");
+        assert_eq!(
+            err.body.error_type,
+            "ProvisionedThroughputExceededException"
+        );
+    }
+
     fn new_kinesis(options: serde_json::Value) -> Kinesis {
-        let options = serde_wasm_bindgen::to_value(&options).unwrap();
+        let options = js_sys::JSON::parse(&options.to_string()).unwrap();
         Kinesis::new(Some(options)).unwrap()
     }
 

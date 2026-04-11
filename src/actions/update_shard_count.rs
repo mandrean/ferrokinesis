@@ -52,7 +52,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     crate::runtime::spawn_background(async move {
         crate::runtime::sleep_ms(delay).await;
 
-        let _ = store_clone
+        if let Ok(closed_shard_ids) = store_clone
             .update_stream(&stream_name_owned, |stream| {
                 let now = current_time_ms();
                 // Use the maximum possible seq_ix for the closing sequence number.
@@ -68,6 +68,10 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                     .filter(|(_, s)| s.sequence_number_range.ending_sequence_number.is_none())
                     .map(|(i, _)| i)
                     .collect();
+                let closed_shard_ids = open_indices
+                    .iter()
+                    .map(|&ix| stream.shards[ix].shard_id.clone())
+                    .collect::<Vec<_>>();
 
                 for &ix in &open_indices {
                     let create_time = sequence::parse_sequence(
@@ -134,9 +138,12 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                 }
 
                 stream.stream_status = StreamStatus::Active;
-                Ok(())
+                Ok(closed_shard_ids)
             })
-            .await;
+            .await
+        {
+            store_clone.clear_throughput_windows_for_shards(&stream_name_owned, &closed_shard_ids);
+        }
     });
 
     tracing::trace!(

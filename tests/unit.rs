@@ -23,6 +23,109 @@ fn store_options_default_values() {
     assert_eq!(opts.delete_stream_ms, 500);
     assert_eq!(opts.update_stream_ms, 500);
     assert_eq!(opts.shard_limit, 10);
+    assert!(!opts.enforce_limits);
+}
+
+#[tokio::test]
+async fn throughput_limits_are_disabled_by_default() {
+    use ferrokinesis::store::Store;
+
+    let store = Store::new(StoreOptions::default());
+    let result = store
+        .try_reserve_shard_throughput("stream", "shardId-000000000000", 2 * 1024 * 1024, 1_000)
+        .await;
+
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn throughput_limits_enforce_record_and_byte_caps_per_shard() {
+    use ferrokinesis::store::Store;
+
+    let store = Store::new(StoreOptions {
+        enforce_limits: true,
+        ..StoreOptions::default()
+    });
+
+    for _ in 0..1000 {
+        store
+            .try_reserve_shard_throughput("stream", "shardId-000000000000", 1, 5_000)
+            .await
+            .expect("within 1000 records/s");
+    }
+
+    let err = store
+        .try_reserve_shard_throughput("stream", "shardId-000000000000", 1, 5_000)
+        .await
+        .expect_err("1001st record in the same second should throttle");
+    assert_eq!(
+        err.body.error_type,
+        "ProvisionedThroughputExceededException"
+    );
+    assert_eq!(
+        err.body.message.as_deref(),
+        Some("Rate exceeded for shard.")
+    );
+
+    store
+        .try_reserve_shard_throughput("other-stream", "shardId-000000000000", 1_048_000, 8_000)
+        .await
+        .expect("first write within byte cap");
+
+    let err = store
+        .try_reserve_shard_throughput("other-stream", "shardId-000000000000", 1_000, 8_000)
+        .await
+        .expect_err("bytes over 1 MiB/s should throttle");
+    assert_eq!(
+        err.body.error_type,
+        "ProvisionedThroughputExceededException"
+    );
+    assert_eq!(
+        err.body.message.as_deref(),
+        Some("Rate exceeded for shard.")
+    );
+}
+
+#[tokio::test]
+async fn deleting_stream_clears_throughput_windows() {
+    use ferrokinesis::store::Store;
+
+    let store = Store::new(StoreOptions {
+        enforce_limits: true,
+        ..StoreOptions::default()
+    });
+
+    store
+        .try_reserve_shard_throughput("stream", "shardId-000000000000", 600_000, 5_000)
+        .await
+        .expect("initial write should consume throughput");
+
+    store.delete_stream("stream").await;
+
+    store
+        .try_reserve_shard_throughput("stream", "shardId-000000000000", 600_000, 5_000)
+        .await
+        .expect("delete should clear stale throughput debt");
+}
+
+#[test]
+fn has_throughput_window_reports_exact_membership() {
+    use ferrokinesis::store::Store;
+
+    let store = Store::new(StoreOptions {
+        enforce_limits: true,
+        ..StoreOptions::default()
+    });
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        store
+            .try_reserve_shard_throughput("stream", "shardId-000000000000", 1, 5_000)
+            .await
+            .unwrap();
+    });
+
+    assert!(store.has_throughput_window("stream", "shardId-000000000000"));
+    assert!(!store.has_throughput_window("stream", "shardId-000000000001"));
 }
 
 #[tokio::test]

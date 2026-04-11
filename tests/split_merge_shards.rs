@@ -63,6 +63,64 @@ async fn split_shard_success() {
 }
 
 #[tokio::test]
+async fn split_shard_clears_parent_throughput_window() {
+    let server = TestServer::with_options(StoreOptions {
+        create_stream_ms: 0,
+        delete_stream_ms: 0,
+        update_stream_ms: 10,
+        enforce_limits: true,
+        ..Default::default()
+    })
+    .await;
+    let name = "test-split-throughput-cleanup";
+    server.create_stream(name, 1).await;
+
+    server
+        .store
+        .try_reserve_shard_throughput(name, "shardId-000000000000", 600_000, 5_000)
+        .await
+        .unwrap();
+    assert!(
+        server
+            .store
+            .has_throughput_window(name, "shardId-000000000000")
+    );
+
+    let desc = server.describe_stream(name).await;
+    let shard = &desc["StreamDescription"]["Shards"][0];
+    let start: u128 = shard["HashKeyRange"]["StartingHashKey"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let end: u128 = shard["HashKeyRange"]["EndingHashKey"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mid = (start + end) / 2;
+
+    let res = server
+        .request(
+            "SplitShard",
+            &json!({
+                "StreamName": name,
+                "ShardToSplit": "shardId-000000000000",
+                "NewStartingHashKey": mid.to_string(),
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+
+    server.wait_for_stream_active(name).await;
+    assert!(
+        !server
+            .store
+            .has_throughput_window(name, "shardId-000000000000")
+    );
+}
+
+#[tokio::test]
 async fn split_shard_stream_not_found() {
     let server = TestServer::new().await;
     let res = server
@@ -180,6 +238,46 @@ async fn merge_shards_success() {
         shards[2]["HashKeyRange"]["EndingHashKey"],
         "340282366920938463463374607431768211455"
     );
+}
+
+#[tokio::test]
+async fn merge_shards_clears_parent_throughput_windows() {
+    let server = TestServer::with_options(StoreOptions {
+        create_stream_ms: 0,
+        delete_stream_ms: 0,
+        update_stream_ms: 10,
+        enforce_limits: true,
+        ..Default::default()
+    })
+    .await;
+    let name = "test-merge-throughput-cleanup";
+    server.create_stream(name, 2).await;
+
+    for shard_id in ["shardId-000000000000", "shardId-000000000001"] {
+        server
+            .store
+            .try_reserve_shard_throughput(name, shard_id, 600_000, 5_000)
+            .await
+            .unwrap();
+        assert!(server.store.has_throughput_window(name, shard_id));
+    }
+
+    let res = server
+        .request(
+            "MergeShards",
+            &json!({
+                "StreamName": name,
+                "ShardToMerge": "shardId-000000000000",
+                "AdjacentShardToMerge": "shardId-000000000001",
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+
+    server.wait_for_stream_active(name).await;
+    for shard_id in ["shardId-000000000000", "shardId-000000000001"] {
+        assert!(!server.store.has_throughput_window(name, shard_id));
+    }
 }
 
 #[tokio::test]

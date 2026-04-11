@@ -71,6 +71,8 @@ pub struct FileConfig {
     /// Set to `0` (the default) to disable the reaper entirely.
     /// Must be between `0` and `86400`.
     pub retention_check_interval_secs: Option<u64>,
+    /// Enable AWS-like shard write throughput throttling.
+    pub enforce_limits: Option<bool>,
     /// Maximum request body size in megabytes. Defaults to `5`.
     pub max_request_body_mb: Option<u64>,
     /// Log level (`off`, `error`, `warn`, `info`, `debug`, `trace`). Defaults to `"info"`.

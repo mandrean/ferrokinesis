@@ -99,7 +99,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     crate::runtime::spawn_background(async move {
         crate::runtime::sleep_ms(delay).await;
 
-        let _ = store_clone
+        if store_clone
             .update_stream(&name, |stream| {
                 let now = current_time_ms();
                 stream.stream_status = StreamStatus::Active;
@@ -170,7 +170,11 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
 
                 Ok(())
             })
-            .await;
+            .await
+            .is_ok()
+        {
+            store_clone.clear_throughput_windows_for_shards(&name, [shard_id_clone.as_str()]);
+        }
     });
 
     Ok(None)

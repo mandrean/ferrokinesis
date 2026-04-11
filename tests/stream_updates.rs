@@ -430,6 +430,46 @@ async fn update_shard_count_scale_down() {
 }
 
 #[tokio::test]
+async fn update_shard_count_clears_closed_shard_throughput_windows() {
+    let server = TestServer::with_options(StoreOptions {
+        create_stream_ms: 0,
+        delete_stream_ms: 0,
+        update_stream_ms: 10,
+        enforce_limits: true,
+        ..Default::default()
+    })
+    .await;
+    let name = "usc-throughput-cleanup";
+    server.create_stream(name, 2).await;
+
+    for shard_id in ["shardId-000000000000", "shardId-000000000001"] {
+        server
+            .store
+            .try_reserve_shard_throughput(name, shard_id, 600_000, 5_000)
+            .await
+            .unwrap();
+        assert!(server.store.has_throughput_window(name, shard_id));
+    }
+
+    let res = server
+        .request(
+            "UpdateShardCount",
+            &json!({
+                "StreamName": name,
+                "TargetShardCount": 4,
+                "ScalingType": "UNIFORM_SCALING",
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+
+    server.wait_for_stream_active(name).await;
+    for shard_id in ["shardId-000000000000", "shardId-000000000001"] {
+        assert!(!server.store.has_throughput_window(name, shard_id));
+    }
+}
+
+#[tokio::test]
 async fn update_shard_count_same_count_is_error() {
     let server = TestServer::new().await;
     let name = "usc-same";

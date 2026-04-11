@@ -167,10 +167,17 @@ fn sleep_with_runtime(runtime: &tokio::runtime::Runtime, duration: Duration) {
 
 impl WasiConfig {
     fn from_env() -> io::Result<Self> {
+        Self::from_reader(read_env::<String>)
+    }
+
+    fn from_reader<F>(mut read: F) -> io::Result<Self>
+    where
+        F: FnMut(&str) -> io::Result<Option<String>>,
+    {
         let defaults = StoreOptions::default();
-        let port = read_env("FERROKINESIS_PORT")?.unwrap_or(DEFAULT_PORT);
-        let max_request_body_mb =
-            read_env("FERROKINESIS_MAX_REQUEST_BODY_MB")?.unwrap_or(DEFAULT_MAX_REQUEST_BODY_MB);
+        let port = read_parsed_env(&mut read, "FERROKINESIS_PORT")?.unwrap_or(DEFAULT_PORT);
+        let max_request_body_mb = read_parsed_env(&mut read, "FERROKINESIS_MAX_REQUEST_BODY_MB")?
+            .unwrap_or(DEFAULT_MAX_REQUEST_BODY_MB);
         if max_request_body_mb == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -178,30 +185,37 @@ impl WasiConfig {
             ));
         }
 
-        let aws_region = read_env("AWS_REGION")?
-            .or(read_env("AWS_DEFAULT_REGION")?)
+        let aws_region = read("AWS_REGION")?
+            .or(read("AWS_DEFAULT_REGION")?)
             .unwrap_or_else(|| defaults.aws_region.clone());
 
         Ok(Self {
             port,
             max_request_body_mb,
-            log_level: read_env("FERROKINESIS_LOG_LEVEL")?
+            log_level: read("FERROKINESIS_LOG_LEVEL")?
                 .unwrap_or_else(|| DEFAULT_LOG_LEVEL.to_string()),
             store_options: StoreOptions {
-                create_stream_ms: read_env("FERROKINESIS_CREATE_STREAM_MS")?
+                create_stream_ms: read_parsed_env(&mut read, "FERROKINESIS_CREATE_STREAM_MS")?
                     .unwrap_or(defaults.create_stream_ms),
-                delete_stream_ms: read_env("FERROKINESIS_DELETE_STREAM_MS")?
+                delete_stream_ms: read_parsed_env(&mut read, "FERROKINESIS_DELETE_STREAM_MS")?
                     .unwrap_or(defaults.delete_stream_ms),
-                update_stream_ms: read_env("FERROKINESIS_UPDATE_STREAM_MS")?
+                update_stream_ms: read_parsed_env(&mut read, "FERROKINESIS_UPDATE_STREAM_MS")?
                     .unwrap_or(defaults.update_stream_ms),
-                shard_limit: read_env("FERROKINESIS_SHARD_LIMIT")?.unwrap_or(defaults.shard_limit),
-                iterator_ttl_seconds: read_env("FERROKINESIS_ITERATOR_TTL_SECONDS")?
-                    .unwrap_or(defaults.iterator_ttl_seconds),
-                retention_check_interval_secs: read_env(
+                shard_limit: read_parsed_env(&mut read, "FERROKINESIS_SHARD_LIMIT")?
+                    .unwrap_or(defaults.shard_limit),
+                iterator_ttl_seconds: read_parsed_env(
+                    &mut read,
+                    "FERROKINESIS_ITERATOR_TTL_SECONDS",
+                )?
+                .unwrap_or(defaults.iterator_ttl_seconds),
+                retention_check_interval_secs: read_parsed_env(
+                    &mut read,
                     "FERROKINESIS_RETENTION_CHECK_INTERVAL_SECS",
                 )?
                 .unwrap_or(defaults.retention_check_interval_secs),
-                aws_account_id: read_env("AWS_ACCOUNT_ID")?
+                enforce_limits: read_parsed_env(&mut read, "FERROKINESIS_ENFORCE_LIMITS")?
+                    .unwrap_or(defaults.enforce_limits),
+                aws_account_id: read("AWS_ACCOUNT_ID")?
                     .unwrap_or_else(|| defaults.aws_account_id.clone()),
                 aws_region,
             },
@@ -214,6 +228,21 @@ impl WasiConfig {
             .try_into()
             .expect("max request body size overflows usize")
     }
+}
+
+fn read_parsed_env<T, F>(read: &mut F, key: &str) -> io::Result<Option<T>>
+where
+    T: FromStr,
+    T::Err: std::fmt::Display,
+    F: FnMut(&str) -> io::Result<Option<String>>,
+{
+    read(key)?
+        .map(|value| {
+            value.parse::<T>().map_err(|err| {
+                io::Error::new(io::ErrorKind::InvalidInput, format!("invalid {key}: {err}"))
+            })
+        })
+        .transpose()
 }
 
 fn init_tracing(log_level: &str) -> Result<(), DynError> {
@@ -516,6 +545,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ferrokinesis::store::Store;
     use std::net::Shutdown;
     use std::thread;
 
@@ -637,5 +667,25 @@ mod tests {
     fn header_end_finds_crlf_boundary() {
         assert_eq!(header_end(b"GET / HTTP/1.1\r\n\r\n"), Some(18));
         assert_eq!(header_end(b"GET / HTTP/1.1\r\n"), None);
+    }
+
+    #[tokio::test]
+    async fn from_reader_propagates_enforce_limits_into_store_behavior() {
+        let mut env = std::collections::HashMap::from([(
+            "FERROKINESIS_ENFORCE_LIMITS".to_string(),
+            "true".to_string(),
+        )]);
+        let config = WasiConfig::from_reader(|key| Ok(env.remove(key))).unwrap();
+        let store = Store::new(config.store_options);
+
+        let first = store
+            .try_reserve_shard_throughput("stream", "shardId-000000000000", 1_048_000, 2_000)
+            .await;
+        assert!(first.is_ok());
+
+        let second = store
+            .try_reserve_shard_throughput("stream", "shardId-000000000000", 1_000, 2_000)
+            .await;
+        assert!(second.is_err(), "WASI env parsing should enable throttling");
     }
 }

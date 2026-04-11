@@ -134,9 +134,6 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     }
 
     tracing::trace!(stream = %stream_name, records = batch.len(), "records put");
-    // NOTE: The emulator never partially fails individual records within a batch,
-    // so FailedRecordCount is always 0. Real Kinesis can return non-zero here
-    // when per-shard throughput limits are hit.
     Ok(Some(json!({
         "FailedRecordCount": 0,
         "Records": return_records,

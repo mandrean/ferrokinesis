@@ -1,5 +1,6 @@
 mod common;
 
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use common::*;
 use ferrokinesis::store::StoreOptions;
 use serde_json::{Value, json};
@@ -34,6 +35,65 @@ async fn put_records_success() {
         assert!(!record["SequenceNumber"].as_str().unwrap().is_empty());
         assert!(record.get("ErrorCode").is_none() || record["ErrorCode"].is_null());
     }
+}
+
+#[tokio::test]
+async fn put_records_large_batch_succeeds_by_default_without_limit_enforcement() {
+    let server = TestServer::new().await;
+    let name = "test-put-records-default-no-throttle";
+    let payload = BASE64.encode(vec![b'a'; 600_000]);
+    server.create_stream(name, 1).await;
+
+    let res = server
+        .request(
+            "PutRecords",
+            &json!({
+                "StreamName": name,
+                "Records": [
+                    {"Data": payload.clone(), "PartitionKey": "key"},
+                    {"Data": payload.clone(), "PartitionKey": "key"},
+                ],
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["FailedRecordCount"], 0);
+    assert_eq!(body["Records"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn put_records_ignore_throughput_limits_on_base_branch() {
+    let server = TestServer::with_options(StoreOptions {
+        create_stream_ms: 0,
+        delete_stream_ms: 0,
+        update_stream_ms: 0,
+        shard_limit: 50,
+        enforce_limits: true,
+        ..Default::default()
+    })
+    .await;
+    let name = "test-put-records-throughput-limits";
+    let payload = BASE64.encode(vec![b'b'; 600_000]);
+    server.create_stream(name, 1).await;
+
+    let res = server
+        .request(
+            "PutRecords",
+            &json!({
+                "StreamName": name,
+                "Records": [
+                    {"Data": payload.clone(), "PartitionKey": "key"},
+                    {"Data": payload.clone(), "PartitionKey": "key"},
+                ],
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["FailedRecordCount"], 0);
+    assert_eq!(body["Records"].as_array().unwrap().len(), 2);
+    assert_eq!(server.store.get_record_store(name).await.len(), 2);
 }
 
 #[tokio::test]

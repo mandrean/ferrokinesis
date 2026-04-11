@@ -26,7 +26,10 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
+
+const DEFAULT_SHARD_WRITE_BYTES_PER_SEC: u64 = 1024 * 1024;
+const DEFAULT_SHARD_WRITE_RECORDS_PER_SEC: u64 = 1000;
 
 /// Errors that can occur when probing store health.
 #[derive(Debug, thiserror::Error)]
@@ -69,6 +72,8 @@ pub struct StoreOptions {
     /// Background retention-reaper check interval in seconds.
     /// Set to `0` (default) to disable the reaper.
     pub retention_check_interval_secs: u64,
+    /// Enable AWS-like shard write throughput throttling. Disabled by default.
+    pub enforce_limits: bool,
     /// Simulated AWS account ID (12 digits). Defaults to `"000000000000"`.
     pub aws_account_id: String,
     /// Simulated AWS region. Defaults to `"us-east-1"`.
@@ -84,6 +89,7 @@ impl Default for StoreOptions {
             shard_limit: 10,
             iterator_ttl_seconds: 300,
             retention_check_interval_secs: 0,
+            enforce_limits: false,
             aws_account_id: "000000000000".to_string(),
             aws_region: "us-east-1".to_string(),
         }
@@ -123,6 +129,12 @@ pub struct SequenceAllocation {
 /// Per-shard record map: shard_hex → sorted records.
 type ShardRecords = DashMap<String, Arc<RwLock<BTreeMap<String, Vec<u8>>>>>;
 
+struct ShardThroughputWindow {
+    window_start_ms: u64,
+    bytes: u64,
+    records: u64,
+}
+
 /// Shared inner state behind an [`Arc`] for cheap [`Store`] clones.
 struct StoreInner {
     /// Stream metadata entries.
@@ -134,6 +146,7 @@ struct StoreInner {
     policies: DashMap<String, String>,
     resource_tags: DashMap<String, BTreeMap<String, String>>,
     account_settings: RwLock<Value>,
+    throughput_windows: DashMap<String, Arc<Mutex<ShardThroughputWindow>>>,
 }
 
 /// Handle to the concurrent in-memory stream store.
@@ -230,6 +243,7 @@ impl Store {
                 policies: DashMap::new(),
                 resource_tags: DashMap::new(),
                 account_settings: RwLock::new(Value::Object(Default::default())),
+                throughput_windows: DashMap::new(),
             }),
             #[cfg(feature = "server")]
             capture_writer,
@@ -273,6 +287,7 @@ impl Store {
     pub async fn delete_stream(&self, name: &str) {
         self.inner.streams.remove(name);
         self.inner.stream_records.remove(name);
+        self.clear_throughput_windows_for_stream(name);
     }
 
     /// Returns `true` if a stream with the given name exists.
@@ -847,6 +862,74 @@ impl Store {
         }
         0
     }
+
+    /// Reserves shard write throughput for a pending record.
+    ///
+    /// When `enforce_limits` is disabled this is a no-op. When enabled, writes
+    /// are capped per stream/shard at 1 MiB/s and 1000 records/s.
+    pub async fn try_reserve_shard_throughput(
+        &self,
+        stream_name: &str,
+        shard_id: &str,
+        bytes: u64,
+        now_ms: u64,
+    ) -> Result<(), KinesisErrorResponse> {
+        if !self.options.enforce_limits {
+            return Ok(());
+        }
+
+        let key = throughput_window_key(stream_name, shard_id);
+        let window = self
+            .inner
+            .throughput_windows
+            .entry(key)
+            .or_insert_with(|| {
+                Arc::new(Mutex::new(ShardThroughputWindow {
+                    window_start_ms: now_ms,
+                    bytes: 0,
+                    records: 0,
+                }))
+            })
+            .clone();
+
+        let mut window = window.lock().await;
+        roll_throughput_window(&mut window, now_ms);
+        reserve_throughput_window(&mut window, bytes)?;
+        Ok(())
+    }
+
+    fn clear_throughput_windows_for_stream(&self, stream_name: &str) {
+        let prefix = format!("{stream_name}:");
+        self.inner
+            .throughput_windows
+            .retain(|key, _| !key.starts_with(&prefix));
+    }
+
+    pub(crate) fn clear_throughput_windows_for_shards<I, S>(&self, stream_name: &str, shard_ids: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let keys = shard_ids
+            .into_iter()
+            .map(|shard_id| throughput_window_key(stream_name, shard_id.as_ref()))
+            .collect::<Vec<_>>();
+
+        if keys.is_empty() {
+            return;
+        }
+
+        self.inner
+            .throughput_windows
+            .retain(|key, _| !keys.iter().any(|candidate| candidate == key));
+    }
+
+    #[doc(hidden)]
+    pub fn has_throughput_window(&self, stream_name: &str, shard_id: &str) -> bool {
+        self.inner
+            .throughput_windows
+            .contains_key(&throughput_window_key(stream_name, shard_id))
+    }
 }
 
 // --- Free functions ---
@@ -896,4 +979,34 @@ fn route_hash_to_shard(stream: &Stream, hash_key: &u128) -> (i64, String, u64) {
         }
     }
     (0, String::new(), 0)
+}
+
+fn throughput_window_key(stream_name: &str, shard_id: &str) -> String {
+    format!("{stream_name}:{shard_id}")
+}
+
+fn roll_throughput_window(window: &mut ShardThroughputWindow, now_ms: u64) {
+    if now_ms.saturating_sub(window.window_start_ms) >= 1000 {
+        window.window_start_ms = now_ms;
+        window.bytes = 0;
+        window.records = 0;
+    }
+}
+
+fn reserve_throughput_window(
+    window: &mut ShardThroughputWindow,
+    bytes: u64,
+) -> Result<(), KinesisErrorResponse> {
+    if window.bytes.saturating_add(bytes) > DEFAULT_SHARD_WRITE_BYTES_PER_SEC
+        || window.records.saturating_add(1) > DEFAULT_SHARD_WRITE_RECORDS_PER_SEC
+    {
+        return Err(KinesisErrorResponse::client_error(
+            "ProvisionedThroughputExceededException",
+            Some("Rate exceeded for shard."),
+        ));
+    }
+
+    window.bytes += bytes;
+    window.records += 1;
+    Ok(())
 }
