@@ -14,6 +14,7 @@ Options:
   --repo-root DIR               Repository root (default: current directory)
   --state-dir DIR               Durable state directory (default: <output>/state)
   --max-retained-bytes N        Retained-byte cap (default: 268435456)
+  --iterator-ttl-secs N         Iterator TTL in seconds (default: 5)
   --records-per-cycle N         PutRecord calls per cycle (default: 200)
   --payload-bytes N             Raw payload bytes before base64 (default: 256)
   --skip-build                  Skip `cargo build --release --bin ferrokinesis`
@@ -28,10 +29,35 @@ require_cmd() {
     fi
 }
 
+absolute_path() {
+    python3 - "$1" <<'PY'
+import os
+import sys
+
+print(os.path.abspath(sys.argv[1]))
+PY
+}
+
 metric_value_from_text() {
     local text=$1
     local metric=$2
     awk -v metric="$metric" '$1 == metric { value = $2 } END { if (value != "") print value; else print "0" }' <<<"$text"
+}
+
+fetch_metrics_text() {
+    curl -sf "http://127.0.0.1:${PORT}/metrics" || true
+}
+
+write_phase() {
+    printf '%s' "$1" >"$PHASE_FILE"
+}
+
+read_phase() {
+    if [[ -f "$PHASE_FILE" ]]; then
+        cat "$PHASE_FILE"
+    else
+        printf 'startup'
+    fi
 }
 
 request_json() {
@@ -104,26 +130,56 @@ wait_stream_deleted() {
     return 1
 }
 
+wait_for_cleanup() {
+    local max_attempts=${1:-30}
+    local attempt=0
+    while (( attempt < max_attempts )); do
+        attempt=$((attempt + 1))
+        local metrics_text streams retained_records active_iterators open_shards
+        metrics_text="$(fetch_metrics_text)"
+        streams="$(metric_value_from_text "$metrics_text" "ferrokinesis_streams")"
+        retained_records="$(metric_value_from_text "$metrics_text" "ferrokinesis_retained_records")"
+        active_iterators="$(metric_value_from_text "$metrics_text" "ferrokinesis_active_iterators")"
+        open_shards="$(metric_value_from_text "$metrics_text" "ferrokinesis_open_shards")"
+        if [[ "$streams" == "0" && "$retained_records" == "0" && "$active_iterators" == "0" && "$open_shards" == "0" ]]; then
+            return 0
+        fi
+        sleep 1
+    done
+    echo "cleanup state not reached before timeout" >>"$HARNESS_LOG"
+    return 1
+}
+
+sample_once() {
+    local ts vmrss_kb vmhwm_kb vmrss_bytes vmhwm_bytes ready_http metrics_text metrics_json ready_http_json phase_json
+    ts="$(date -u +%s)"
+    if [[ -r "/proc/${SERVER_PID}/status" ]]; then
+        vmrss_kb="$(awk '/^VmRSS:/ {print $2; exit}' "/proc/${SERVER_PID}/status" 2>/dev/null || echo 0)"
+        vmhwm_kb="$(awk '/^VmHWM:/ {print $2; exit}' "/proc/${SERVER_PID}/status" 2>/dev/null || echo 0)"
+    else
+        vmrss_kb="$(ps -o rss= -p "$SERVER_PID" 2>/dev/null | awk '{print $1}' || echo 0)"
+        vmhwm_kb="$vmrss_kb"
+    fi
+    vmrss_bytes=$((vmrss_kb * 1024))
+    vmhwm_bytes=$((vmhwm_kb * 1024))
+    echo "${ts},${vmrss_bytes},${vmhwm_bytes}" >>"$RSS_FILE"
+
+    ready_http="$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${PORT}/_health/ready" || printf '000')"
+    metrics_text="$(fetch_metrics_text)"
+    metrics_json="$(printf '%s' "$metrics_text" | jq -Rs .)"
+    ready_http_json="$(printf '%s' "$ready_http" | jq -Rs .)"
+    phase_json="$(read_phase | jq -Rs .)"
+    printf '{"ts":%s,"phase":%s,"ready_http":%s,"metrics":%s}\n' \
+        "$ts" \
+        "$phase_json" \
+        "$ready_http_json" \
+        "$metrics_json" \
+        >>"$METRICS_FILE"
+}
+
 sample_loop() {
     while kill -0 "$SERVER_PID" >/dev/null 2>&1; do
-        local ts vmrss_kb vmhwm_kb vmrss_bytes vmhwm_bytes ready_http metrics_text metrics_json
-        ts="$(date -u +%s)"
-        if [[ -r "/proc/${SERVER_PID}/status" ]]; then
-            vmrss_kb="$(awk '/^VmRSS:/ {print $2; exit}' "/proc/${SERVER_PID}/status" 2>/dev/null || echo 0)"
-            vmhwm_kb="$(awk '/^VmHWM:/ {print $2; exit}' "/proc/${SERVER_PID}/status" 2>/dev/null || echo 0)"
-        else
-            vmrss_kb="$(ps -o rss= -p "$SERVER_PID" 2>/dev/null | awk '{print $1}' || echo 0)"
-            vmhwm_kb="$vmrss_kb"
-        fi
-        vmrss_bytes=$((vmrss_kb * 1024))
-        vmhwm_bytes=$((vmhwm_kb * 1024))
-        echo "${ts},${vmrss_bytes},${vmhwm_bytes}" >>"$RSS_FILE"
-
-        ready_http="$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${PORT}/_health/ready" || echo 000)"
-        metrics_text="$(curl -sf "http://127.0.0.1:${PORT}/metrics" || true)"
-        metrics_json="$(printf '%s' "$metrics_text" | jq -Rs .)"
-        echo "{\"ts\":${ts},\"ready_http\":${ready_http},\"metrics\":${metrics_json}}" >>"$METRICS_FILE"
-
+        sample_once
         sleep "$SAMPLE_INTERVAL_SECS"
     done
 }
@@ -136,6 +192,7 @@ PROFILE="smoke"
 REPO_ROOT="$(pwd)"
 STATE_DIR=""
 MAX_RETAINED_BYTES=268435456
+ITERATOR_TTL_SECS=5
 RECORDS_PER_CYCLE=200
 PAYLOAD_BYTES=256
 BUILD_BINARY=1
@@ -174,6 +231,10 @@ while [[ $# -gt 0 ]]; do
             MAX_RETAINED_BYTES=$2
             shift 2
             ;;
+        --iterator-ttl-secs)
+            ITERATOR_TTL_SECS=$2
+            shift 2
+            ;;
         --records-per-cycle)
             RECORDS_PER_CYCLE=$2
             shift 2
@@ -210,7 +271,8 @@ require_cmd jq
 require_cmd python3
 require_cmd base64
 
-OUTPUT_DIR="$(cd "$(dirname "$OUTPUT_DIR")" && pwd)/$(basename "$OUTPUT_DIR")"
+mkdir -p "$(dirname "$OUTPUT_DIR")"
+OUTPUT_DIR="$(absolute_path "$OUTPUT_DIR")"
 mkdir -p "$OUTPUT_DIR"
 
 HARNESS_LOG="${OUTPUT_DIR}/harness.log"
@@ -218,6 +280,7 @@ SERVER_LOG="${OUTPUT_DIR}/server.log"
 RSS_FILE="${OUTPUT_DIR}/rss.csv"
 METRICS_FILE="${OUTPUT_DIR}/metrics.ndjson"
 SUMMARY_FILE="${OUTPUT_DIR}/summary.json"
+PHASE_FILE="${OUTPUT_DIR}/phase.txt"
 
 if [[ -z "$STATE_DIR" ]]; then
     STATE_DIR="${OUTPUT_DIR}/state_dir"
@@ -248,9 +311,11 @@ trap cleanup EXIT
     echo "repo_root=${REPO_ROOT}"
     echo "state_dir=${STATE_DIR}"
     echo "max_retained_bytes=${MAX_RETAINED_BYTES}"
+    echo "iterator_ttl_secs=${ITERATOR_TTL_SECS}"
     echo "records_per_cycle=${RECORDS_PER_CYCLE}"
     echo "payload_bytes=${PAYLOAD_BYTES}"
 } >>"$HARNESS_LOG"
+write_phase "startup"
 
 cd "$REPO_ROOT"
 if [[ "$BUILD_BINARY" == "1" ]]; then
@@ -269,6 +334,7 @@ fi
     --state-dir "$STATE_DIR" \
     --snapshot-interval-secs 30 \
     --max-retained-bytes "$MAX_RETAINED_BYTES" \
+    --iterator-ttl-seconds "$ITERATOR_TTL_SECS" \
     --create-stream-ms 0 \
     --delete-stream-ms 0 \
     --update-stream-ms 0 \
@@ -299,6 +365,7 @@ PY
 while (( $(date -u +%s) < END_TS )); do
     STREAM_NAME="memory-gate-${PROFILE}-${CYCLES_COMPLETED}"
     echo "cycle ${CYCLES_COMPLETED}: stream=${STREAM_NAME}" >>"$HARNESS_LOG"
+    write_phase "workload"
 
     request_json "CreateStream" "{\"StreamName\":\"${STREAM_NAME}\",\"ShardCount\":1}" >/dev/null
     wait_stream_active "$STREAM_NAME" 45
@@ -333,11 +400,15 @@ while (( $(date -u +%s) < END_TS )); do
         fi
     done
 
+    write_phase "cleanup"
     request_json "DeleteStream" "{\"StreamName\":\"${STREAM_NAME}\"}" >/dev/null
     wait_stream_deleted "$STREAM_NAME" 60
+    wait_for_cleanup "$((ITERATOR_TTL_SECS + 30))"
+    sleep "$SAMPLE_INTERVAL_SECS"
     CYCLES_COMPLETED=$((CYCLES_COMPLETED + 1))
 done
 
+write_phase "complete"
 sleep "$SAMPLE_INTERVAL_SECS"
 
 FINAL_METRICS="$(curl -sf "http://127.0.0.1:${PORT}/metrics" || true)"
@@ -358,7 +429,7 @@ sample_interval_secs = int(sample_interval_secs)
 cycles_completed = int(cycles_completed)
 final_vmhwm_bytes = int(final_vmhwm_bytes)
 
-rss_values = []
+rss_samples = []
 with open(rss_file, "r", encoding="utf-8") as fh:
     next(fh, None)
     for line in fh:
@@ -368,7 +439,7 @@ with open(rss_file, "r", encoding="utf-8") as fh:
         parts = line.split(",")
         if len(parts) != 3:
             continue
-        rss_values.append(int(parts[1]))
+        rss_samples.append((int(parts[0]), int(parts[1])))
 
 readiness_failures = 0
 rejected_writes_total = 0
@@ -379,6 +450,7 @@ open_shards_max = 0
 active_iterators_max = 0
 replay_complete_last = 0
 last_snapshot_timestamp_ms_last = 0
+cleanup_timestamps = set()
 
 def metric_from_text(text: str, name: str, default: int = 0) -> int:
     value = default
@@ -402,23 +474,44 @@ with open(metrics_file, "r", encoding="utf-8") as fh:
         if not line:
             continue
         sample = json.loads(line)
-        ready_http = int(sample.get("ready_http", 0))
+        ready_http_raw = sample.get("ready_http", "000")
+        try:
+            ready_http = int(ready_http_raw)
+        except (TypeError, ValueError):
+            ready_http = 0
         if ready_http != 200:
             readiness_failures += 1
+        phase = sample.get("phase", "")
         text = sample.get("metrics", "")
+        retained_bytes = metric_from_text(text, "ferrokinesis_retained_bytes", 0)
+        retained_records = metric_from_text(text, "ferrokinesis_retained_records", 0)
+        streams = metric_from_text(text, "ferrokinesis_streams", 0)
+        open_shards = metric_from_text(text, "ferrokinesis_open_shards", 0)
+        active_iterators = metric_from_text(text, "ferrokinesis_active_iterators", 0)
         rejected_writes_total = metric_from_text(text, "ferrokinesis_rejected_writes_total", rejected_writes_total)
-        retained_bytes_max = max(retained_bytes_max, metric_from_text(text, "ferrokinesis_retained_bytes", 0))
-        retained_records_max = max(retained_records_max, metric_from_text(text, "ferrokinesis_retained_records", 0))
-        streams_max = max(streams_max, metric_from_text(text, "ferrokinesis_streams", 0))
-        open_shards_max = max(open_shards_max, metric_from_text(text, "ferrokinesis_open_shards", 0))
-        active_iterators_max = max(active_iterators_max, metric_from_text(text, "ferrokinesis_active_iterators", 0))
+        retained_bytes_max = max(retained_bytes_max, retained_bytes)
+        retained_records_max = max(retained_records_max, retained_records)
+        streams_max = max(streams_max, streams)
+        open_shards_max = max(open_shards_max, open_shards)
+        active_iterators_max = max(active_iterators_max, active_iterators)
         replay_complete_last = metric_from_text(text, "ferrokinesis_replay_complete", replay_complete_last)
         last_snapshot_timestamp_ms_last = metric_from_text(
             text, "ferrokinesis_last_snapshot_timestamp_ms", last_snapshot_timestamp_ms_last
         )
+        if (
+            phase == "cleanup"
+            and streams == 0
+            and open_shards == 0
+            and retained_records == 0
+            and active_iterators == 0
+        ):
+            cleanup_timestamps.add(int(sample["ts"]))
 
+rss_values = [value for _, value in rss_samples]
+cleanup_rss_values = [value for ts, value in rss_samples if ts in cleanup_timestamps]
 rss_peak = max(rss_values) if rss_values else 0
 rss_median = int(statistics.median(rss_values)) if rss_values else 0
+post_cleanup_rss_median = int(statistics.median(cleanup_rss_values)) if cleanup_rss_values else 0
 
 summary = {
     "profile": profile,
@@ -428,7 +521,8 @@ summary = {
     "rss_samples_count": len(rss_values),
     "vm_rss_peak_bytes": rss_peak,
     "rss_median_bytes": rss_median,
-    "post_cleanup_rss_median_bytes": rss_median,
+    "post_cleanup_rss_median_bytes": post_cleanup_rss_median,
+    "post_cleanup_rss_samples_count": len(cleanup_rss_values),
     "vm_hwm_bytes": max(final_vmhwm_bytes, rss_peak),
     "readiness_failures": readiness_failures,
     "rejected_writes_total": rejected_writes_total,
