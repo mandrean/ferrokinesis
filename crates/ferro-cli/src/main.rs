@@ -236,10 +236,10 @@ struct TailArgs {
     #[arg(long, value_enum, default_value_t = DecodeMode::Auto)]
     decode: DecodeMode,
 
-    #[arg(long, action = ArgAction::SetTrue)]
+    #[arg(long, action = ArgAction::SetTrue, conflicts_with = "no_follow")]
     follow: bool,
 
-    #[arg(long = "no-follow", action = ArgAction::SetTrue)]
+    #[arg(long = "no-follow", action = ArgAction::SetTrue, conflicts_with = "follow")]
     no_follow: bool,
 
     #[arg(long)]
@@ -654,8 +654,14 @@ async fn run_consumers(
 }
 
 async fn run_put(client: &ApiClient, output_mode: OutputMode, args: PutArgs) -> Result<()> {
+    let trim_base64_whitespace = args.base64 && (args.file.is_some() || args.stdin);
     let bytes = read_bytes_input(args.data, args.file, args.stdin)?;
     let data = if args.base64 {
+        let bytes = if trim_base64_whitespace {
+            trim_ascii_whitespace(&bytes).to_vec()
+        } else {
+            bytes
+        };
         String::from_utf8(bytes)
             .map_err(|_| Error::InvalidInput("base64 input must be valid UTF-8".into()))?
     } else {
@@ -694,7 +700,13 @@ async fn run_tail(client: &ApiClient, output_mode: OutputMode, args: TailArgs) -
     };
     validate_iterator_spec(&iterator_spec)?;
 
-    let follow = !args.no_follow;
+    let follow = match (args.follow, args.no_follow) {
+        (true, false) => true,
+        (false, true) => false,
+        (false, false) => true,
+        (true, true) => unreachable!("clap enforces conflicting tail follow flags"),
+    };
+    validate_tail_output_mode(output_mode, follow, args.limit)?;
     let shard_ids = resolve_shard_ids(client, &stream, &args.shard_ids).await?;
     let tail_config = TailConfig {
         output_mode,
@@ -1037,6 +1049,7 @@ async fn tail_polling(client: &ApiClient, config: PollingTailConfig) -> Result<(
         poll_interval,
     } = config;
     let mut shards = Vec::with_capacity(shard_ids.len());
+    let mut json_records = Vec::new();
     for shard_id in shard_ids {
         let iterator =
             get_shard_iterator(client, &stream, &shard_id, &iterator_spec, None, false).await?;
@@ -1098,20 +1111,20 @@ async fn tail_polling(client: &ApiClient, config: PollingTailConfig) -> Result<(
                     approximate_arrival_timestamp: record["ApproximateArrivalTimestamp"].as_f64(),
                     data: record["Data"].as_str().unwrap_or("").to_string(),
                 };
-                emit_tail_record(output_mode, &tail_record, decode)?;
+                handle_tail_record(output_mode, &mut json_records, &tail_record, decode)?;
                 printed += 1;
                 shard.last_sequence_number = Some(tail_record.sequence_number.clone());
                 if limit.is_some_and(|limit| printed >= limit) {
-                    return Ok(());
+                    return finish_tail_output(output_mode, json_records);
                 }
             }
         }
 
         if !follow && !saw_records {
-            return Ok(());
+            return finish_tail_output(output_mode, json_records);
         }
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => return Ok(()),
+            _ = tokio::signal::ctrl_c() => return finish_tail_output(output_mode, json_records),
             _ = tokio::time::sleep(poll_interval) => {}
         }
     }
@@ -1133,6 +1146,7 @@ async fn tail_efo(client: &ApiClient, config: EfoTailConfig) -> Result<()> {
     } = config;
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut handles = Vec::with_capacity(shard_ids.len());
+    let mut json_records = Vec::new();
 
     for shard_id in shard_ids {
         let tx = tx.clone();
@@ -1163,7 +1177,7 @@ async fn tail_efo(client: &ApiClient, config: EfoTailConfig) -> Result<()> {
     while let Some(event) = rx.recv().await {
         match event {
             TailEvent::Record(record) => {
-                emit_tail_record(output_mode, &record, decode)?;
+                handle_tail_record(output_mode, &mut json_records, &record, decode)?;
                 printed += 1;
                 if limit.is_some_and(|limit| printed >= limit) {
                     for handle in &handles {
@@ -1185,7 +1199,7 @@ async fn tail_efo(client: &ApiClient, config: EfoTailConfig) -> Result<()> {
         let _ = handle.await;
     }
 
-    Ok(())
+    finish_tail_output(output_mode, json_records)
 }
 
 async fn run_efo_shard(
@@ -1371,34 +1385,73 @@ fn validate_iterator_spec(spec: &IteratorSpec) -> Result<()> {
     }
 }
 
+fn validate_tail_output_mode(
+    output_mode: OutputMode,
+    follow: bool,
+    limit: Option<usize>,
+) -> Result<()> {
+    if output_mode == OutputMode::Json && follow && limit.is_none() {
+        return Err(Error::InvalidInput(
+            "--json tail requires a bounded run; use --limit or --no-follow, or use --ndjson for streaming output"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+fn handle_tail_record(
+    output_mode: OutputMode,
+    json_records: &mut Vec<Value>,
+    record: &TailRecord,
+    decode: DecodeMode,
+) -> Result<()> {
+    if output_mode == OutputMode::Json {
+        json_records.push(tail_record_value(record, decode));
+        Ok(())
+    } else {
+        emit_tail_record(output_mode, record, decode)
+    }
+}
+
+fn finish_tail_output(output_mode: OutputMode, json_records: Vec<Value>) -> Result<()> {
+    if output_mode == OutputMode::Json {
+        emit_single_value(OutputMode::Json, &Value::Array(json_records))?;
+    }
+    Ok(())
+}
+
 fn emit_tail_record(
     output_mode: OutputMode,
     record: &TailRecord,
     decode: DecodeMode,
 ) -> Result<()> {
-    let payload = decode_payload(&record.data, decode);
     match output_mode {
         OutputMode::Human => {
+            let payload = decode_payload(&record.data, decode);
             let timestamp = format_timestamp(record.approximate_arrival_timestamp);
             println!(
                 "{}\t{}\t{}\t{}\t{}",
                 timestamp, record.shard_id, record.sequence_number, record.partition_key, payload
             );
         }
-        OutputMode::Json | OutputMode::Ndjson => {
-            let value = json!({
-                "StreamName": record.stream,
-                "ShardId": record.shard_id,
-                "SequenceNumber": record.sequence_number,
-                "PartitionKey": record.partition_key,
-                "ApproximateArrivalTimestamp": record.approximate_arrival_timestamp,
-                "Data": record.data,
-                "Decoded": payload,
-            });
-            emit_single_value(OutputMode::Ndjson, &value)?;
+        OutputMode::Ndjson => {
+            emit_single_value(OutputMode::Ndjson, &tail_record_value(record, decode))?
         }
+        OutputMode::Json => unreachable!("JSON tail output should be buffered before emission"),
     }
     Ok(())
+}
+
+fn tail_record_value(record: &TailRecord, decode: DecodeMode) -> Value {
+    json!({
+        "StreamName": record.stream,
+        "ShardId": record.shard_id,
+        "SequenceNumber": record.sequence_number,
+        "PartitionKey": record.partition_key,
+        "ApproximateArrivalTimestamp": record.approximate_arrival_timestamp,
+        "Data": record.data,
+        "Decoded": decode_payload(&record.data, decode),
+    })
 }
 
 fn decode_payload(data: &str, decode: DecodeMode) -> String {
@@ -1461,6 +1514,19 @@ fn read_bytes_input(data: Option<String>, file: Option<PathBuf>, stdin: bool) ->
     } else {
         Err(Error::InvalidInput("missing input".into()))
     }
+}
+
+fn trim_ascii_whitespace(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .rposition(|byte| !byte.is_ascii_whitespace())
+        .map(|index| index + 1)
+        .unwrap_or(start);
+    &bytes[start..end]
 }
 
 fn read_json_input(body: Option<String>, body_file: Option<PathBuf>, stdin: bool) -> Result<Value> {
