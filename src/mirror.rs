@@ -89,27 +89,7 @@ impl MirrorDeadLetterWriter {
         Ok(Self { sender })
     }
 
-    fn enqueue(
-        &self,
-        target: String,
-        content_type: String,
-        body: Bytes,
-        local_result: MirrorableResponse,
-        reason: DeadLetterReason,
-        mirror_target: String,
-        error: Option<String>,
-        attempts: usize,
-    ) {
-        let job = DeadLetterJob {
-            target,
-            content_type,
-            body,
-            local_result,
-            reason,
-            mirror_target,
-            error,
-            attempts,
-        };
+    fn enqueue(&self, job: DeadLetterJob) {
         match self.sender.try_send(job) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
@@ -422,15 +402,16 @@ impl Mirror {
         let permit = match self.semaphore.clone().try_acquire_owned() {
             Ok(permit) => permit,
             Err(_) => {
-                self.dead_letter_local_write_failure(
+                self.dead_letter_local_write_failure(DeadLetterJob {
                     target,
                     content_type,
                     body,
                     local_result,
-                    DeadLetterReason::Backpressure,
-                    Some("mirror semaphore exhausted".to_string()),
-                    0,
-                );
+                    reason: DeadLetterReason::Backpressure,
+                    mirror_target: self.url.clone(),
+                    error: Some("mirror semaphore exhausted".to_string()),
+                    attempts: 0,
+                });
                 tracing::warn!("backpressure: dropping mirrored request");
                 return;
             }
@@ -444,29 +425,11 @@ impl Mirror {
         });
     }
 
-    fn dead_letter_local_write_failure(
-        &self,
-        target: String,
-        content_type: String,
-        body: Bytes,
-        local_result: MirrorableResponse,
-        reason: DeadLetterReason,
-        error: Option<String>,
-        attempts: usize,
-    ) {
+    fn dead_letter_local_write_failure(&self, job: DeadLetterJob) {
         let Some(ref writer) = self.dead_letter_writer else {
             return;
         };
-        writer.enqueue(
-            target,
-            content_type,
-            body,
-            local_result,
-            reason,
-            self.url.clone(),
-            error,
-            attempts,
-        );
+        writer.enqueue(job);
     }
 
     async fn forward(
