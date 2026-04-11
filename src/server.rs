@@ -474,6 +474,16 @@ pub async fn handler(
     }
 
     let span = tracing::info_span!("kinesis", %operation, %request_id);
+    #[cfg(feature = "chaos")]
+    let request_chaos_plan = store.chaos_request_plan(operation);
+
+    #[cfg(feature = "chaos")]
+    if let Some(ref err) = request_chaos_plan.terminal_error {
+        if request_chaos_plan.latency_ms > 0 {
+            crate::runtime::sleep_ms(request_chaos_plan.latency_ms).await;
+        }
+        return log_and_send_error(&span, &response_headers, response_content_type, err);
+    }
 
     // Handle SubscribeToShard separately (streaming response)
     if operation == Operation::SubscribeToShard {
@@ -504,6 +514,10 @@ pub async fn handler(
                     log_and_send_error(&span, &response_headers, response_content_type, &err)
                 }
             };
+            #[cfg(feature = "chaos")]
+            if request_chaos_plan.latency_ms > 0 {
+                crate::runtime::sleep_ms(request_chaos_plan.latency_ms).await;
+            }
             return finalize_response(&store, Some(operation), None, request_started_ms, response);
         }
 
@@ -513,6 +527,10 @@ pub async fn handler(
                 constants::INVALID_ARGUMENT,
                 Some("SubscribeToShard is not supported in this build."),
             );
+            #[cfg(feature = "chaos")]
+            if request_chaos_plan.latency_ms > 0 {
+                crate::runtime::sleep_ms(request_chaos_plan.latency_ms).await;
+            }
             let response =
                 log_and_send_error(&span, &response_headers, response_content_type, &err);
             return finalize_response(&store, Some(operation), None, request_started_ms, response);
@@ -520,9 +538,33 @@ pub async fn handler(
     }
 
     // Execute action
-    let dispatch_result = actions::dispatch(&store, operation, data)
-        .instrument(span.clone())
-        .await;
+    #[cfg(feature = "chaos")]
+    let mut put_records_chaos_affected = false;
+    let dispatch_result = if operation == Operation::PutRecords {
+        #[cfg(feature = "chaos")]
+        {
+            match actions::put_records::execute_with_outcome(&store, data)
+                .instrument(span.clone())
+                .await
+            {
+                Ok(outcome) => {
+                    put_records_chaos_affected = outcome.chaos_affected;
+                    Ok(outcome.body)
+                }
+                Err(err) => Err(err),
+            }
+        }
+        #[cfg(not(feature = "chaos"))]
+        {
+            actions::dispatch(&store, operation, data)
+                .instrument(span.clone())
+                .await
+        }
+    } else {
+        actions::dispatch(&store, operation, data)
+            .instrument(span.clone())
+            .await
+    };
 
     // Build response first (borrows result), then move result into the mirror
     let (response, mirrorable_result) = match dispatch_result {
@@ -547,10 +589,21 @@ pub async fn handler(
         }
     };
 
+    #[cfg(feature = "chaos")]
+    let skip_mirror = request_chaos_plan.chaos_affected || put_records_chaos_affected;
+    #[cfg(not(feature = "chaos"))]
+    let skip_mirror = false;
+
+    #[cfg(feature = "chaos")]
+    if request_chaos_plan.latency_ms > 0 {
+        crate::runtime::sleep_ms(request_chaos_plan.latency_ms).await;
+    }
+
     // Mirror write operations (fire-and-forget) — result moved, not cloned
     #[cfg(feature = "mirror")]
     if let Some(Extension(ref mirror)) = mirror
         && Mirror::should_mirror(&operation)
+        && !skip_mirror
     {
         match mirrorable_result {
             Ok(result) => {
@@ -567,7 +620,7 @@ pub async fn handler(
     }
     #[cfg(not(feature = "mirror"))]
     {
-        let _ = (mirror, mirrorable_result);
+        let _ = (mirror, mirrorable_result, skip_mirror);
     }
 
     finalize_response(&store, Some(operation), None, request_started_ms, response)
