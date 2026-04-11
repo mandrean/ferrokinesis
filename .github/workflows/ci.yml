@@ -235,6 +235,71 @@ jobs:
             bench-comparison.txt
           retention-days: 90
 
+  memory-smoke:
+    name: Memory Smoke (report-only)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-rust-toolchain
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: check
+          save-if: false
+      - name: Prepare harness scripts
+        run: |
+          git show ${{ github.event.pull_request.head.sha }}:scripts/ci/memory-harness.sh > /tmp/memory-harness.sh
+          git show ${{ github.event.pull_request.head.sha }}:scripts/ci/compare-memory-smoke.py > /tmp/compare-memory-smoke.py
+          chmod +x /tmp/memory-harness.sh /tmp/compare-memory-smoke.py
+      - name: Run base memory smoke
+        id: memory_base
+        continue-on-error: true
+        run: |
+          git checkout ${{ github.event.pull_request.base.sha }}
+          /tmp/memory-harness.sh \
+            --repo-root "$PWD" \
+            --profile base \
+            --duration-secs 300 \
+            --sample-interval-secs 5 \
+            --output-dir artifacts/memory-smoke/base
+      - name: Run head memory smoke
+        id: memory_head
+        if: always()
+        continue-on-error: true
+        run: |
+          git checkout ${{ github.event.pull_request.head.sha }}
+          /tmp/memory-harness.sh \
+            --repo-root "$PWD" \
+            --profile head \
+            --duration-secs 300 \
+            --sample-interval-secs 5 \
+            --output-dir artifacts/memory-smoke/head
+      - name: Compare base/head summaries
+        if: always()
+        continue-on-error: true
+        run: |
+          mkdir -p artifacts/memory-smoke
+          if [[ -f artifacts/memory-smoke/base/summary.json && -f artifacts/memory-smoke/head/summary.json ]]; then
+            /tmp/compare-memory-smoke.py \
+              artifacts/memory-smoke/base/summary.json \
+              artifacts/memory-smoke/head/summary.json \
+              artifacts/memory-smoke/comparison.json \
+              | tee artifacts/memory-smoke/comparison.txt
+          else
+            echo "base/head summary missing; skipping comparison" | tee artifacts/memory-smoke/comparison.txt
+          fi
+      - name: Upload memory smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: memory-smoke-results
+          path: artifacts/memory-smoke/
+          retention-days: 90
+
   audit:
     name: Security Audit
     runs-on: ubuntu-latest
