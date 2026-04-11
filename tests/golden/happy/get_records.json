@@ -10,7 +10,6 @@
       {
         "ApproximateArrivalTimestamp": 1700000000.123,
         "Data": "dGVzdA==",
-        "EncryptionType": "NONE",
         "PartitionKey": "pk1",
         "SequenceNumber": "49590338271490256608559692540925702759221480471064903682"
       }

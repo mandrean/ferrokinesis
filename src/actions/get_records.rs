@@ -3,6 +3,7 @@ use crate::error::KinesisErrorResponse;
 use crate::sequence;
 use crate::shard_iterator;
 use crate::store::Store;
+use crate::types::{EpochSeconds, ResponseRecord};
 use crate::util::current_time_ms;
 use serde_json::{Value, json};
 
@@ -50,13 +51,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     if now - iterator_time > ttl_ms {
         return Err(KinesisErrorResponse::client_error(
             constants::EXPIRED_ITERATOR,
-            Some(&format!(
-                "Iterator expired. The iterator was created at time {} while right now it is {} \
-                 which is further in the future than the tolerated delay of {} milliseconds.",
-                to_amz_utc_string(iterator_time),
-                to_amz_utc_string(now),
-                ttl_ms
-            )),
+            Some("Iterator expired."),
         ));
     }
 
@@ -92,7 +87,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         .get_records_range_limited(&stream_name, &range_start, &range_end, limit)
         .await;
 
-    let mut items: Vec<Value> = Vec::with_capacity(range_records.len());
+    let mut items: Vec<ResponseRecord<'_>> = Vec::with_capacity(range_records.len());
     let mut last_seq_num: Option<&str> = None;
     let mut keys_to_delete = Vec::new();
 
@@ -104,13 +99,12 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
             continue;
         }
 
-        items.push(json!({
-            "ApproximateArrivalTimestamp": record.approximate_arrival_timestamp,
-            "Data": &record.data,
-            "EncryptionType": stream.encryption_type,
-            "PartitionKey": &record.partition_key,
-            "SequenceNumber": seq_num,
-        }));
+        items.push(ResponseRecord {
+            partition_key: &record.partition_key,
+            data: &record.data,
+            approximate_arrival_timestamp: EpochSeconds(record.approximate_arrival_timestamp),
+            sequence_number: seq_num,
+        });
 
         last_seq_num = Some(seq_num);
     }
@@ -182,51 +176,4 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
 
 fn invalid_shard_iterator() -> KinesisErrorResponse {
     KinesisErrorResponse::client_error(constants::INVALID_ARGUMENT, Some("Invalid ShardIterator."))
-}
-
-fn to_amz_utc_string(millis: u64) -> String {
-    // Format: "Thu Jan 22 01:22:02 UTC 2015"
-    let secs = (millis / 1000) as i64;
-    let days_since_epoch = secs / 86400;
-    let time_of_day = secs % 86400;
-
-    let hours = time_of_day / 3600;
-    let minutes = (time_of_day % 3600) / 60;
-    let seconds = time_of_day % 60;
-
-    // Simple date calculation
-    let (year, month, day, weekday) = days_to_date(days_since_epoch);
-
-    let day_names = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
-    let month_names = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-
-    format!(
-        "{} {} {:02} {:02}:{:02}:{:02} UTC {}",
-        day_names[weekday as usize],
-        month_names[(month - 1) as usize],
-        day,
-        hours,
-        minutes,
-        seconds,
-        year
-    )
-}
-
-fn days_to_date(days: i64) -> (i64, i64, i64, i64) {
-    // Algorithm from http://howardhinnant.github.io/date_algorithms.html
-    let z = days + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    let weekday = ((days + 3) % 7 + 7) % 7; // 0 = Thursday (epoch was Thursday)
-
-    (y, m, d, weekday)
 }
