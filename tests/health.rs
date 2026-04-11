@@ -53,6 +53,29 @@ async fn health_endpoints_do_not_require_auth() {
     }
 }
 
+#[cfg(not(feature = "chaos"))]
+#[tokio::test]
+async fn chaos_routes_are_absent_without_feature() {
+    let server = TestServer::new().await;
+    let res = server
+        .raw_request(Method::GET, "/_chaos", HeaderMap::new(), vec![])
+        .await;
+    assert_eq!(res.status(), 403);
+}
+
+#[cfg(feature = "chaos")]
+#[tokio::test]
+async fn chaos_status_route_returns_empty_config_when_unset() {
+    let server = TestServer::new().await;
+    let res = server
+        .raw_request(Method::GET, "/_chaos", HeaderMap::new(), vec![])
+        .await;
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["seed"], 0);
+    assert_eq!(body["scenarios"], Value::Array(vec![]));
+}
+
 #[tokio::test]
 async fn post_health_returns_method_not_allowed() {
     let server = TestServer::new().await;

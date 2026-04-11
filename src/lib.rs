@@ -41,6 +41,9 @@
 pub mod actions;
 #[cfg(feature = "server")]
 pub mod capture;
+#[cfg(feature = "chaos")]
+#[doc(hidden)]
+pub mod chaos;
 #[cfg(feature = "server")]
 pub mod config;
 #[doc(hidden)]
@@ -83,6 +86,8 @@ use axum::Router;
 #[cfg(all(feature = "server", not(target_arch = "wasm32")))]
 use axum::body::Body;
 use axum::middleware;
+#[cfg(feature = "chaos")]
+use axum::routing::post;
 use axum::routing::{any, get};
 #[cfg(all(feature = "server", not(target_arch = "wasm32")))]
 use hyper::body::Incoming;
@@ -175,7 +180,15 @@ pub fn create_router(store: Store) -> Router {
         .route("/_health", get(health::health))
         .route("/_health/live", get(health::live))
         .route("/_health/ready", get(health::ready))
-        .route("/metrics", get(health::metrics))
+        .route("/metrics", get(health::metrics));
+
+    #[cfg(feature = "chaos")]
+    let app = app
+        .route("/_chaos", get(chaos::status))
+        .route("/_chaos/enable", post(chaos::enable))
+        .route("/_chaos/disable", post(chaos::disable));
+
+    let app = app
         .fallback(any(server::handler))
         .with_state(store)
         .layer(middleware::from_fn(server::kinesis_413_middleware));
