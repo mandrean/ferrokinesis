@@ -191,7 +191,8 @@ jobs:
             "language": "${{ matrix.lang }}",
             "directory": "${{ matrix.dir }}",
             "needs_dynamodb": ${NEEDS_DYNAMODB},
-            "outcome": "${{ steps.compatibility.outcome }}"
+            "outcome": "${{ job.status }}",
+            "suite_outcome": "${{ steps.compatibility.outcome }}"
           }
           EOF
 

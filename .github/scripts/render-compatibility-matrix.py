@@ -6,6 +6,8 @@ import re
 from collections import Counter
 from pathlib import Path
 
+VALID_OUTCOMES = {"success", "failure", "cancelled", "skipped"}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -57,6 +59,14 @@ def validate_rows(rows: list[dict[str, object]], expected_slugs: list[str]) -> N
             )
         raise SystemExit("incomplete compatibility result set; " + "; ".join(details))
 
+    for row in rows:
+        outcome = row.get("outcome")
+        if not isinstance(outcome, str) or outcome not in VALID_OUTCOMES:
+            raise SystemExit(
+                "invalid compatibility outcome for "
+                f"{row['slug']}: {outcome!r}"
+            )
+
 
 def main() -> int:
     args = parse_args()
@@ -72,7 +82,7 @@ def main() -> int:
     else:
         rows.sort(key=lambda row: str(row["suite"]))
 
-    outcome_counts = Counter(row["outcome"] for row in rows)
+    outcome_counts = Counter(str(row["outcome"]) for row in rows)
     status_labels = {
         "success": "PASS",
         "failure": "FAIL",
@@ -93,8 +103,8 @@ def main() -> int:
     lines.append("| --- | --- | --- | --- |")
 
     for row in rows:
-        outcome = row["outcome"]
-        label = status_labels.get(outcome, outcome.upper())
+        outcome = str(row["outcome"])
+        label = status_labels[outcome]
         needs_dynamodb = "yes" if row["needs_dynamodb"] else "no"
         lines.append(
             f"| {row['suite']} | `{row['language']}` | {label} | {needs_dynamodb} |"
