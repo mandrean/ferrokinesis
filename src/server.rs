@@ -192,10 +192,11 @@ pub async fn handler(
                 &uri,
                 &headers,
                 &response_headers,
-                store.checkpoint(),
+                &store,
                 operation_str,
                 &body,
-            );
+            )
+            .await;
         }
 
         let service_valid = service == constants::KINESIS_API;
