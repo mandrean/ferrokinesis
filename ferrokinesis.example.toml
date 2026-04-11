@@ -50,9 +50,9 @@
 # CLI: --state-dir | Env: FERROKINESIS_STATE_DIR
 # state_dir = "/var/lib/ferrokinesis"
 
-# Snapshot interval in seconds when durable mode is enabled (0 = disabled, max: 86400, default: 0)
+# Snapshot interval in seconds when durable mode is enabled (0 = disabled, max: 86400, default: 30)
 # CLI: --snapshot-interval-secs | Env: FERROKINESIS_SNAPSHOT_INTERVAL_SECS
-# snapshot_interval_secs = 0
+# snapshot_interval_secs = 30
 
 # Hard cap on retained serialized record bytes (min: 1, default: disabled)
 # Writes that would exceed this cap are rejected with LimitExceededException.

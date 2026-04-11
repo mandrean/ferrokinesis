@@ -185,6 +185,26 @@ async fn put_records(
     .await
 }
 
+async fn retained_bytes_for_single_record(data: &str, partition_key: &str) -> u64 {
+    let dir = tempdir().unwrap();
+    let store = Store::new(durable_options(dir.path(), 0));
+    create_active_stream(&store, "retained-size-single").await;
+    put_record(&store, "retained-size-single", data, partition_key)
+        .await
+        .unwrap();
+    store.metrics().retained_bytes()
+}
+
+async fn retained_bytes_for_batch(records: &[(&str, &str)]) -> u64 {
+    let dir = tempdir().unwrap();
+    let store = Store::new(durable_options(dir.path(), 0));
+    create_active_stream(&store, "retained-size-batch").await;
+    put_records(&store, "retained-size-batch", records)
+        .await
+        .unwrap();
+    store.metrics().retained_bytes()
+}
+
 fn latest_snapshot_from_wal(state_dir: &Path) -> Value {
     let (_, entries) = Persistence::new(state_dir.to_path_buf())
         .unwrap()
@@ -1121,7 +1141,7 @@ async fn recovered_store_rejects_writes_when_replay_failed() {
 }
 
 #[tokio::test]
-async fn retained_bytes_cap_rejects_put_record_and_put_records_without_growth() {
+async fn retained_bytes_cap_rejects_over_limit_put_record_and_put_records_without_growth() {
     let dir = tempdir().unwrap();
     let mut options = durable_options(dir.path(), 0);
     options.max_retained_bytes = Some(10);
@@ -1147,6 +1167,67 @@ async fn retained_bytes_cap_rejects_put_record_and_put_records_without_growth() 
     assert_eq!(store.metrics().retained_records(), 0);
     let metrics = store.render_metrics().await;
     assert!(metrics.contains("ferrokinesis_rejected_writes_total 2"));
+}
+
+#[tokio::test]
+async fn retained_bytes_cap_allows_put_record_exactly_at_limit_then_rejects_next_growth() {
+    let first_record_bytes = retained_bytes_for_single_record("QUFBQQ==", "pk-a").await;
+    assert!(first_record_bytes > 0);
+
+    let dir = tempdir().unwrap();
+    let mut options = durable_options(dir.path(), 0);
+    options.max_retained_bytes = Some(first_record_bytes);
+    let store = Store::new(options);
+    create_active_stream(&store, "retained-cap-single-boundary").await;
+
+    put_record(&store, "retained-cap-single-boundary", "QUFBQQ==", "pk-a")
+        .await
+        .unwrap();
+    assert_eq!(store.metrics().retained_bytes(), first_record_bytes);
+    assert_eq!(store.metrics().retained_records(), 1);
+
+    let err = put_record(&store, "retained-cap-single-boundary", "QkJCQg==", "pk-b")
+        .await
+        .unwrap_err();
+    assert_eq!(err.body.error_type, "LimitExceededException");
+    assert_eq!(store.metrics().retained_bytes(), first_record_bytes);
+    assert_eq!(store.metrics().retained_records(), 1);
+
+    let metrics = store.render_metrics().await;
+    assert!(metrics.contains("ferrokinesis_rejected_writes_total 1"));
+}
+
+#[tokio::test]
+async fn retained_bytes_cap_allows_put_records_exactly_at_limit_then_rejects_next_growth() {
+    let batch = [("QUFBQQ==", "pk-a"), ("QkJCQg==", "pk-b")];
+    let batch_bytes = retained_bytes_for_batch(&batch).await;
+    assert!(batch_bytes > 0);
+
+    let dir = tempdir().unwrap();
+    let mut options = durable_options(dir.path(), 0);
+    options.max_retained_bytes = Some(batch_bytes);
+    let store = Store::new(options);
+    create_active_stream(&store, "retained-cap-batch-boundary").await;
+
+    put_records(&store, "retained-cap-batch-boundary", &batch)
+        .await
+        .unwrap();
+    assert_eq!(store.metrics().retained_bytes(), batch_bytes);
+    assert_eq!(store.metrics().retained_records(), batch.len() as u64);
+
+    let err = put_records(
+        &store,
+        "retained-cap-batch-boundary",
+        &[("Q0NDQw==", "pk-c")],
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.body.error_type, "LimitExceededException");
+    assert_eq!(store.metrics().retained_bytes(), batch_bytes);
+    assert_eq!(store.metrics().retained_records(), batch.len() as u64);
+
+    let metrics = store.render_metrics().await;
+    assert!(metrics.contains("ferrokinesis_rejected_writes_total 1"));
 }
 
 #[tokio::test]
