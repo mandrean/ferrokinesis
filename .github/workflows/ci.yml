@@ -24,8 +24,8 @@ jobs:
           save-if: false
       - name: Format
         run: cargo fmt --all -- --check
-      - name: Lint (TLS)
-        run: cargo clippy --features tls -- -D warnings
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   test-default:
     name: Test (default)
@@ -39,9 +39,9 @@ jobs:
           shared-key: check
           save-if: false
       - name: Test
-        run: cargo test
+        run: cargo test --workspace
       - name: Doc tests
-        run: cargo test --doc
+        run: cargo test --workspace --doc
 
   test-tls:
     name: Test (TLS)

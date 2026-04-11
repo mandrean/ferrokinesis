@@ -1,45 +1,15 @@
-//! Stream capture and replay support.
+//! Stream capture support and shared replay format helpers.
 //!
 //! [`CaptureWriter`] records PutRecord/PutRecords calls to NDJSON files.
 //! [`read_capture_file`] reads them back for replay.
 
-use serde::{Deserialize, Serialize};
+pub use ferrokinesis_core::capture::{CaptureOp, CaptureRecord, read_capture_file};
+use serde::Serialize;
 use std::borrow::Cow;
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::io::{self, BufWriter, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-
-/// The capture operation type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CaptureOp {
-    /// A single `PutRecord` call.
-    PutRecord,
-    /// A `PutRecords` batch call.
-    PutRecords,
-}
-
-/// Owned capture record used for deserialization (replay) and tests.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CaptureRecord {
-    /// Which operation produced this record.
-    pub op: CaptureOp,
-    /// Timestamp in milliseconds since epoch.
-    pub ts: u64,
-    /// Stream name the record was written to.
-    pub stream: String,
-    /// Partition key (possibly scrubbed).
-    pub partition_key: String,
-    /// Record data (base64-encoded).
-    pub data: String,
-    /// Explicit hash key, if provided.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub explicit_hash_key: Option<String>,
-    /// Sequence number from the response (informational).
-    pub sequence_number: String,
-    /// Shard ID from the response (informational).
-    pub shard_id: String,
-}
 
 /// Borrowing capture record for zero-copy serialization on the hot path.
 ///
@@ -141,32 +111,6 @@ impl CaptureWriter {
             tracing::warn!("capture: flush error: {e}");
         }
     }
-}
-
-/// Reads an NDJSON capture file into a `Vec<CaptureRecord>`.
-///
-/// Blank lines are silently skipped. Malformed lines are logged and skipped.
-///
-/// Note: loads the entire file into memory. For very large capture files,
-/// consider a streaming approach in the future.
-///
-/// Uses `eprintln!` because this runs in the replay subcommand, outside the
-/// tracing subscriber (same convention as health-check / generate-cert).
-pub fn read_capture_file(path: &Path) -> io::Result<Vec<CaptureRecord>> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let mut records = Vec::new();
-    for line in reader.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<CaptureRecord>(&line) {
-            Ok(r) => records.push(r),
-            Err(e) => eprintln!("capture: skipping malformed line: {e}"),
-        }
-    }
-    Ok(records)
 }
 
 /// Deterministic anonymisation of a partition key.

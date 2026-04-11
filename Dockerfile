@@ -1,6 +1,7 @@
 FROM scratch
 ARG TARGETARCH
 COPY ${TARGETARCH}/ferrokinesis /ferrokinesis
+COPY ${TARGETARCH}/ferro /ferro
 EXPOSE 4567
 # Run as nobody (UID 65534) to avoid running as root.
 USER 65534

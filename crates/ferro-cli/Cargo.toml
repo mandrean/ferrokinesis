@@ -1,0 +1,36 @@
+[package]
+name = "ferrokinesis-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Companion CLI for the ferrokinesis Kinesis emulator"
+
+[[bin]]
+name = "ferro"
+path = "src/main.rs"
+
+[dependencies]
+aws-smithy-eventstream = "0.60"
+aws-smithy-types = "1.4"
+base64 = "0.22"
+bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+clap = { version = "4", features = ["derive", "env"] }
+ferrokinesis-core = { path = "../ferrokinesis-core", version = "0.6.0" }
+futures-util = "0.3"
+hex = "0.4"
+humantime = "2"
+reqwest = { version = "0.12", default-features = false, features = ["http2", "json", "rustls-tls", "stream"] }
+serde_json = "1"
+thiserror = "2.0.18"
+tokio = { version = "1", features = ["io-std", "macros", "rt-multi-thread", "signal", "sync", "time"] }
+
+[dev-dependencies]
+axum = { version = "0.8", default-features = false }
+ferrokinesis = { path = "../..", default-features = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "time"] }
