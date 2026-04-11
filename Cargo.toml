@@ -30,6 +30,11 @@ name = "ferrokinesis-wasi"
 path = "src/bin/wasi.rs"
 required-features = ["wasi"]
 
+[[bin]]
+name = "soak"
+path = "src/bin/soak.rs"
+required-features = ["soak"]
+
 [features]
 default = ["server", "access-log"]
 rt = ["tokio/rt", "tokio/time", "tokio/macros"]
@@ -73,6 +78,7 @@ mirror = [
 mirror-aws-config = ["mirror", "dep:aws-config"]
 loadtest = ["rt", "dep:goose", "tokio/rt-multi-thread"]
 replay = ["server", "dep:reqwest"]
+soak = ["server", "dep:reqwest"]
 tls = ["server", "dep:axum-server", "dep:rcgen", "dep:rustls"]
 
 [dependencies]
