@@ -853,10 +853,7 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     tracing::info!("Listening at http://{addr}");
 
-    if let Err(e) = axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-    {
+    if let Err(e) = ferrokinesis::serve_plain_http(listener, app, shutdown_signal()).await {
         tracing::error!("server error: {e}");
         return ExitCode::FAILURE;
     }

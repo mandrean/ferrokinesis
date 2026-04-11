@@ -1,11 +1,251 @@
 mod common;
 
+use axum::Router;
+use axum::routing::get;
 use common::*;
-use reqwest::Method;
 use reqwest::header::{HeaderMap, HeaderValue};
+use reqwest::{Method, Version};
 use serde_json::{Value, json};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
+use tokio::sync::{Notify, oneshot};
 
 // -- Basic connection tests --
+
+#[tokio::test]
+async fn plain_listener_accepts_h2c_prior_knowledge() {
+    let server = TestServer::new().await;
+    let client = reqwest::Client::builder()
+        .http2_prior_knowledge()
+        .build()
+        .unwrap();
+
+    let create = client
+        .post(server.url())
+        .header("Content-Type", AMZ_JSON)
+        .header("X-Amz-Target", format!("{VERSION}.CreateStream"))
+        .header(
+            "Authorization",
+            "AWS4-HMAC-SHA256 Credential=AKID/20150101/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=abcd1234",
+        )
+        .header("X-Amz-Date", "20150101T000000Z")
+        .body(json!({"StreamName":"h2c-stream","ShardCount":1}).to_string())
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(create.version(), Version::HTTP_2);
+    assert!(create.status().is_success());
+
+    let list = client
+        .post(server.url())
+        .header("Content-Type", AMZ_JSON)
+        .header("X-Amz-Target", format!("{VERSION}.ListStreams"))
+        .header(
+            "Authorization",
+            "AWS4-HMAC-SHA256 Credential=AKID/20150101/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=abcd1234",
+        )
+        .header("X-Amz-Date", "20150101T000000Z")
+        .body(json!({}).to_string())
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(list.version(), Version::HTTP_2);
+    let body: Value = list.json().await.unwrap();
+    assert!(
+        body["StreamNames"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|name| name.as_str() == Some("h2c-stream"))
+    );
+}
+
+#[tokio::test]
+async fn plain_listener_drains_in_flight_requests_during_shutdown() {
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+
+    let app = shutdown_test_app(&started, &release);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        ferrokinesis::serve_plain_http(listener, app, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let client = reqwest::Client::new();
+    let response = tokio::spawn(async move {
+        client
+            .get(format!("http://{addr}/slow"))
+            .send()
+            .await
+            .unwrap()
+    });
+
+    started.notified().await;
+    shutdown_tx.send(()).unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !server.is_finished(),
+        "server returned before the in-flight request drained"
+    );
+
+    release.notify_waiters();
+
+    let response = response.await.unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.text().await.unwrap(), "done");
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn plain_listener_rejects_new_connections_after_shutdown_starts() {
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let app = shutdown_test_app(&started, &release);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        ferrokinesis::serve_plain_http(listener, app, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let client = reqwest::Client::new();
+    let slow_response = tokio::spawn(async move {
+        client
+            .get(format!("http://{addr}/slow"))
+            .send()
+            .await
+            .unwrap()
+    });
+
+    started.notified().await;
+    shutdown_tx.send(()).unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let fast_probe = raw_http_get(addr, "/fast").await;
+    assert!(
+        !is_successful_http_response(&fast_probe),
+        "server accepted and served a new request after shutdown started: {fast_probe:?}"
+    );
+
+    release.notify_waiters();
+    let slow_response = slow_response.await.unwrap();
+    assert_eq!(slow_response.status(), 200);
+    assert_eq!(slow_response.text().await.unwrap(), "done");
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn plain_listener_rejects_concurrent_post_shutdown_connection_attempts() {
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let app = shutdown_test_app(&started, &release);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        ferrokinesis::serve_plain_http(listener, app, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let client = reqwest::Client::new();
+    let slow_response = tokio::spawn(async move {
+        client
+            .get(format!("http://{addr}/slow"))
+            .send()
+            .await
+            .unwrap()
+    });
+
+    started.notified().await;
+    shutdown_tx.send(()).unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let probe_tasks = (0..8)
+        .map(|_| tokio::spawn(raw_http_get(addr, "/fast")))
+        .collect::<Vec<_>>();
+
+    for probe in probe_tasks {
+        let response = probe.await.unwrap();
+        assert!(
+            !is_successful_http_response(&response),
+            "server accepted and served a queued request after shutdown started: {response:?}"
+        );
+    }
+
+    release.notify_waiters();
+    let slow_response = slow_response.await.unwrap();
+    assert_eq!(slow_response.status(), 200);
+    assert_eq!(slow_response.text().await.unwrap(), "done");
+    server.await.unwrap();
+}
+
+fn shutdown_test_app(started: &Arc<Notify>, release: &Arc<Notify>) -> Router {
+    Router::new()
+        .route(
+            "/slow",
+            get({
+                let started = Arc::clone(started);
+                let release = Arc::clone(release);
+                move || {
+                    let started = Arc::clone(&started);
+                    let release = Arc::clone(&release);
+                    async move {
+                        started.notify_one();
+                        release.notified().await;
+                        "done"
+                    }
+                }
+            }),
+        )
+        .route("/fast", get(|| async { "fast" }))
+}
+
+async fn raw_http_get(addr: std::net::SocketAddr, path: &str) -> Result<Vec<u8>, std::io::Error> {
+    let mut stream = tokio::net::TcpStream::connect(addr).await?;
+    let request = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).await?;
+    stream.shutdown().await?;
+
+    let mut response = Vec::new();
+    let mut buf = [0_u8; 1024];
+    loop {
+        match tokio::time::timeout(Duration::from_millis(250), stream.read(&mut buf)).await {
+            Ok(Ok(0)) => break,
+            Ok(Ok(n)) => response.extend_from_slice(&buf[..n]),
+            Ok(Err(err)) => return Err(err),
+            Err(_) => break,
+        }
+    }
+
+    Ok(response)
+}
+
+fn is_successful_http_response(result: &Result<Vec<u8>, std::io::Error>) -> bool {
+    match result {
+        Ok(bytes) => bytes.starts_with(b"HTTP/1.1 200") || bytes.starts_with(b"HTTP/1.0 200"),
+        Err(_) => false,
+    }
+}
 
 #[tokio::test]
 async fn cbor_unknown_operation_if_post_no_auth() {
