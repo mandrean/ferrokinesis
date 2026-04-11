@@ -201,6 +201,8 @@ impl WasiConfig {
                     "FERROKINESIS_RETENTION_CHECK_INTERVAL_SECS",
                 )?
                 .unwrap_or(defaults.retention_check_interval_secs),
+                enforce_limits: read_env("FERROKINESIS_ENFORCE_LIMITS")?
+                    .unwrap_or(defaults.enforce_limits),
                 aws_account_id: read_env("AWS_ACCOUNT_ID")?
                     .unwrap_or_else(|| defaults.aws_account_id.clone()),
                 aws_region,

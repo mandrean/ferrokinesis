@@ -66,6 +66,7 @@ impl Kinesis {
             retention_check_interval_secs: options
                 .retention_check_interval_secs
                 .unwrap_or(defaults.retention_check_interval_secs),
+            enforce_limits: defaults.enforce_limits,
             aws_account_id: options.account_id.unwrap_or(defaults.aws_account_id),
             aws_region: options.region.unwrap_or(defaults.aws_region),
         };

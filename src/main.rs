@@ -88,6 +88,11 @@ struct ServeArgs {
     #[arg(long, env = "FERROKINESIS_RETENTION_CHECK_INTERVAL_SECS", value_parser = clap::value_parser!(u64).range(0..=86400))]
     retention_check_interval_secs: Option<u64>,
 
+    /// Enable AWS-like shard write throughput throttling
+    #[arg(long, env = "FERROKINESIS_ENFORCE_LIMITS",
+          default_missing_value = "true", num_args = 0..=1)]
+    enforce_limits: Option<bool>,
+
     /// Log level (off, error, warn, info, debug, trace)
     #[arg(long, env = "FERROKINESIS_LOG_LEVEL",
           value_parser = ["off", "error", "warn", "info", "debug", "trace"])]
@@ -691,6 +696,9 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
             file_cfg.retention_check_interval_secs,
             || defaults.retention_check_interval_secs,
         ),
+        enforce_limits: resolve(args.enforce_limits, file_cfg.enforce_limits, || {
+            defaults.enforce_limits
+        }),
         aws_account_id: resolve(args.account_id, file_cfg.account_id, || {
             defaults.aws_account_id
         }),

@@ -5,6 +5,7 @@ use crate::error::KinesisErrorResponse;
 use crate::sequence;
 use crate::store::Store;
 use crate::types::StoredRecordRef;
+use crate::util::base64_decoded_len;
 use crate::util::current_time_ms;
 use serde_json::{Value, json};
 #[cfg(feature = "server")]
@@ -63,6 +64,19 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         data: record_data,
         approximate_arrival_timestamp: (alloc.now / 1000) as f64,
     };
+
+    let decoded_len = {
+        let decoded = base64_decoded_len(record_data);
+        if decoded > 0 || record_data.is_empty() {
+            decoded
+        } else {
+            record_data.len()
+        }
+    } as u64;
+
+    store
+        .try_reserve_shard_throughput(&stream_name, &alloc.shard_id, decoded_len, alloc.now)
+        .await?;
 
     store
         .put_record(&stream_name, &alloc.stream_key, &record)
