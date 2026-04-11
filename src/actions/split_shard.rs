@@ -1,7 +1,7 @@
 use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::sequence;
-use crate::store::Store;
+use crate::store::{PendingTransition, Store, TransitionMutation};
 use crate::types::*;
 use crate::util::current_time_ms;
 use serde_json::Value;
@@ -26,8 +26,16 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     // Get shard sum across all streams (separate read transaction)
     let shard_sum = store.sum_open_shards().await;
 
-    let (shard_start, shard_end, hash_key) = store
-        .update_stream(stream_name, |stream| {
+    let delay = store.options.update_stream_ms;
+    let transition = PendingTransition::SplitShard {
+        stream_name: stream_name.to_string(),
+        ready_at_ms: current_time_ms().saturating_add(delay),
+        shard_to_split: shard_id.clone(),
+        new_starting_hash_key: new_starting_hash_key.to_string(),
+    };
+
+    store
+        .update_stream_with_transition(stream_name, TransitionMutation::Upsert(transition.clone()), |stream| {
             if stream.stream_status != StreamStatus::Active {
                 return Err(KinesisErrorResponse::client_error(
                     constants::RESOURCE_IN_USE,
@@ -85,97 +93,11 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
             }
 
             stream.stream_status = StreamStatus::Updating;
-
-            Ok((shard_start, shard_end, hash_key))
+            Ok(())
         })
         .await?;
     tracing::info!(stream = stream_name, "shard split");
-
-    let store_clone = store.clone();
-    let name = stream_name.to_string();
-    let delay = store.options.update_stream_ms;
-    let shard_id_clone = shard_id.clone();
-
-    crate::runtime::spawn_background(async move {
-        crate::runtime::sleep_ms(delay).await;
-
-        if store_clone
-            .update_stream(&name, |stream| {
-                let now = current_time_ms();
-                stream.stream_status = StreamStatus::Active;
-
-                let shard = &mut stream.shards[shard_ix as usize];
-                let create_time =
-                    sequence::parse_sequence(&shard.sequence_number_range.starting_sequence_number)
-                        .map(|s| s.shard_create_time)
-                        .unwrap_or(0);
-
-                shard.sequence_number_range.ending_sequence_number =
-                    Some(sequence::stringify_sequence(&sequence::SeqObj {
-                        shard_create_time: create_time,
-                        shard_ix,
-                        seq_ix: Some(sequence::MAX_SEQ_IX),
-                        seq_time: Some(now),
-                        byte1: None,
-                        seq_rand: None,
-                        version: 2,
-                    }));
-
-                let new_ix1 = stream.shards.len() as i64;
-                stream.shards.push(Shard {
-                    parent_shard_id: Some(shard_id_clone.clone()),
-                    adjacent_parent_shard_id: None,
-                    hash_key_range: HashKeyRange::new(
-                        shard_start.to_string(),
-                        (hash_key - 1).to_string(),
-                    ),
-                    sequence_number_range: SequenceNumberRange {
-                        starting_sequence_number: sequence::stringify_sequence(&sequence::SeqObj {
-                            // Child's create_time is 1 second ahead of the parent's closing
-                            // timestamp so child sequence numbers always sort lexically after
-                            // the parent's last sequence (the token format encodes create_time
-                            // in hex[1..10], so a higher create_time produces a larger number).
-                            shard_create_time: now + 1000,
-                            shard_ix: new_ix1,
-                            seq_ix: None,
-                            seq_time: None,
-                            byte1: None,
-                            seq_rand: None,
-                            version: 2,
-                        }),
-                        ending_sequence_number: None,
-                    },
-                    shard_id: sequence::shard_id_name(new_ix1),
-                });
-
-                let new_ix2 = stream.shards.len() as i64;
-                stream.shards.push(Shard {
-                    parent_shard_id: Some(shard_id_clone.clone()),
-                    adjacent_parent_shard_id: None,
-                    hash_key_range: HashKeyRange::new(hash_key.to_string(), shard_end.to_string()),
-                    sequence_number_range: SequenceNumberRange {
-                        starting_sequence_number: sequence::stringify_sequence(&sequence::SeqObj {
-                            shard_create_time: now + 1000,
-                            shard_ix: new_ix2,
-                            seq_ix: None,
-                            seq_time: None,
-                            byte1: None,
-                            seq_rand: None,
-                            version: 2,
-                        }),
-                        ending_sequence_number: None,
-                    },
-                    shard_id: sequence::shard_id_name(new_ix2),
-                });
-
-                Ok(())
-            })
-            .await
-            .is_ok()
-        {
-            store_clone.clear_throughput_windows_for_shards(&name, [shard_id_clone.as_str()]);
-        }
-    });
+    store.schedule_transition(transition);
 
     Ok(None)
 }

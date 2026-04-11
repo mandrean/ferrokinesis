@@ -13,6 +13,7 @@ use std::borrow::Cow;
 
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_name = store.resolve_stream_name(&data)?;
+    store.check_writable()?;
 
     let partition_key = data[constants::PARTITION_KEY].as_str().unwrap_or("");
     let record_data = data[constants::DATA].as_str().unwrap_or("");

@@ -1,7 +1,8 @@
 use crate::constants;
 use crate::error::KinesisErrorResponse;
-use crate::store::Store;
+use crate::store::{PendingTransition, Store, TransitionMutation};
 use crate::types::ConsumerStatus;
+use crate::util::current_time_ms;
 use serde_json::Value;
 
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
@@ -39,16 +40,19 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     // Set to DELETING
     let mut updated = consumer;
     updated.consumer_status = ConsumerStatus::Deleting;
-    store.put_consumer(&resolved_arn, updated).await;
+    let transition = PendingTransition::DeregisterConsumer {
+        consumer_arn: resolved_arn.clone(),
+        ready_at_ms: current_time_ms().saturating_add(500),
+    };
+    store
+        .put_consumer_with_transition(
+            &resolved_arn,
+            updated,
+            TransitionMutation::Upsert(transition.clone()),
+        )
+        .await;
     tracing::info!(consumer_arn = %resolved_arn, "consumer deregistered");
-
-    // Delete after short delay
-    let store_clone = store.clone();
-    let arn = resolved_arn;
-    crate::runtime::spawn_background(async move {
-        crate::runtime::sleep_ms(500).await;
-        store_clone.delete_consumer(&arn).await;
-    });
+    store.schedule_transition(transition);
 
     Ok(None)
 }

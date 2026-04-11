@@ -232,7 +232,8 @@ mod tests {
         kinesis
             ._store
             .put_record("retention-stream", &key, &record)
-            .await;
+            .await
+            .unwrap();
 
         assert_eq!(
             kinesis

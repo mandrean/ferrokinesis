@@ -1,150 +1,58 @@
 use crate::constants;
 use crate::error::KinesisErrorResponse;
-use crate::sequence;
-use crate::store::Store;
+use crate::store::{PendingTransition, Store, TransitionMutation};
 use crate::types::*;
 use crate::util::current_time_ms;
-use num_bigint::BigUint;
-use num_traits::One;
 use serde_json::{Value, json};
 
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
     let target_shard_count = data[constants::TARGET_SHARD_COUNT].as_i64().unwrap_or(0) as u32;
 
-    let (current_count, stream_name_owned) = store
-        .update_stream(stream_name, |stream| {
-            if stream.stream_status != StreamStatus::Active {
-                return Err(KinesisErrorResponse::client_error(
-                    constants::RESOURCE_IN_USE,
-                    Some(&format!(
-                        "Stream {} under account {} not ACTIVE, instead in state {}",
-                        stream_name, store.aws_account_id, stream.stream_status
-                    )),
-                ));
-            }
-
-            let current_count = stream
-                .shards
-                .iter()
-                .filter(|s| s.sequence_number_range.ending_sequence_number.is_none())
-                .count() as u32;
-
-            if target_shard_count == current_count {
-                return Err(KinesisErrorResponse::client_error(
-                    constants::INVALID_ARGUMENT,
-                    Some(&format!(
-                        "TargetShardCount {} is the same as the current shard count {}.",
-                        target_shard_count, current_count
-                    )),
-                ));
-            }
-
-            stream.stream_status = StreamStatus::Updating;
-            Ok((current_count, stream.stream_name.clone()))
-        })
-        .await?;
-
-    // Perform the resharding asynchronously
-    let store_clone = store.clone();
     let delay = store.options.update_stream_ms;
+    let transition = PendingTransition::UpdateShardCount {
+        stream_name: stream_name.to_string(),
+        ready_at_ms: current_time_ms().saturating_add(delay),
+        target_shard_count,
+    };
 
-    crate::runtime::spawn_background(async move {
-        crate::runtime::sleep_ms(delay).await;
+    let current_count = store
+        .update_stream_with_transition(
+            stream_name,
+            TransitionMutation::Upsert(transition.clone()),
+            |stream| {
+                if stream.stream_status != StreamStatus::Active {
+                    return Err(KinesisErrorResponse::client_error(
+                        constants::RESOURCE_IN_USE,
+                        Some(&format!(
+                            "Stream {} under account {} not ACTIVE, instead in state {}",
+                            stream_name, store.aws_account_id, stream.stream_status
+                        )),
+                    ));
+                }
 
-        if let Ok(closed_shard_ids) = store_clone
-            .update_stream(&stream_name_owned, |stream| {
-                let now = current_time_ms();
-                // Use the maximum possible seq_ix for the closing sequence number.
-                // This ensures no future record written to this shard could ever
-                // produce a sequence number that compares as ≥ the ending sequence,
-                // making the shard-closed invariant unconditionally safe.
-
-                // Close all current open shards
-                let open_indices: Vec<usize> = stream
+                let current_count = stream
                     .shards
                     .iter()
-                    .enumerate()
-                    .filter(|(_, s)| s.sequence_number_range.ending_sequence_number.is_none())
-                    .map(|(i, _)| i)
-                    .collect();
-                let closed_shard_ids = open_indices
-                    .iter()
-                    .map(|&ix| stream.shards[ix].shard_id.clone())
-                    .collect::<Vec<_>>();
+                    .filter(|s| s.sequence_number_range.ending_sequence_number.is_none())
+                    .count() as u32;
 
-                for &ix in &open_indices {
-                    let create_time = sequence::parse_sequence(
-                        &stream.shards[ix]
-                            .sequence_number_range
-                            .starting_sequence_number,
-                    )
-                    .map(|s| s.shard_create_time)
-                    .unwrap_or(0);
-
-                    stream.shards[ix]
-                        .sequence_number_range
-                        .ending_sequence_number =
-                        Some(sequence::stringify_sequence(&sequence::SeqObj {
-                            shard_create_time: create_time,
-                            shard_ix: ix as i64,
-                            seq_ix: Some(sequence::MAX_SEQ_IX),
-                            seq_time: Some(now),
-                            byte1: None,
-                            seq_rand: None,
-                            version: 2,
-                        }));
+                if target_shard_count == current_count {
+                    return Err(KinesisErrorResponse::client_error(
+                        constants::INVALID_ARGUMENT,
+                        Some(&format!(
+                            "TargetShardCount {} is the same as the current shard count {}.",
+                            target_shard_count, current_count
+                        )),
+                    ));
                 }
 
-                // Create new shards with uniform hash distribution
-                let pow_128 = BigUint::one() << 128;
-                let shard_hash = &pow_128 / BigUint::from(target_shard_count);
-
-                for i in 0..target_shard_count {
-                    let new_ix = stream.shards.len() as i64;
-                    let start: BigUint = &shard_hash * BigUint::from(i);
-                    let end: BigUint = if i < target_shard_count - 1 {
-                        &shard_hash * BigUint::from(i + 1) - BigUint::one()
-                    } else {
-                        &pow_128 - BigUint::one()
-                    };
-
-                    stream.shards.push(Shard {
-                        shard_id: sequence::shard_id_name(new_ix),
-                        // UpdateShardCount is a full reshard, not a split/merge; new shards have
-                        // no parent lineage relationship with the old shards.
-                        parent_shard_id: None,
-                        adjacent_parent_shard_id: None,
-                        hash_key_range: HashKeyRange::new(start.to_string(), end.to_string()),
-                        sequence_number_range: SequenceNumberRange {
-                            starting_sequence_number: sequence::stringify_sequence(
-                                &sequence::SeqObj {
-                                    // Child's create_time is 1 second ahead of the parent's closing
-                                    // timestamp so child sequence numbers always sort lexically after
-                                    // the parent's last sequence (the token format encodes create_time
-                                    // in hex[1..10], so a higher create_time produces a larger number).
-                                    shard_create_time: now + 1000,
-                                    shard_ix: new_ix,
-                                    seq_ix: None,
-                                    seq_time: None,
-                                    byte1: None,
-                                    seq_rand: None,
-                                    version: 2,
-                                },
-                            ),
-                            ending_sequence_number: None,
-                        },
-                    });
-                }
-
-                stream.stream_status = StreamStatus::Active;
-                Ok(closed_shard_ids)
-            })
-            .await
-        {
-            store_clone.clear_throughput_windows_for_shards(&stream_name_owned, &closed_shard_ids);
-        }
-    });
+                stream.stream_status = StreamStatus::Updating;
+                Ok(current_count)
+            },
+        )
+        .await?;
+    store.schedule_transition(transition);
 
     tracing::trace!(
         stream = %stream_name,

@@ -1,7 +1,7 @@
 use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::sequence;
-use crate::store::Store;
+use crate::store::{PendingTransition, Store, TransitionMutation};
 use crate::types::*;
 use crate::util::current_time_ms;
 use num_bigint::BigUint;
@@ -80,6 +80,13 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         });
     }
 
+    let delay = store.options.create_stream_ms;
+    let transition = PendingTransition::CreateStream {
+        stream_name: stream_name.to_string(),
+        ready_at_ms: current_time_ms().saturating_add(delay),
+        shards: shards.clone(),
+    };
+
     let stream = StreamBuilder::new(
         stream_name.to_string(),
         format!(
@@ -92,23 +99,15 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     )
     .build();
 
-    store.put_stream(stream_name, stream).await;
+    store
+        .put_stream_with_transition(
+            stream_name,
+            stream,
+            TransitionMutation::Upsert(transition.clone()),
+        )
+        .await;
     tracing::info!(stream = stream_name, shards = shard_count, "stream created");
-
-    // Transition to ACTIVE after delay
-    let store_clone = store.clone();
-    let name = stream_name.to_string();
-    let delay = store.options.create_stream_ms;
-    crate::runtime::spawn_background(async move {
-        crate::runtime::sleep_ms(delay).await;
-        let _ = store_clone
-            .update_stream(&name, |stream| {
-                stream.stream_status = StreamStatus::Active;
-                stream.shards = shards;
-                Ok(())
-            })
-            .await;
-    });
+    store.schedule_transition(transition);
 
     Ok(None) // Empty 200 response
 }

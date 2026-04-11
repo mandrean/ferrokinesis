@@ -1,3 +1,4 @@
+use crate::store::PendingTransition;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -22,6 +23,8 @@ pub struct PersistentSnapshot {
     pub policies: Vec<(String, String)>,
     pub resource_tags: Vec<(String, BTreeMap<String, String>)>,
     pub account_settings_json: Vec<u8>,
+    #[serde(default)]
+    pub(crate) pending_transitions: Vec<PendingTransition>,
     pub retained_bytes: u64,
     pub retained_records: u64,
 }
@@ -178,11 +181,13 @@ impl Persistence {
         }
 
         fs::rename(&tmp_path, &final_path)?;
+        sync_directory(&self.state_dir)?;
 
         let wal_path = self.state_dir.join(WAL_FILE);
         let mut wal = File::create(wal_path)?;
         wal.flush()?;
-        wal.sync_all()
+        wal.sync_all()?;
+        sync_directory(&self.state_dir)
     }
 
     fn read_snapshot(&self) -> Result<Option<PersistentSnapshot>, LoadError> {
@@ -232,6 +237,16 @@ impl Persistence {
         Ok(entries)
     }
 }
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> io::Result<()> {
+    File::open(path)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path) -> io::Result<()> {
+    Ok(())
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,6 +286,7 @@ mod tests {
             policies: vec![],
             resource_tags: vec![],
             account_settings_json: vec![],
+            pending_transitions: vec![],
             retained_bytes: 0,
             retained_records: 0,
         };

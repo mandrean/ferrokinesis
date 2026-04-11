@@ -157,8 +157,16 @@ impl AppMetrics {
     }
 
     pub fn remove_retained(&self, bytes: u64, records: u64) {
-        self.retained_bytes.fetch_sub(bytes, Ordering::Relaxed);
-        self.retained_records.fetch_sub(records, Ordering::Relaxed);
+        let _ = self
+            .retained_bytes
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_sub(bytes))
+            });
+        let _ =
+            self.retained_records
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                    Some(current.saturating_sub(records))
+                });
     }
 
     pub fn retained_bytes(&self) -> u64 {

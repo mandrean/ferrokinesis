@@ -23,10 +23,15 @@ use crate::persistence::{
     Persistence, PersistentSnapshot, PersistentStream, SnapshotShardRecords, WalEntry,
 };
 use crate::sequence;
-use crate::types::{Consumer, StoredRecord, Stream, StreamStatus};
+use crate::types::{
+    Consumer, ConsumerStatus, EncryptionType, HashKeyRange, SequenceNumberRange, Shard,
+    StoredRecord, Stream, StreamStatus,
+};
 use crate::util::current_time_ms;
 use dashmap::DashMap;
-use serde::Serialize;
+use num_bigint::BigUint;
+use num_traits::One;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -62,6 +67,94 @@ struct PersistenceState {
     io_lock: Mutex<()>,
     snapshot_interval_secs: u64,
     last_snapshot_ms: AtomicU64,
+}
+
+/// Internal durable-transition ledger for async state changes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) enum PendingTransition {
+    CreateStream {
+        stream_name: String,
+        ready_at_ms: u64,
+        shards: Vec<Shard>,
+    },
+    DeleteStream {
+        stream_name: String,
+        ready_at_ms: u64,
+    },
+    RegisterConsumer {
+        consumer_arn: String,
+        ready_at_ms: u64,
+    },
+    DeregisterConsumer {
+        consumer_arn: String,
+        ready_at_ms: u64,
+    },
+    UpdateShardCount {
+        stream_name: String,
+        ready_at_ms: u64,
+        target_shard_count: u32,
+    },
+    SplitShard {
+        stream_name: String,
+        ready_at_ms: u64,
+        shard_to_split: String,
+        new_starting_hash_key: String,
+    },
+    MergeShards {
+        stream_name: String,
+        ready_at_ms: u64,
+        shard_to_merge: String,
+        adjacent_shard_to_merge: String,
+    },
+    StartStreamEncryption {
+        stream_name: String,
+        ready_at_ms: u64,
+    },
+    StopStreamEncryption {
+        stream_name: String,
+        ready_at_ms: u64,
+    },
+}
+
+impl PendingTransition {
+    fn key(&self) -> String {
+        match self {
+            Self::CreateStream { stream_name, .. }
+            | Self::DeleteStream { stream_name, .. }
+            | Self::UpdateShardCount { stream_name, .. }
+            | Self::SplitShard { stream_name, .. }
+            | Self::MergeShards { stream_name, .. }
+            | Self::StartStreamEncryption { stream_name, .. }
+            | Self::StopStreamEncryption { stream_name, .. } => {
+                format!("stream:{stream_name}")
+            }
+            Self::RegisterConsumer { consumer_arn, .. }
+            | Self::DeregisterConsumer { consumer_arn, .. } => {
+                format!("consumer:{consumer_arn}")
+            }
+        }
+    }
+
+    fn ready_at_ms(&self) -> u64 {
+        match self {
+            Self::CreateStream { ready_at_ms, .. }
+            | Self::DeleteStream { ready_at_ms, .. }
+            | Self::RegisterConsumer { ready_at_ms, .. }
+            | Self::DeregisterConsumer { ready_at_ms, .. }
+            | Self::UpdateShardCount { ready_at_ms, .. }
+            | Self::SplitShard { ready_at_ms, .. }
+            | Self::MergeShards { ready_at_ms, .. }
+            | Self::StartStreamEncryption { ready_at_ms, .. }
+            | Self::StopStreamEncryption { ready_at_ms, .. } => *ready_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum TransitionMutation {
+    None,
+    Upsert(PendingTransition),
+    Remove(String),
 }
 
 /// Runtime configuration passed to [`crate::create_app`].
@@ -166,6 +259,14 @@ struct ShardThroughputWindow {
     records: u64,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+struct AppliedRecordChange {
+    records_arc: Arc<RwLock<BTreeMap<String, Vec<u8>>>>,
+    key: String,
+    previous: Option<Vec<u8>>,
+    new_bytes_len: u64,
+}
+
 /// Shared inner state behind an [`Arc`] for cheap [`Store`] clones.
 struct StoreInner {
     /// Stream metadata entries.
@@ -178,6 +279,8 @@ struct StoreInner {
     resource_tags: DashMap<String, BTreeMap<String, String>>,
     account_settings: RwLock<Value>,
     throughput_windows: DashMap<String, Arc<Mutex<ShardThroughputWindow>>>,
+    pending_transitions: RwLock<BTreeMap<String, PendingTransition>>,
+    write_lock: Mutex<()>,
 }
 
 /// Handle to the concurrent in-memory stream store.
@@ -280,6 +383,8 @@ impl Store {
             policies: DashMap::new(),
             resource_tags: DashMap::new(),
             account_settings: RwLock::new(Value::Object(Default::default())),
+            pending_transitions: RwLock::new(BTreeMap::new()),
+            write_lock: Mutex::new(()),
         });
 
         let store = Self {
@@ -307,10 +412,12 @@ impl Store {
                         snapshot_interval_secs: store.options.snapshot_interval_secs,
                         last_snapshot_ms: AtomicU64::new(0),
                     });
+                    store.persistence = Some(Arc::clone(&persistence));
                     if let Err(err) = store.load_persistent_state(&persistence) {
                         store.mark_unhealthy(err);
+                    } else if let Err(err) = store.resume_persistent_transitions() {
+                        store.mark_unhealthy(err);
                     }
-                    store.persistence = Some(persistence);
                 }
                 Err(err) => {
                     store.mark_unhealthy(format!("failed to initialize durable state: {err}"))
@@ -361,21 +468,39 @@ impl Store {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn restore_snapshot(&self, snapshot: PersistentSnapshot) -> Result<(), String> {
+        let PersistentSnapshot {
+            streams,
+            records,
+            consumers,
+            policies,
+            resource_tags,
+            account_settings_json,
+            pending_transitions,
+            retained_bytes,
+            retained_records,
+            ..
+        } = snapshot;
         self.inner.streams.clear();
         self.inner.stream_records.clear();
         self.inner.consumers.clear();
         self.inner.policies.clear();
         self.inner.resource_tags.clear();
+        if let Ok(mut transitions) = self.inner.pending_transitions.try_write() {
+            transitions.clear();
+            for transition in pending_transitions {
+                transitions.insert(transition.key(), transition);
+            }
+        }
         if let Ok(mut settings) = self.inner.account_settings.try_write() {
-            *settings = if snapshot.account_settings_json.is_empty() {
+            *settings = if account_settings_json.is_empty() {
                 Value::Object(Default::default())
             } else {
-                serde_json::from_slice(&snapshot.account_settings_json)
+                serde_json::from_slice(&account_settings_json)
                     .map_err(|err| format!("failed to decode persisted account settings: {err}"))?
             };
         }
 
-        for stream in snapshot.streams {
+        for stream in streams {
             let (name, stream_value, shard_counters) = stream.into_parts();
             let entry = Arc::new(StreamEntry {
                 stream: RwLock::new(stream_value),
@@ -391,7 +516,7 @@ impl Store {
             self.inner.streams.insert(name, entry);
         }
 
-        for shard_records in snapshot.records {
+        for shard_records in records {
             let shard_map = self
                 .inner
                 .stream_records
@@ -401,19 +526,103 @@ impl Store {
             shard_map.insert(shard_records.shard_hex, Arc::new(RwLock::new(records)));
         }
 
-        for (consumer_arn, bytes) in snapshot.consumers {
+        for (consumer_arn, bytes) in consumers {
             self.inner.consumers.insert(consumer_arn, bytes);
         }
-        for (resource_arn, policy) in snapshot.policies {
+        for (resource_arn, policy) in policies {
             self.inner.policies.insert(resource_arn, policy);
         }
-        for (resource_arn, tags) in snapshot.resource_tags {
+        for (resource_arn, tags) in resource_tags {
             self.inner.resource_tags.insert(resource_arn, tags);
         }
 
-        self.metrics
-            .set_retained(snapshot.retained_bytes, snapshot.retained_records);
+        self.metrics.set_retained(retained_bytes, retained_records);
         self.refresh_topology_metrics_sync();
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn resume_persistent_transitions(&self) -> Result<(), String> {
+        let transitions_guard = self
+            .inner
+            .pending_transitions
+            .try_read()
+            .map_err(|_| "failed to read pending transitions during recovery".to_string())?;
+        let mut transitions: Vec<PendingTransition> = transitions_guard.values().cloned().collect();
+        drop(transitions_guard);
+
+        let existing_keys: std::collections::BTreeSet<String> =
+            transitions.iter().map(PendingTransition::key).collect();
+        let now = current_time_ms();
+
+        for entry in self.inner.streams.iter() {
+            let stream = entry
+                .value()
+                .stream
+                .try_read()
+                .map_err(|_| format!("failed to inspect recovered stream {}", entry.key()))?;
+            let key = format!("stream:{}", entry.key());
+            if existing_keys.contains(&key) {
+                continue;
+            }
+            match stream.stream_status {
+                StreamStatus::Deleting => transitions.push(PendingTransition::DeleteStream {
+                    stream_name: entry.key().clone(),
+                    ready_at_ms: now,
+                }),
+                StreamStatus::Creating => {
+                    return Err(format!(
+                        "ambiguous persisted stream transition for {}: CREATING without transition metadata",
+                        entry.key()
+                    ));
+                }
+                StreamStatus::Updating => {
+                    return Err(format!(
+                        "ambiguous persisted stream transition for {}: UPDATING without transition metadata",
+                        entry.key()
+                    ));
+                }
+                StreamStatus::Active => {}
+            }
+        }
+
+        for entry in self.inner.consumers.iter() {
+            let consumer: Consumer = serde_json::from_slice(entry.value()).map_err(|err| {
+                format!("failed to decode recovered consumer {}: {err}", entry.key())
+            })?;
+            let key = format!("consumer:{}", entry.key());
+            if existing_keys.contains(&key) {
+                continue;
+            }
+            match consumer.consumer_status {
+                ConsumerStatus::Creating => {
+                    transitions.push(PendingTransition::RegisterConsumer {
+                        consumer_arn: entry.key().clone(),
+                        ready_at_ms: now,
+                    });
+                }
+                ConsumerStatus::Deleting => {
+                    transitions.push(PendingTransition::DeregisterConsumer {
+                        consumer_arn: entry.key().clone(),
+                        ready_at_ms: now,
+                    });
+                }
+                ConsumerStatus::Active => {}
+            }
+        }
+
+        if let Ok(mut pending) = self.inner.pending_transitions.try_write() {
+            for transition in &transitions {
+                pending
+                    .entry(transition.key())
+                    .or_insert_with(|| transition.clone());
+            }
+        }
+
+        for transition in transitions {
+            self.schedule_transition(transition);
+        }
+
         Ok(())
     }
 
@@ -477,6 +686,14 @@ impl Store {
                 serde_json::to_vec(&account_settings)
                     .map_err(|err| format!("failed to encode snapshot account settings: {err}"))?
             },
+            pending_transitions: self
+                .inner
+                .pending_transitions
+                .read()
+                .await
+                .values()
+                .cloned()
+                .collect(),
             retained_bytes: self.metrics.retained_bytes(),
             retained_records: self.metrics.retained_records(),
         })
@@ -501,30 +718,33 @@ impl Store {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    async fn persist_current_state(&self) {
-        if self.persistence.is_none() {
-            return;
-        }
+    async fn persist_current_state_result(&self) -> Result<(), String> {
         let Some(persistence) = &self.persistence else {
-            return;
+            return Ok(());
         };
         let _guard = persistence.io_lock.lock().await;
         let snapshot = match self.export_snapshot().await {
             Ok(snapshot) => snapshot,
             Err(err) => {
                 self.mark_unhealthy(err.clone());
-                tracing::warn!("{err}");
-                return;
+                return Err(err);
             }
         };
 
         self.persist_snapshot(&snapshot).await;
         if !self.health.durable_ok.load(Ordering::Relaxed) {
-            return;
+            let detail = self
+                .health
+                .last_error
+                .read()
+                .ok()
+                .and_then(|guard| guard.clone())
+                .unwrap_or_else(|| "durable state is not ready".to_string());
+            return Err(detail);
         }
 
         if persistence.snapshot_interval_secs == 0 {
-            return;
+            return Ok(());
         }
 
         let now = snapshot.created_at_ms;
@@ -532,7 +752,7 @@ impl Store {
         if now.saturating_sub(last_snapshot)
             < persistence.snapshot_interval_secs.saturating_mul(1000)
         {
-            return;
+            return Ok(());
         }
 
         let backend = persistence.backend.clone();
@@ -551,6 +771,15 @@ impl Store {
                 self.mark_unhealthy(message.clone());
                 tracing::warn!("{message}");
             }
+        }
+
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn persist_current_state(&self) {
+        if let Err(err) = self.persist_current_state_result().await {
+            tracing::warn!("{err}");
         }
     }
 
@@ -612,6 +841,58 @@ impl Store {
             .is_some_and(|limit| self.metrics.retained_bytes() > limit)
     }
 
+    fn retained_limit_error(
+        &self,
+        current_bytes: u64,
+        additional_bytes: u64,
+    ) -> KinesisErrorResponse {
+        self.metrics.increment_rejected_writes();
+        let limit = self.options.max_retained_bytes.unwrap();
+        KinesisErrorResponse::client_error(
+            constants::LIMIT_EXCEEDED,
+            Some(&format!(
+                "Retained bytes limit exceeded: {} + {} > {}.",
+                current_bytes, additional_bytes, limit
+            )),
+        )
+    }
+
+    pub(crate) fn check_writable(&self) -> Result<(), KinesisErrorResponse> {
+        if !self.health.durable_ok.load(Ordering::Relaxed) {
+            let detail = self
+                .health
+                .last_error
+                .read()
+                .ok()
+                .and_then(|guard| guard.clone())
+                .unwrap_or_else(|| "durable state is not ready".to_string());
+            return Err(KinesisErrorResponse::server_error(None, Some(&detail)));
+        }
+        if !self.health.replay_complete.load(Ordering::Relaxed) {
+            return Err(KinesisErrorResponse::server_error(
+                None,
+                Some("durable replay is not complete"),
+            ));
+        }
+        if self.retained_capacity_exceeded() {
+            return Err(self.retained_limit_error(self.metrics.retained_bytes(), 0));
+        }
+        Ok(())
+    }
+
+    async fn apply_transition_mutation(&self, update: TransitionMutation) {
+        let mut transitions = self.inner.pending_transitions.write().await;
+        match update {
+            TransitionMutation::None => {}
+            TransitionMutation::Upsert(transition) => {
+                transitions.insert(transition.key(), transition);
+            }
+            TransitionMutation::Remove(key) => {
+                transitions.remove(&key);
+            }
+        }
+    }
+
     // --- Stream operations ---
 
     /// Retrieves a stream by name.
@@ -631,6 +912,16 @@ impl Store {
 
     /// Inserts or replaces a stream by name.
     pub async fn put_stream(&self, name: &str, stream: Stream) {
+        self.put_stream_with_transition(name, stream, TransitionMutation::None)
+            .await;
+    }
+
+    pub(crate) async fn put_stream_with_transition(
+        &self,
+        name: &str,
+        stream: Stream,
+        transition: TransitionMutation,
+    ) {
         if let Some(existing) = self.inner.streams.get(name) {
             // Update metadata, preserve existing records and seq state.
             let mut guard = existing.stream.write().await;
@@ -643,12 +934,22 @@ impl Store {
             });
             self.inner.streams.insert(name.to_string(), entry);
         }
+        self.apply_transition_mutation(transition).await;
         self.refresh_topology_metrics().await;
         self.persist_current_state().await;
     }
 
     /// Deletes a stream and all of its records.
     pub async fn delete_stream(&self, name: &str) {
+        self.delete_stream_with_transition(name, TransitionMutation::None)
+            .await;
+    }
+
+    pub(crate) async fn delete_stream_with_transition(
+        &self,
+        name: &str,
+        transition: TransitionMutation,
+    ) {
         if let Some(records) = self.inner.stream_records.get(name) {
             let mut bytes = 0u64;
             let mut count = 0u64;
@@ -666,8 +967,7 @@ impl Store {
         self.inner.streams.remove(name);
         self.inner.stream_records.remove(name);
         self.clear_throughput_windows_for_stream(name);
-        self.refresh_topology_metrics().await;
-        self.persist_current_state().await;
+        self.apply_transition_mutation(transition).await;
         self.refresh_topology_metrics().await;
         self.persist_current_state().await;
     }
@@ -710,6 +1010,19 @@ impl Store {
     where
         F: FnOnce(&mut Stream) -> Result<R, KinesisErrorResponse>,
     {
+        self.update_stream_with_transition(name, TransitionMutation::None, f)
+            .await
+    }
+
+    pub(crate) async fn update_stream_with_transition<F, R>(
+        &self,
+        name: &str,
+        transition: TransitionMutation,
+        f: F,
+    ) -> Result<R, KinesisErrorResponse>
+    where
+        F: FnOnce(&mut Stream) -> Result<R, KinesisErrorResponse>,
+    {
         let entry = self
             .inner
             .streams
@@ -721,6 +1034,7 @@ impl Store {
         // Sync shard_seq if the closure added shards (split/merge/reshard).
         sync_shard_seq(&entry, &stream).await;
         drop(stream);
+        self.apply_transition_mutation(transition).await;
         self.refresh_topology_metrics().await;
         self.persist_current_state().await;
         Ok(result)
@@ -777,6 +1091,25 @@ impl Store {
             let message = err.to_string();
             KinesisErrorResponse::server_error(None, Some(&message))
         })?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let needs_write_lock =
+            self.persistence.is_some() || self.options.max_retained_bytes.is_some();
+        #[cfg(target_arch = "wasm32")]
+        let needs_write_lock = self.options.max_retained_bytes.is_some();
+        let _write_guard = if needs_write_lock {
+            Some(self.inner.write_lock.lock().await)
+        } else {
+            None
+        };
+
+        self.check_writable()?;
+
+        let current_bytes = self.metrics.retained_bytes();
+        if let Some(limit) = self.options.max_retained_bytes
+            && current_bytes.saturating_add(bytes.len() as u64) > limit
+        {
+            return Err(self.retained_limit_error(current_bytes, bytes.len() as u64));
+        }
         let shard_hex = shard_hex_from_key(key);
         let shard_map = ensure_shard_map(&self.inner.stream_records, stream_name);
         let records_arc = shard_map
@@ -786,11 +1119,24 @@ impl Store {
             .clone();
         drop(shard_map);
         let mut records = records_arc.write().await;
-        if let Some(previous) = records.insert(key.to_string(), bytes.clone()) {
-            self.metrics.remove_retained(previous.len() as u64, 1);
+        let previous = records.insert(key.to_string(), bytes.clone());
+        if let Some(previous_bytes) = previous.as_ref() {
+            self.metrics.remove_retained(previous_bytes.len() as u64, 1);
         }
         self.metrics.add_retained(bytes.len() as u64, 1);
         drop(records);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Err(err) = self.persist_current_state_result().await {
+            self.rollback_record_change(AppliedRecordChange {
+                records_arc,
+                key: key.to_string(),
+                previous,
+                new_bytes_len: bytes.len() as u64,
+            })
+            .await;
+            return Err(KinesisErrorResponse::server_error(None, Some(&err)));
+        }
+        #[cfg(target_arch = "wasm32")]
         self.persist_current_state().await;
         Ok(())
     }
@@ -801,6 +1147,18 @@ impl Store {
         stream_name: &str,
         batch: &[(String, R)],
     ) -> Result<(), KinesisErrorResponse> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let needs_write_lock =
+            self.persistence.is_some() || self.options.max_retained_bytes.is_some();
+        #[cfg(target_arch = "wasm32")]
+        let needs_write_lock = self.options.max_retained_bytes.is_some();
+        let _write_guard = if needs_write_lock {
+            Some(self.inner.write_lock.lock().await)
+        } else {
+            None
+        };
+
+        self.check_writable()?;
         // Phase 1: collect Arc refs and serialized bytes while holding the DashMap ref.
         let pending: Result<Vec<_>, KinesisErrorResponse> = {
             let shard_map = ensure_shard_map(&self.inner.stream_records, stream_name);
@@ -823,14 +1181,39 @@ impl Store {
         }; // shard_map Ref dropped here — no DashMap lock held across await.
         let pending = pending?;
 
+        let additional_bytes: u64 = pending.iter().map(|(_, _, bytes)| bytes.len() as u64).sum();
+        let current_bytes = self.metrics.retained_bytes();
+        if let Some(limit) = self.options.max_retained_bytes
+            && current_bytes.saturating_add(additional_bytes) > limit
+        {
+            return Err(self.retained_limit_error(current_bytes, additional_bytes));
+        }
+
         // Phase 2: insert records under per-shard write locks only.
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut applied = Vec::with_capacity(pending.len());
         for (records_arc, key, bytes) in pending {
             let mut records = records_arc.write().await;
-            if let Some(previous) = records.insert(key, bytes.clone()) {
-                self.metrics.remove_retained(previous.len() as u64, 1);
+            let previous = records.insert(key.clone(), bytes.clone());
+            if let Some(previous_bytes) = previous.as_ref() {
+                self.metrics.remove_retained(previous_bytes.len() as u64, 1);
             }
             self.metrics.add_retained(bytes.len() as u64, 1);
+            drop(records);
+            #[cfg(not(target_arch = "wasm32"))]
+            applied.push(AppliedRecordChange {
+                records_arc,
+                key,
+                previous,
+                new_bytes_len: bytes.len() as u64,
+            });
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Err(err) = self.persist_current_state_result().await {
+            self.rollback_record_changes(&applied).await;
+            return Err(KinesisErrorResponse::server_error(None, Some(&err)));
+        }
+        #[cfg(target_arch = "wasm32")]
         self.persist_current_state().await;
         Ok(())
     }
@@ -869,12 +1252,14 @@ impl Store {
 
             if !keys_to_delete.is_empty() {
                 let mut records = records_arc.write().await;
+                let mut removed = 0usize;
                 for key in &keys_to_delete {
                     if let Some(bytes) = records.remove(key) {
                         bytes_deleted += bytes.len() as u64;
+                        removed += 1;
                     }
                 }
-                total_deleted += keys_to_delete.len();
+                total_deleted += removed;
             }
         }
 
@@ -905,16 +1290,17 @@ impl Store {
         }; // DashMap Ref dropped here.
 
         // Phase 2: delete under per-shard write locks only.
-        let pending_len = pending.len() as u64;
+        let mut removed_count = 0u64;
         let mut bytes_deleted = 0u64;
         for (records_arc, key) in pending {
             let mut records = records_arc.write().await;
             if let Some(bytes) = records.remove(&key) {
                 bytes_deleted += bytes.len() as u64;
+                removed_count += 1;
             }
         }
-        if pending_len > 0 {
-            self.metrics.remove_retained(bytes_deleted, pending_len);
+        if removed_count > 0 {
+            self.metrics.remove_retained(bytes_deleted, removed_count);
             self.persist_current_state().await;
         }
     }
@@ -1005,8 +1391,19 @@ impl Store {
 
     /// Inserts or replaces a consumer keyed by its ARN.
     pub async fn put_consumer(&self, consumer_arn: &str, consumer: Consumer) {
+        self.put_consumer_with_transition(consumer_arn, consumer, TransitionMutation::None)
+            .await;
+    }
+
+    pub(crate) async fn put_consumer_with_transition(
+        &self,
+        consumer_arn: &str,
+        consumer: Consumer,
+        transition: TransitionMutation,
+    ) {
         let bytes = serde_json::to_vec(&consumer).unwrap();
         self.inner.consumers.insert(consumer_arn.to_string(), bytes);
+        self.apply_transition_mutation(transition).await;
         self.persist_current_state().await;
     }
 
@@ -1020,7 +1417,17 @@ impl Store {
 
     /// Deletes the consumer with the given ARN.
     pub async fn delete_consumer(&self, consumer_arn: &str) {
+        self.delete_consumer_with_transition(consumer_arn, TransitionMutation::None)
+            .await;
+    }
+
+    pub(crate) async fn delete_consumer_with_transition(
+        &self,
+        consumer_arn: &str,
+        transition: TransitionMutation,
+    ) {
         self.inner.consumers.remove(consumer_arn);
+        self.apply_transition_mutation(transition).await;
         self.persist_current_state().await;
     }
 
@@ -1307,6 +1714,488 @@ impl Store {
         }
 
         Ok(allocations)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn rollback_record_change(&self, change: AppliedRecordChange) {
+        let mut records = change.records_arc.write().await;
+        match change.previous {
+            Some(previous) => {
+                records.insert(change.key, previous.clone());
+                self.metrics.remove_retained(change.new_bytes_len, 1);
+                self.metrics.add_retained(previous.len() as u64, 1);
+            }
+            None => {
+                records.remove(&change.key);
+                self.metrics.remove_retained(change.new_bytes_len, 1);
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn rollback_record_changes(&self, changes: &[AppliedRecordChange]) {
+        for change in changes.iter().rev() {
+            self.rollback_record_change(AppliedRecordChange {
+                records_arc: Arc::clone(&change.records_arc),
+                key: change.key.clone(),
+                previous: change.previous.clone(),
+                new_bytes_len: change.new_bytes_len,
+            })
+            .await;
+        }
+    }
+
+    pub(crate) fn schedule_transition(&self, transition: PendingTransition) {
+        let store = self.clone();
+        crate::runtime::spawn_background(async move {
+            let delay = transition.ready_at_ms().saturating_sub(current_time_ms());
+            if delay > 0 {
+                crate::runtime::sleep_ms(delay).await;
+            }
+            if let Err(err) = store.finish_transition(transition).await {
+                #[cfg(not(target_arch = "wasm32"))]
+                store.mark_unhealthy(err.clone());
+                tracing::warn!("{err}");
+            }
+        });
+    }
+
+    async fn finish_transition(&self, transition: PendingTransition) -> Result<(), String> {
+        let key = transition.key();
+        let has_transition = self
+            .inner
+            .pending_transitions
+            .read()
+            .await
+            .contains_key(&key);
+        if !has_transition {
+            return Ok(());
+        }
+
+        match transition {
+            PendingTransition::CreateStream {
+                stream_name,
+                shards,
+                ..
+            } => self
+                .update_stream_with_transition(
+                    &stream_name,
+                    TransitionMutation::Remove(key),
+                    move |stream| {
+                        if stream.stream_status != StreamStatus::Creating {
+                            return Err(KinesisErrorResponse::server_error(
+                                None,
+                                Some("recovered CreateStream transition found stream in unexpected state"),
+                            ));
+                        }
+                        stream.stream_status = StreamStatus::Active;
+                        stream.shards = shards;
+                        Ok(())
+                    },
+                )
+                .await
+                .map_err(|err| err.to_string()),
+            PendingTransition::DeleteStream { stream_name, .. } => {
+                let stream = self
+                    .get_stream(&stream_name)
+                    .await
+                    .map_err(|err| err.to_string())?;
+                if stream.stream_status != StreamStatus::Deleting {
+                    return Err(format!(
+                        "recovered DeleteStream transition found {} in unexpected state {}",
+                        stream_name, stream.stream_status
+                    ));
+                }
+                self.delete_stream_with_transition(&stream_name, TransitionMutation::Remove(key))
+                    .await;
+                Ok(())
+            }
+            PendingTransition::RegisterConsumer { consumer_arn, .. } => {
+                let mut consumer = self
+                    .get_consumer(&consumer_arn)
+                    .await
+                    .ok_or_else(|| {
+                        format!(
+                            "recovered RegisterStreamConsumer transition missing {consumer_arn}"
+                        )
+                    })?;
+                if consumer.consumer_status != ConsumerStatus::Creating {
+                    return Err(format!(
+                        "recovered RegisterStreamConsumer transition found {} in unexpected state {}",
+                        consumer_arn, consumer.consumer_status
+                    ));
+                }
+                consumer.consumer_status = ConsumerStatus::Active;
+                self.put_consumer_with_transition(
+                    &consumer_arn,
+                    consumer,
+                    TransitionMutation::Remove(key),
+                )
+                .await;
+                Ok(())
+            }
+            PendingTransition::DeregisterConsumer { consumer_arn, .. } => {
+                let consumer = self
+                    .get_consumer(&consumer_arn)
+                    .await
+                    .ok_or_else(|| {
+                        format!(
+                            "recovered DeregisterStreamConsumer transition missing {consumer_arn}"
+                        )
+                    })?;
+                if consumer.consumer_status != ConsumerStatus::Deleting {
+                    return Err(format!(
+                        "recovered DeregisterStreamConsumer transition found {} in unexpected state {}",
+                        consumer_arn, consumer.consumer_status
+                    ));
+                }
+                self.delete_consumer_with_transition(
+                    &consumer_arn,
+                    TransitionMutation::Remove(key),
+                )
+                .await;
+                Ok(())
+            }
+            PendingTransition::UpdateShardCount {
+                stream_name,
+                target_shard_count,
+                ..
+            } => self
+                .update_stream_with_transition(
+                    &stream_name,
+                    TransitionMutation::Remove(key),
+                    move |stream| {
+                        if stream.stream_status != StreamStatus::Updating {
+                            return Err(KinesisErrorResponse::server_error(
+                                None,
+                                Some("recovered UpdateShardCount transition found stream in unexpected state"),
+                            ));
+                        }
+
+                        let now = current_time_ms();
+                        let open_indices: Vec<usize> = stream
+                            .shards
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, s)| s.sequence_number_range.ending_sequence_number.is_none())
+                            .map(|(i, _)| i)
+                            .collect();
+
+                        for &ix in &open_indices {
+                            let create_time = sequence::parse_sequence(
+                                &stream.shards[ix]
+                                    .sequence_number_range
+                                    .starting_sequence_number,
+                            )
+                            .map(|s| s.shard_create_time)
+                            .unwrap_or(0);
+
+                            stream.shards[ix]
+                                .sequence_number_range
+                                .ending_sequence_number =
+                                Some(sequence::stringify_sequence(&sequence::SeqObj {
+                                    shard_create_time: create_time,
+                                    shard_ix: ix as i64,
+                                    seq_ix: Some(sequence::MAX_SEQ_IX),
+                                    seq_time: Some(now),
+                                    byte1: None,
+                                    seq_rand: None,
+                                    version: 2,
+                                }));
+                        }
+
+                        let pow_128 = BigUint::one() << 128;
+                        let shard_hash = &pow_128 / BigUint::from(target_shard_count);
+
+                        for i in 0..target_shard_count {
+                            let new_ix = stream.shards.len() as i64;
+                            let start: BigUint = &shard_hash * BigUint::from(i);
+                            let end: BigUint = if i < target_shard_count - 1 {
+                                &shard_hash * BigUint::from(i + 1) - BigUint::one()
+                            } else {
+                                &pow_128 - BigUint::one()
+                            };
+
+                            stream.shards.push(Shard {
+                                shard_id: sequence::shard_id_name(new_ix),
+                                parent_shard_id: None,
+                                adjacent_parent_shard_id: None,
+                                hash_key_range: HashKeyRange::new(
+                                    start.to_string(),
+                                    end.to_string(),
+                                ),
+                                sequence_number_range: SequenceNumberRange {
+                                    starting_sequence_number: sequence::stringify_sequence(
+                                        &sequence::SeqObj {
+                                            shard_create_time: now + 1000,
+                                            shard_ix: new_ix,
+                                            seq_ix: None,
+                                            seq_time: None,
+                                            byte1: None,
+                                            seq_rand: None,
+                                            version: 2,
+                                        },
+                                    ),
+                                    ending_sequence_number: None,
+                                },
+                            });
+                        }
+
+                        stream.stream_status = StreamStatus::Active;
+                        Ok(())
+                    },
+                )
+                .await
+                .map_err(|err| err.to_string()),
+            PendingTransition::SplitShard {
+                stream_name,
+                shard_to_split,
+                new_starting_hash_key,
+                ..
+            } => self
+                .update_stream_with_transition(
+                    &stream_name,
+                    TransitionMutation::Remove(key),
+                    move |stream| {
+                        if stream.stream_status != StreamStatus::Updating {
+                            return Err(KinesisErrorResponse::server_error(
+                                None,
+                                Some("recovered SplitShard transition found stream in unexpected state"),
+                            ));
+                        }
+
+                        let (shard_id, shard_ix) = sequence::resolve_shard_id(&shard_to_split)
+                            .map_err(|_| {
+                                KinesisErrorResponse::server_error(
+                                    None,
+                                    Some("recovered SplitShard transition has invalid shard id"),
+                                )
+                            })?;
+                        if shard_ix >= stream.shards.len() as i64 {
+                            return Err(KinesisErrorResponse::server_error(
+                                None,
+                                Some("recovered SplitShard transition points to missing shard"),
+                            ));
+                        }
+
+                        let hash_key = new_starting_hash_key.parse::<u128>().map_err(|_| {
+                            KinesisErrorResponse::server_error(
+                                None,
+                                Some("recovered SplitShard transition has invalid hash key"),
+                            )
+                        })?;
+                        let shard_start = stream.shards[shard_ix as usize]
+                            .hash_key_range
+                            .start_u128();
+                        let shard_end = stream.shards[shard_ix as usize]
+                            .hash_key_range
+                            .end_u128();
+
+                        let now = current_time_ms();
+                        stream.stream_status = StreamStatus::Active;
+
+                        let shard = &mut stream.shards[shard_ix as usize];
+                        let create_time = sequence::parse_sequence(
+                            &shard.sequence_number_range.starting_sequence_number,
+                        )
+                        .map(|s| s.shard_create_time)
+                        .unwrap_or(0);
+
+                        shard.sequence_number_range.ending_sequence_number =
+                            Some(sequence::stringify_sequence(&sequence::SeqObj {
+                                shard_create_time: create_time,
+                                shard_ix,
+                                seq_ix: Some(sequence::MAX_SEQ_IX),
+                                seq_time: Some(now),
+                                byte1: None,
+                                seq_rand: None,
+                                version: 2,
+                            }));
+
+                        let new_ix1 = stream.shards.len() as i64;
+                        stream.shards.push(Shard {
+                            parent_shard_id: Some(shard_id.clone()),
+                            adjacent_parent_shard_id: None,
+                            hash_key_range: HashKeyRange::new(
+                                shard_start.to_string(),
+                                (hash_key - 1).to_string(),
+                            ),
+                            sequence_number_range: SequenceNumberRange {
+                                starting_sequence_number: sequence::stringify_sequence(
+                                    &sequence::SeqObj {
+                                        shard_create_time: now + 1000,
+                                        shard_ix: new_ix1,
+                                        seq_ix: None,
+                                        seq_time: None,
+                                        byte1: None,
+                                        seq_rand: None,
+                                        version: 2,
+                                    },
+                                ),
+                                ending_sequence_number: None,
+                            },
+                            shard_id: sequence::shard_id_name(new_ix1),
+                        });
+
+                        let new_ix2 = stream.shards.len() as i64;
+                        stream.shards.push(Shard {
+                            parent_shard_id: Some(shard_id),
+                            adjacent_parent_shard_id: None,
+                            hash_key_range: HashKeyRange::new(
+                                hash_key.to_string(),
+                                shard_end.to_string(),
+                            ),
+                            sequence_number_range: SequenceNumberRange {
+                                starting_sequence_number: sequence::stringify_sequence(
+                                    &sequence::SeqObj {
+                                        shard_create_time: now + 1000,
+                                        shard_ix: new_ix2,
+                                        seq_ix: None,
+                                        seq_time: None,
+                                        byte1: None,
+                                        seq_rand: None,
+                                        version: 2,
+                                    },
+                                ),
+                                ending_sequence_number: None,
+                            },
+                            shard_id: sequence::shard_id_name(new_ix2),
+                        });
+
+                        Ok(())
+                    },
+                )
+                .await
+                .map_err(|err| err.to_string()),
+            PendingTransition::MergeShards {
+                stream_name,
+                shard_to_merge,
+                adjacent_shard_to_merge,
+                ..
+            } => self
+                .update_stream_with_transition(
+                    &stream_name,
+                    TransitionMutation::Remove(key),
+                    move |stream| {
+                        if stream.stream_status != StreamStatus::Updating {
+                            return Err(KinesisErrorResponse::server_error(
+                                None,
+                                Some("recovered MergeShards transition found stream in unexpected state"),
+                            ));
+                        }
+
+                        let (shard_id0, shard_ix0) =
+                            sequence::resolve_shard_id(&shard_to_merge).map_err(|_| {
+                                KinesisErrorResponse::server_error(
+                                    None,
+                                    Some("recovered MergeShards transition has invalid shard id"),
+                                )
+                            })?;
+                        let (shard_id1, shard_ix1) =
+                            sequence::resolve_shard_id(&adjacent_shard_to_merge).map_err(|_| {
+                                KinesisErrorResponse::server_error(
+                                    None,
+                                    Some("recovered MergeShards transition has invalid adjacent shard id"),
+                                )
+                            })?;
+
+                        let now = current_time_ms();
+                        stream.stream_status = StreamStatus::Active;
+
+                        for &ix in &[shard_ix0, shard_ix1] {
+                            let shard = &mut stream.shards[ix as usize];
+                            let create_time = sequence::parse_sequence(
+                                &shard.sequence_number_range.starting_sequence_number,
+                            )
+                            .map(|s| s.shard_create_time)
+                            .unwrap_or(0);
+
+                            shard.sequence_number_range.ending_sequence_number =
+                                Some(sequence::stringify_sequence(&sequence::SeqObj {
+                                    shard_create_time: create_time,
+                                    shard_ix: ix,
+                                    seq_ix: Some(sequence::MAX_SEQ_IX),
+                                    seq_time: Some(now),
+                                    byte1: None,
+                                    seq_rand: None,
+                                    version: 2,
+                                }));
+                        }
+
+                        let new_ix = stream.shards.len() as i64;
+                        let starting_hash = stream.shards[shard_ix0 as usize]
+                            .hash_key_range
+                            .starting_hash_key
+                            .clone();
+                        let ending_hash = stream.shards[shard_ix1 as usize]
+                            .hash_key_range
+                            .ending_hash_key
+                            .clone();
+
+                        stream.shards.push(Shard {
+                            parent_shard_id: Some(shard_id0),
+                            adjacent_parent_shard_id: Some(shard_id1),
+                            hash_key_range: HashKeyRange::new(starting_hash, ending_hash),
+                            sequence_number_range: SequenceNumberRange {
+                                starting_sequence_number: sequence::stringify_sequence(
+                                    &sequence::SeqObj {
+                                        shard_create_time: now + 1000,
+                                        shard_ix: new_ix,
+                                        seq_ix: None,
+                                        seq_time: None,
+                                        byte1: None,
+                                        seq_rand: None,
+                                        version: 2,
+                                    },
+                                ),
+                                ending_sequence_number: None,
+                            },
+                            shard_id: sequence::shard_id_name(new_ix),
+                        });
+
+                        Ok(())
+                    },
+                )
+                .await
+                .map_err(|err| err.to_string()),
+            PendingTransition::StartStreamEncryption { stream_name, .. } => self
+                .update_stream_with_transition(
+                    &stream_name,
+                    TransitionMutation::Remove(key),
+                    |stream| {
+                        if stream.stream_status != StreamStatus::Updating {
+                            return Err(KinesisErrorResponse::server_error(
+                                None,
+                                Some("recovered StartStreamEncryption transition found stream in unexpected state"),
+                            ));
+                        }
+                        stream.stream_status = StreamStatus::Active;
+                        stream.encryption_type = EncryptionType::Kms;
+                        Ok(())
+                    },
+                )
+                .await
+                .map_err(|err| err.to_string()),
+            PendingTransition::StopStreamEncryption { stream_name, .. } => self
+                .update_stream_with_transition(
+                    &stream_name,
+                    TransitionMutation::Remove(key),
+                    |stream| {
+                        if stream.stream_status != StreamStatus::Updating {
+                            return Err(KinesisErrorResponse::server_error(
+                                None,
+                                Some("recovered StopStreamEncryption transition found stream in unexpected state"),
+                            ));
+                        }
+                        stream.stream_status = StreamStatus::Active;
+                        stream.encryption_type = EncryptionType::None;
+                        stream.key_id = None;
+                        Ok(())
+                    },
+                )
+                .await
+                .map_err(|err| err.to_string()),
+        }
     }
 
     /// Returns the current per-shard sequence counter (the next seq_ix that would
