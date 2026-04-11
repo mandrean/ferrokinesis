@@ -28,6 +28,9 @@ pub struct CaptureRecord {
     pub ts: u64,
     /// Stream name the record was written to.
     pub stream: String,
+    /// Original stream ARN, if the request used `StreamARN`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_arn: Option<String>,
     /// Partition key (possibly scrubbed).
     pub partition_key: String,
     /// Record data (base64-encoded).

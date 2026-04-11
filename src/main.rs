@@ -162,7 +162,7 @@ struct ServeArgs {
 
     /// Path to write mirror dead-letter records (NDJSON)
     #[cfg(feature = "mirror")]
-    #[arg(long, env = "FERROKINESIS_MIRROR_DEAD_LETTER", requires = "mirror_to")]
+    #[arg(long, env = "FERROKINESIS_MIRROR_DEAD_LETTER")]
     mirror_dead_letter: Option<PathBuf>,
 
     /// Path to TLS certificate PEM file (enables HTTPS)
@@ -653,10 +653,14 @@ async fn run_replay(args: ReplayArgs) -> ExitCode {
         }
 
         let mut body = serde_json::json!({
-            constants::STREAM_NAME: record.stream,
             constants::DATA: record.data,
             constants::PARTITION_KEY: record.partition_key,
         });
+        if let Some(ref stream_arn) = record.stream_arn {
+            body[constants::STREAM_ARN] = serde_json::Value::String(stream_arn.clone());
+        } else {
+            body[constants::STREAM_NAME] = serde_json::Value::String(record.stream.clone());
+        }
         if let Some(ref ehk) = record.explicit_hash_key {
             body[constants::EXPLICIT_HASH_KEY] = serde_json::Value::String(ehk.clone());
         }
@@ -832,6 +836,12 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
             initial_backoff: Duration::from_millis(mirror_initial_backoff_ms),
             max_backoff: Duration::from_millis(mirror_max_backoff_ms),
         };
+        if mirror_to.is_none() && mirror_dead_letter.is_some() {
+            tracing::error!(
+                "mirror dead-letter requires a mirror target from --mirror-to, FERROKINESIS_MIRROR_TO, or [mirror].to"
+            );
+            return ExitCode::FAILURE;
+        }
         if let Some(endpoint) = mirror_to {
             let dead_letter_writer = match mirror_dead_letter {
                 Some(ref path) => match ferrokinesis::mirror::MirrorDeadLetterWriter::new(path) {
@@ -980,6 +990,8 @@ mod tests {
             mirror_initial_backoff_ms: None,
             #[cfg(feature = "mirror")]
             mirror_max_backoff_ms: None,
+            #[cfg(feature = "mirror")]
+            mirror_dead_letter: None,
             #[cfg(feature = "tls")]
             tls_cert: None,
             #[cfg(feature = "tls")]
@@ -1039,5 +1051,22 @@ mod tests {
         assert_eq!(durable.snapshot_interval_secs, 17);
         assert_eq!(durable.max_retained_bytes, Some(2048));
         assert_eq!(options.max_retained_bytes, Some(2048));
+    }
+
+    #[cfg(feature = "mirror")]
+    #[test]
+    fn mirror_dead_letter_cli_parses_without_mirror_to() {
+        let cli = Cli::try_parse_from([
+            "ferrokinesis",
+            "--mirror-dead-letter",
+            "/tmp/mirror-dead-letter.ndjson",
+        ])
+        .expect("dead-letter path should not require --mirror-to at clap parse time");
+
+        assert_eq!(
+            cli.serve_args.mirror_dead_letter,
+            Some(PathBuf::from("/tmp/mirror-dead-letter.ndjson"))
+        );
+        assert_eq!(cli.serve_args.mirror_to, None);
     }
 }
