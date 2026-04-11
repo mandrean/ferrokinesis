@@ -133,4 +133,31 @@ async fn health_ready_returns_503_when_durable_state_fails_to_initialize() {
             .unwrap()
             .contains("failed to initialize durable state")
     );
+
+    let (status, body) = decode_body(
+        server
+            .request(
+                "CreateStream",
+                &serde_json::json!({
+                    "StreamName": "blocked-during-durable-init-failure",
+                    "ShardCount": 1,
+                }),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(status, 500);
+    assert_eq!(body["__type"], "InternalFailure");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("failed to initialize durable state")
+    );
+    assert!(
+        !server
+            .store
+            .contains_stream("blocked-during-durable-init-failure")
+            .await
+    );
 }

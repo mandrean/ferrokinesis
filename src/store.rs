@@ -727,10 +727,16 @@ impl Store {
 
     #[cfg(not(target_arch = "wasm32"))]
     async fn persist_current_state_result(&self) -> Result<(), String> {
+        if let Some(detail) = self.persistent_mutation_block_reason() {
+            return Err(detail);
+        }
         let Some(persistence) = &self.persistence else {
             return Ok(());
         };
         let _guard = persistence.io_lock.lock().await;
+        if let Some(detail) = self.persistent_mutation_block_reason() {
+            return Err(detail);
+        }
         let snapshot = match self.export_snapshot().await {
             Ok(snapshot) => snapshot,
             Err(err) => {
@@ -741,13 +747,7 @@ impl Store {
 
         self.persist_snapshot(&snapshot).await;
         if !self.health.durable_ok.load(Ordering::Relaxed) {
-            let detail = self
-                .health
-                .last_error
-                .read()
-                .ok()
-                .and_then(|guard| guard.clone())
-                .unwrap_or_else(|| "durable state is not ready".to_string());
+            let detail = self.durable_state_error_detail();
             return Err(detail);
         }
 
@@ -858,15 +858,22 @@ impl Store {
         )
     }
 
+    fn durable_state_requested(&self) -> bool {
+        self.options.state_dir.is_some()
+    }
+
+    fn durable_state_error_detail(&self) -> String {
+        self.health
+            .last_error
+            .read()
+            .ok()
+            .and_then(|guard| guard.clone())
+            .unwrap_or_else(|| "durable state is not ready".to_string())
+    }
+
     pub(crate) fn check_writable(&self) -> Result<(), KinesisErrorResponse> {
         if !self.health.durable_ok.load(Ordering::Relaxed) {
-            let detail = self
-                .health
-                .last_error
-                .read()
-                .ok()
-                .and_then(|guard| guard.clone())
-                .unwrap_or_else(|| "durable state is not ready".to_string());
+            let detail = self.durable_state_error_detail();
             return Err(KinesisErrorResponse::server_error(None, Some(&detail)));
         }
         if !self.health.replay_complete.load(Ordering::Relaxed) {
@@ -882,25 +889,26 @@ impl Store {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn check_persistent_mutation_allowed(&self) -> Result<(), KinesisErrorResponse> {
-        if self.persistence.is_none() {
-            return Ok(());
+    fn persistent_mutation_block_reason(&self) -> Option<String> {
+        if !self.durable_state_requested() {
+            return None;
         }
         if !self.health.durable_ok.load(Ordering::Relaxed) {
-            let detail = self
-                .health
-                .last_error
-                .read()
-                .ok()
-                .and_then(|guard| guard.clone())
-                .unwrap_or_else(|| "durable state is not ready".to_string());
-            return Err(KinesisErrorResponse::server_error(None, Some(&detail)));
+            return Some(self.durable_state_error_detail());
         }
         if !self.health.replay_complete.load(Ordering::Relaxed) {
-            return Err(KinesisErrorResponse::server_error(
-                None,
-                Some("durable replay is not complete"),
-            ));
+            return Some("durable replay is not complete".to_string());
+        }
+        if self.persistence.is_none() {
+            return Some("durable state backend is unavailable".to_string());
+        }
+        None
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn check_persistent_mutation_allowed(&self) -> Result<(), KinesisErrorResponse> {
+        if let Some(detail) = self.persistent_mutation_block_reason() {
+            return Err(KinesisErrorResponse::server_error(None, Some(&detail)));
         }
         Ok(())
     }
@@ -966,12 +974,12 @@ impl Store {
         transition: &TransitionMutation,
         skip_write_lock: bool,
     ) -> Result<Option<tokio::sync::MutexGuard<'a, ()>>, KinesisErrorResponse> {
-        if self.persistence.is_some() {
+        if self.durable_state_requested() {
             self.check_persistent_mutation_allowed()?;
         }
 
         let needs_lock = !skip_write_lock
-            && (self.persistence.is_some() || Self::transition_requires_write_lock(transition));
+            && (self.durable_state_requested() || Self::transition_requires_write_lock(transition));
         if needs_lock {
             Ok(Some(self.inner.write_lock.lock().await))
         } else {
@@ -1696,7 +1704,12 @@ impl Store {
     /// the retention cutoff. Returns the number of records removed.
     pub async fn delete_expired_records(&self, stream_name: &str, retention_hours: u32) -> usize {
         #[cfg(not(target_arch = "wasm32"))]
-        let _write_guard = if self.persistence.is_some() {
+        if self.durable_state_requested() && self.check_persistent_mutation_allowed().is_err() {
+            return 0;
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let _write_guard = if self.durable_state_requested() {
             Some(self.inner.write_lock.lock().await)
         } else {
             None
@@ -1776,7 +1789,12 @@ impl Store {
     /// Deletes records by their shard keys within a stream.
     pub async fn delete_record_keys(&self, stream_name: &str, keys: &[String]) {
         #[cfg(not(target_arch = "wasm32"))]
-        let _write_guard = if self.persistence.is_some() {
+        if self.durable_state_requested() && self.check_persistent_mutation_allowed().is_err() {
+            return;
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let _write_guard = if self.durable_state_requested() {
             Some(self.inner.write_lock.lock().await)
         } else {
             None
@@ -1835,7 +1853,6 @@ impl Store {
             if let Err(err) = self.persist_current_state_result().await {
                 self.rollback_delete_changes(&applied).await;
                 tracing::warn!("{err}");
-                return;
             }
             #[cfg(target_arch = "wasm32")]
             self.persist_current_state().await;
@@ -2069,7 +2086,7 @@ impl Store {
         policy: &str,
     ) -> Result<(), KinesisErrorResponse> {
         #[cfg(not(target_arch = "wasm32"))]
-        let _write_guard = if self.persistence.is_some() {
+        let _write_guard = if self.durable_state_requested() {
             self.check_persistent_mutation_allowed()?;
             Some(self.inner.write_lock.lock().await)
         } else {
@@ -2109,7 +2126,7 @@ impl Store {
     /// Deletes the resource policy for the given ARN.
     pub async fn delete_policy(&self, resource_arn: &str) -> Result<(), KinesisErrorResponse> {
         #[cfg(not(target_arch = "wasm32"))]
-        let _write_guard = if self.persistence.is_some() {
+        let _write_guard = if self.durable_state_requested() {
             self.check_persistent_mutation_allowed()?;
             Some(self.inner.write_lock.lock().await)
         } else {
@@ -2203,7 +2220,7 @@ impl Store {
         tags: &BTreeMap<String, String>,
     ) -> Result<(), KinesisErrorResponse> {
         #[cfg(not(target_arch = "wasm32"))]
-        let _write_guard = if self.persistence.is_some() {
+        let _write_guard = if self.durable_state_requested() {
             self.check_persistent_mutation_allowed()?;
             Some(self.inner.write_lock.lock().await)
         } else {
@@ -2242,7 +2259,7 @@ impl Store {
     /// Stores the account-level settings object.
     pub async fn put_account_settings(&self, settings: &Value) -> Result<(), KinesisErrorResponse> {
         #[cfg(not(target_arch = "wasm32"))]
-        let _write_guard = if self.persistence.is_some() {
+        let _write_guard = if self.durable_state_requested() {
             self.check_persistent_mutation_allowed()?;
             Some(self.inner.write_lock.lock().await)
         } else {

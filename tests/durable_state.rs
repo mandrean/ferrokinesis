@@ -931,6 +931,110 @@ async fn durable_store_rejects_subsequent_writes_after_snapshot_failure() {
 }
 
 #[tokio::test]
+async fn durable_store_skips_delete_record_keys_after_snapshot_failure() {
+    let dir = tempdir().unwrap();
+    let options = durable_options(dir.path(), 1);
+    let store = Store::new(options.clone());
+
+    store
+        .put_record(
+            "delete-keys-snapshot-failure",
+            "aabbccdd/seq001",
+            &StoredRecord {
+                partition_key: "pk-1".to_string(),
+                data: "AAAA".to_string(),
+                approximate_arrival_timestamp: 1.0,
+            },
+        )
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+    fs::create_dir(dir.path().join("snapshot.bin.tmp")).unwrap();
+
+    store
+        .put_record(
+            "delete-keys-snapshot-failure",
+            "aabbccdd/seq002",
+            &StoredRecord {
+                partition_key: "pk-2".to_string(),
+                data: "BBBB".to_string(),
+                approximate_arrival_timestamp: 2.0,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(store.check_ready().is_err());
+
+    store
+        .delete_record_keys(
+            "delete-keys-snapshot-failure",
+            &["aabbccdd/seq001".to_string()],
+        )
+        .await;
+
+    assert_eq!(
+        store
+            .get_record_store("delete-keys-snapshot-failure")
+            .await
+            .len(),
+        2
+    );
+    drop(store);
+
+    let recovered = Store::new(options);
+    assert_eq!(
+        recovered
+            .get_record_store("delete-keys-snapshot-failure")
+            .await
+            .len(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn durable_store_skips_delete_expired_records_after_snapshot_failure() {
+    let dir = tempdir().unwrap();
+    let options = durable_options(dir.path(), 1);
+    let store = Store::new(options.clone());
+    create_active_stream(&store, "expired-snapshot-failure").await;
+
+    let expired_time = current_time_ms() - 25 * 60 * 60 * 1000;
+    insert_backdated_record(&store, "expired-snapshot-failure", 1, expired_time).await;
+
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+    fs::create_dir(dir.path().join("snapshot.bin.tmp")).unwrap();
+
+    put_record(&store, "expired-snapshot-failure", "AAAA", "pk-current")
+        .await
+        .unwrap();
+    assert!(store.check_ready().is_err());
+
+    let deleted = store
+        .delete_expired_records("expired-snapshot-failure", 24)
+        .await;
+
+    assert_eq!(deleted, 0);
+    assert_eq!(
+        store
+            .get_record_store("expired-snapshot-failure")
+            .await
+            .len(),
+        2
+    );
+    drop(store);
+
+    let recovered = Store::new(options);
+    assert_eq!(
+        recovered
+            .get_record_store("expired-snapshot-failure")
+            .await
+            .len(),
+        2
+    );
+}
+
+#[tokio::test]
 async fn recovered_store_rejects_writes_when_replay_failed() {
     let dir = tempdir().unwrap();
     let options = durable_options(dir.path(), 0);
