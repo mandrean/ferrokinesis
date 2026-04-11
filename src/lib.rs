@@ -41,6 +41,7 @@
 pub mod actions;
 #[cfg(feature = "server")]
 pub mod capture;
+mod checkpoint;
 #[cfg(feature = "server")]
 pub mod config;
 #[doc(hidden)]
