@@ -1,7 +1,6 @@
 use crate::constants;
 use crate::error::KinesisErrorResponse;
-use crate::store::{PendingTransition, Store, TransitionMutation};
-use crate::types::*;
+use crate::store::{PendingTransition, Store};
 use crate::util::current_time_ms;
 use serde_json::{Value, json};
 
@@ -17,40 +16,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     };
 
     let current_count = store
-        .update_stream_with_transition(
-            stream_name,
-            TransitionMutation::Upsert(transition.clone()),
-            |stream| {
-                if stream.stream_status != StreamStatus::Active {
-                    return Err(KinesisErrorResponse::client_error(
-                        constants::RESOURCE_IN_USE,
-                        Some(&format!(
-                            "Stream {} under account {} not ACTIVE, instead in state {}",
-                            stream_name, store.aws_account_id, stream.stream_status
-                        )),
-                    ));
-                }
-
-                let current_count = stream
-                    .shards
-                    .iter()
-                    .filter(|s| s.sequence_number_range.ending_sequence_number.is_none())
-                    .count() as u32;
-
-                if target_shard_count == current_count {
-                    return Err(KinesisErrorResponse::client_error(
-                        constants::INVALID_ARGUMENT,
-                        Some(&format!(
-                            "TargetShardCount {} is the same as the current shard count {}.",
-                            target_shard_count, current_count
-                        )),
-                    ));
-                }
-
-                stream.stream_status = StreamStatus::Updating;
-                Ok(current_count)
-            },
-        )
+        .update_shard_count_with_reservation(stream_name, target_shard_count, transition.clone())
         .await?;
     store.schedule_transition(transition);
 

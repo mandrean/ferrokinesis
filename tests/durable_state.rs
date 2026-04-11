@@ -42,6 +42,41 @@ async fn create_active_stream(store: &Store, name: &str) -> String {
     panic!("stream {name} did not become ACTIVE");
 }
 
+async fn split_stream(store: &Store, name: &str, shard_id: &str) {
+    let stream = store.get_stream(name).await.unwrap();
+    let shard = stream
+        .shards
+        .iter()
+        .find(|candidate| candidate.shard_id == shard_id)
+        .unwrap();
+    let mid = (shard.hash_key_range.start_u128() + shard.hash_key_range.end_u128()) / 2;
+
+    dispatch(
+        store,
+        Operation::SplitShard,
+        json!({
+            "StreamName": name,
+            "ShardToSplit": shard_id,
+            "NewStartingHashKey": mid.to_string(),
+        }),
+    )
+    .await
+    .unwrap();
+}
+
+async fn request_update_shard_count(store: &Store, name: &str, target_shard_count: u32) {
+    dispatch(
+        store,
+        Operation::UpdateShardCount,
+        json!({
+            "StreamName": name,
+            "TargetShardCount": target_shard_count,
+        }),
+    )
+    .await
+    .unwrap();
+}
+
 async fn wait_for_stream_active(store: &Store, name: &str, min_open_shards: usize) {
     for _ in 0..80 {
         let stream = store.get_stream(name).await.unwrap();
@@ -584,6 +619,58 @@ async fn durable_store_reserves_pending_create_shards_after_restart() {
         Operation::CreateStream,
         json!({
             "StreamName": "pending-second",
+            "ShardCount": 1,
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.body.error_type, "LimitExceededException");
+}
+
+#[tokio::test]
+async fn durable_store_reserves_pending_split_shards_after_restart() {
+    let dir = tempdir().unwrap();
+    let mut options = durable_options(dir.path(), 0);
+    options.update_stream_ms = 500;
+    options.shard_limit = 2;
+
+    let store = Store::new(options.clone());
+    create_active_stream(&store, "pending-split-reserved").await;
+    split_stream(&store, "pending-split-reserved", "shardId-000000000000").await;
+    drop(store);
+
+    let recovered = Store::new(options);
+    let err = dispatch(
+        &recovered,
+        Operation::CreateStream,
+        json!({
+            "StreamName": "blocked-after-split-restart",
+            "ShardCount": 1,
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.body.error_type, "LimitExceededException");
+}
+
+#[tokio::test]
+async fn durable_store_reserves_pending_update_shard_count_after_restart() {
+    let dir = tempdir().unwrap();
+    let mut options = durable_options(dir.path(), 0);
+    options.update_stream_ms = 500;
+    options.shard_limit = 2;
+
+    let store = Store::new(options.clone());
+    create_active_stream(&store, "pending-reshard-reserved").await;
+    request_update_shard_count(&store, "pending-reshard-reserved", 2).await;
+    drop(store);
+
+    let recovered = Store::new(options);
+    let err = dispatch(
+        &recovered,
+        Operation::CreateStream,
+        json!({
+            "StreamName": "blocked-after-reshard-restart",
             "ShardCount": 1,
         }),
     )

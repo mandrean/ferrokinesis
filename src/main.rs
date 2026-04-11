@@ -905,6 +905,9 @@ mod tests {
             max_request_body_mb: None,
             retention_check_interval_secs: None,
             enforce_limits: None,
+            state_dir: None,
+            snapshot_interval_secs: None,
+            max_retained_bytes: None,
             log_level: None,
             #[cfg(feature = "access-log")]
             access_log: None,

@@ -383,6 +383,7 @@ impl Store {
             policies: DashMap::new(),
             resource_tags: DashMap::new(),
             account_settings: RwLock::new(Value::Object(Default::default())),
+            throughput_windows: DashMap::new(),
             pending_transitions: RwLock::new(BTreeMap::new()),
             write_lock: Mutex::new(()),
         });
@@ -1089,35 +1090,53 @@ impl Store {
         )
     }
 
-    async fn sum_account_shards_including_pending_creates(&self) -> u32 {
-        let mut total = self.sum_open_shards().await;
-        let pending = self.inner.pending_transitions.read().await;
-        for transition in pending.values() {
-            let PendingTransition::CreateStream {
+    async fn open_shard_count_for_stream(&self, stream_name: &str) -> u32 {
+        let Some(entry) = self.inner.streams.get(stream_name) else {
+            return 0;
+        };
+        let stream = entry.value().stream.read().await;
+        stream
+            .shards
+            .iter()
+            .filter(|s| s.sequence_number_range.ending_sequence_number.is_none())
+            .count() as u32
+    }
+
+    async fn pending_shard_reservation(&self, transition: &PendingTransition) -> u32 {
+        match transition {
+            PendingTransition::CreateStream {
                 stream_name,
                 shards,
                 ..
-            } = transition
-            else {
-                continue;
-            };
-
-            let mut count_pending = true;
-            if let Some(entry) = self.inner.streams.get(stream_name) {
-                let stream = entry.value().stream.read().await;
-                let open_shards = stream
-                    .shards
-                    .iter()
-                    .filter(|s| s.sequence_number_range.ending_sequence_number.is_none())
-                    .count();
-                if open_shards > 0 {
-                    count_pending = false;
+            } => {
+                let open_shards = self.open_shard_count_for_stream(stream_name).await;
+                if open_shards == 0 {
+                    shards.len() as u32
+                } else {
+                    0
                 }
             }
+            PendingTransition::SplitShard { .. } => 1,
+            PendingTransition::UpdateShardCount {
+                stream_name,
+                target_shard_count,
+                ..
+            } => target_shard_count
+                .saturating_sub(self.open_shard_count_for_stream(stream_name).await),
+            PendingTransition::DeleteStream { .. }
+            | PendingTransition::RegisterConsumer { .. }
+            | PendingTransition::DeregisterConsumer { .. }
+            | PendingTransition::MergeShards { .. }
+            | PendingTransition::StartStreamEncryption { .. }
+            | PendingTransition::StopStreamEncryption { .. } => 0,
+        }
+    }
 
-            if count_pending {
-                total = total.saturating_add(shards.len() as u32);
-            }
+    async fn sum_account_shards_including_pending_expansions(&self) -> u32 {
+        let mut total = self.sum_open_shards().await;
+        let pending = self.inner.pending_transitions.read().await;
+        for transition in pending.values() {
+            total = total.saturating_add(self.pending_shard_reservation(transition).await);
         }
         total
     }
@@ -1138,7 +1157,7 @@ impl Store {
             ));
         }
 
-        let reserved = self.sum_account_shards_including_pending_creates().await;
+        let reserved = self.sum_account_shards_including_pending_expansions().await;
         if reserved.saturating_add(shard_count) > self.options.shard_limit {
             return Err(self.shard_limit_error(reserved, shard_count));
         }
@@ -1148,6 +1167,130 @@ impl Store {
             stream,
             TransitionMutation::Upsert(transition),
             true,
+        )
+        .await
+    }
+
+    pub(crate) async fn split_shard_with_reservation(
+        &self,
+        stream_name: &str,
+        shard_id: &str,
+        shard_ix: i64,
+        new_starting_hash_key: &str,
+        transition: PendingTransition,
+    ) -> Result<(), KinesisErrorResponse> {
+        let _write_guard = self.inner.write_lock.lock().await;
+        let reserved = self.sum_account_shards_including_pending_expansions().await;
+        let shard_id = shard_id.to_string();
+        let new_starting_hash_key = new_starting_hash_key.to_string();
+
+        self.update_stream_with_transition_internal(
+            stream_name,
+            TransitionMutation::Upsert(transition),
+            true,
+            move |stream| {
+                if stream.stream_status != StreamStatus::Active {
+                    return Err(KinesisErrorResponse::client_error(
+                        constants::RESOURCE_IN_USE,
+                        Some(&format!(
+                            "Stream {} under account {} not ACTIVE, instead in state {}",
+                            stream_name, self.aws_account_id, stream.stream_status
+                        )),
+                    ));
+                }
+
+                if shard_ix >= stream.shards.len() as i64 {
+                    return Err(KinesisErrorResponse::client_error(
+                        constants::RESOURCE_NOT_FOUND,
+                        Some(&format!(
+                            "Could not find shard {} in stream {} under account {}.",
+                            shard_id, stream_name, self.aws_account_id
+                        )),
+                    ));
+                }
+
+                if reserved.saturating_add(1) > self.options.shard_limit {
+                    return Err(self.shard_limit_error(reserved, 1));
+                }
+
+                let hash_key: u128 = new_starting_hash_key.parse().unwrap_or(0);
+                let shard = &stream.shards[shard_ix as usize];
+                let shard_start = shard.hash_key_range.start_u128();
+                let shard_end = shard.hash_key_range.end_u128();
+
+                if hash_key <= shard_start + 1 || hash_key >= shard_end {
+                    return Err(KinesisErrorResponse::client_error(
+                        constants::INVALID_ARGUMENT,
+                        Some(&format!(
+                            "NewStartingHashKey {} used in SplitShard() on shard {} in stream {} under account {} \
+                             is not both greater than one plus the shard's StartingHashKey {} and less than the shard's EndingHashKey {}.",
+                            new_starting_hash_key,
+                            shard_id,
+                            stream_name,
+                            self.aws_account_id,
+                            shard.hash_key_range.starting_hash_key,
+                            shard.hash_key_range.ending_hash_key
+                        )),
+                    ));
+                }
+
+                stream.stream_status = StreamStatus::Updating;
+                Ok(())
+            },
+        )
+        .await
+    }
+
+    pub(crate) async fn update_shard_count_with_reservation(
+        &self,
+        stream_name: &str,
+        target_shard_count: u32,
+        transition: PendingTransition,
+    ) -> Result<u32, KinesisErrorResponse> {
+        let _write_guard = self.inner.write_lock.lock().await;
+        let reserved = self.sum_account_shards_including_pending_expansions().await;
+
+        self.update_stream_with_transition_internal(
+            stream_name,
+            TransitionMutation::Upsert(transition),
+            true,
+            move |stream| {
+                if stream.stream_status != StreamStatus::Active {
+                    return Err(KinesisErrorResponse::client_error(
+                        constants::RESOURCE_IN_USE,
+                        Some(&format!(
+                            "Stream {} under account {} not ACTIVE, instead in state {}",
+                            stream_name, self.aws_account_id, stream.stream_status
+                        )),
+                    ));
+                }
+
+                let current_count = stream
+                    .shards
+                    .iter()
+                    .filter(|s| s.sequence_number_range.ending_sequence_number.is_none())
+                    .count() as u32;
+
+                if target_shard_count == current_count {
+                    return Err(KinesisErrorResponse::client_error(
+                        constants::INVALID_ARGUMENT,
+                        Some(&format!(
+                            "TargetShardCount {} is the same as the current shard count {}.",
+                            target_shard_count, current_count
+                        )),
+                    ));
+                }
+
+                let additional_shards = target_shard_count.saturating_sub(current_count);
+                if additional_shards > 0
+                    && reserved.saturating_add(additional_shards) > self.options.shard_limit
+                {
+                    return Err(self.shard_limit_error(reserved, additional_shards));
+                }
+
+                stream.stream_status = StreamStatus::Updating;
+                Ok(current_count)
+            },
         )
         .await
     }
@@ -1270,11 +1413,28 @@ impl Store {
     where
         F: FnOnce(&mut Stream) -> Result<R, KinesisErrorResponse>,
     {
+        self.update_stream_with_transition_internal(name, transition, false, f)
+            .await
+    }
+
+    async fn update_stream_with_transition_internal<F, R>(
+        &self,
+        name: &str,
+        transition: TransitionMutation,
+        skip_write_lock: bool,
+        f: F,
+    ) -> Result<R, KinesisErrorResponse>
+    where
+        F: FnOnce(&mut Stream) -> Result<R, KinesisErrorResponse>,
+    {
         #[cfg(not(target_arch = "wasm32"))]
-        let _write_guard = if self.persistence.is_some() {
+        let _write_guard = if self.persistence.is_some() && !skip_write_lock {
             self.check_persistent_mutation_allowed()?;
             Some(self.inner.write_lock.lock().await)
         } else {
+            if self.persistence.is_some() {
+                self.check_persistent_mutation_allowed()?;
+            }
             None
         };
 
@@ -2321,70 +2481,293 @@ impl Store {
                 stream_name,
                 target_shard_count,
                 ..
-            } => self
-                .update_stream_with_transition(
-                    &stream_name,
-                    TransitionMutation::Remove(key),
-                    move |stream| {
-                        if stream.stream_status != StreamStatus::Updating {
-                            return Err(KinesisErrorResponse::server_error(
-                                None,
-                                Some("recovered UpdateShardCount transition found stream in unexpected state"),
-                            ));
-                        }
+            } => {
+                let closed_shard_ids = self
+                    .update_stream_with_transition(
+                        &stream_name,
+                        TransitionMutation::Remove(key),
+                        move |stream| {
+                            if stream.stream_status != StreamStatus::Updating {
+                                return Err(KinesisErrorResponse::server_error(
+                                    None,
+                                    Some("recovered UpdateShardCount transition found stream in unexpected state"),
+                                ));
+                            }
 
-                        let now = current_time_ms();
-                        let open_indices: Vec<usize> = stream
-                            .shards
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, s)| s.sequence_number_range.ending_sequence_number.is_none())
-                            .map(|(i, _)| i)
-                            .collect();
+                            let now = current_time_ms();
+                            let open_indices: Vec<usize> = stream
+                                .shards
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, s)| {
+                                    s.sequence_number_range.ending_sequence_number.is_none()
+                                })
+                                .map(|(i, _)| i)
+                                .collect();
+                            let closed_shard_ids = open_indices
+                                .iter()
+                                .map(|&ix| stream.shards[ix].shard_id.clone())
+                                .collect::<Vec<_>>();
 
-                        for &ix in &open_indices {
+                            for &ix in &open_indices {
+                                let create_time = sequence::parse_sequence(
+                                    &stream.shards[ix].sequence_number_range.starting_sequence_number,
+                                )
+                                .map(|s| s.shard_create_time)
+                                .unwrap_or(0);
+
+                                stream.shards[ix].sequence_number_range.ending_sequence_number =
+                                    Some(sequence::stringify_sequence(&sequence::SeqObj {
+                                        shard_create_time: create_time,
+                                        shard_ix: ix as i64,
+                                        seq_ix: Some(sequence::MAX_SEQ_IX),
+                                        seq_time: Some(now),
+                                        byte1: None,
+                                        seq_rand: None,
+                                        version: 2,
+                                    }));
+                            }
+
+                            let pow_128 = BigUint::one() << 128;
+                            let shard_hash = &pow_128 / BigUint::from(target_shard_count);
+
+                            for i in 0..target_shard_count {
+                                let new_ix = stream.shards.len() as i64;
+                                let start: BigUint = &shard_hash * BigUint::from(i);
+                                let end: BigUint = if i < target_shard_count - 1 {
+                                    &shard_hash * BigUint::from(i + 1) - BigUint::one()
+                                } else {
+                                    &pow_128 - BigUint::one()
+                                };
+
+                                stream.shards.push(Shard {
+                                    shard_id: sequence::shard_id_name(new_ix),
+                                    parent_shard_id: None,
+                                    adjacent_parent_shard_id: None,
+                                    hash_key_range: HashKeyRange::new(
+                                        start.to_string(),
+                                        end.to_string(),
+                                    ),
+                                    sequence_number_range: SequenceNumberRange {
+                                        starting_sequence_number: sequence::stringify_sequence(
+                                            &sequence::SeqObj {
+                                                shard_create_time: now + 1000,
+                                                shard_ix: new_ix,
+                                                seq_ix: None,
+                                                seq_time: None,
+                                                byte1: None,
+                                                seq_rand: None,
+                                                version: 2,
+                                            },
+                                        ),
+                                        ending_sequence_number: None,
+                                    },
+                                });
+                            }
+
+                            stream.stream_status = StreamStatus::Active;
+                            Ok(closed_shard_ids)
+                        },
+                    )
+                    .await
+                    .map_err(|err| err.to_string())?;
+                self.clear_throughput_windows_for_shards(&stream_name, &closed_shard_ids);
+                Ok(())
+            }
+            PendingTransition::SplitShard {
+                stream_name,
+                shard_to_split,
+                new_starting_hash_key,
+                ..
+            } => {
+                let cleared_shard_id = self
+                    .update_stream_with_transition(
+                        &stream_name,
+                        TransitionMutation::Remove(key),
+                        move |stream| {
+                            if stream.stream_status != StreamStatus::Updating {
+                                return Err(KinesisErrorResponse::server_error(
+                                    None,
+                                    Some("recovered SplitShard transition found stream in unexpected state"),
+                                ));
+                            }
+
+                            let (shard_id, shard_ix) = sequence::resolve_shard_id(&shard_to_split)
+                                .map_err(|_| {
+                                    KinesisErrorResponse::server_error(
+                                        None,
+                                        Some("recovered SplitShard transition has invalid shard id"),
+                                    )
+                                })?;
+                            if shard_ix >= stream.shards.len() as i64 {
+                                return Err(KinesisErrorResponse::server_error(
+                                    None,
+                                    Some("recovered SplitShard transition points to missing shard"),
+                                ));
+                            }
+
+                            let hash_key = new_starting_hash_key.parse::<u128>().map_err(|_| {
+                                KinesisErrorResponse::server_error(
+                                    None,
+                                    Some("recovered SplitShard transition has invalid hash key"),
+                                )
+                            })?;
+                            let shard_start = stream.shards[shard_ix as usize]
+                                .hash_key_range
+                                .start_u128();
+                            let shard_end = stream.shards[shard_ix as usize]
+                                .hash_key_range
+                                .end_u128();
+
+                            let now = current_time_ms();
+                            stream.stream_status = StreamStatus::Active;
+
+                            let shard = &mut stream.shards[shard_ix as usize];
                             let create_time = sequence::parse_sequence(
-                                &stream.shards[ix]
-                                    .sequence_number_range
-                                    .starting_sequence_number,
+                                &shard.sequence_number_range.starting_sequence_number,
                             )
                             .map(|s| s.shard_create_time)
                             .unwrap_or(0);
 
-                            stream.shards[ix]
-                                .sequence_number_range
-                                .ending_sequence_number =
+                            shard.sequence_number_range.ending_sequence_number =
                                 Some(sequence::stringify_sequence(&sequence::SeqObj {
                                     shard_create_time: create_time,
-                                    shard_ix: ix as i64,
+                                    shard_ix,
                                     seq_ix: Some(sequence::MAX_SEQ_IX),
                                     seq_time: Some(now),
                                     byte1: None,
                                     seq_rand: None,
                                     version: 2,
                                 }));
-                        }
 
-                        let pow_128 = BigUint::one() << 128;
-                        let shard_hash = &pow_128 / BigUint::from(target_shard_count);
-
-                        for i in 0..target_shard_count {
-                            let new_ix = stream.shards.len() as i64;
-                            let start: BigUint = &shard_hash * BigUint::from(i);
-                            let end: BigUint = if i < target_shard_count - 1 {
-                                &shard_hash * BigUint::from(i + 1) - BigUint::one()
-                            } else {
-                                &pow_128 - BigUint::one()
-                            };
-
+                            let new_ix1 = stream.shards.len() as i64;
                             stream.shards.push(Shard {
-                                shard_id: sequence::shard_id_name(new_ix),
-                                parent_shard_id: None,
+                                parent_shard_id: Some(shard_id.clone()),
                                 adjacent_parent_shard_id: None,
                                 hash_key_range: HashKeyRange::new(
-                                    start.to_string(),
-                                    end.to_string(),
+                                    shard_start.to_string(),
+                                    (hash_key - 1).to_string(),
                                 ),
+                                sequence_number_range: SequenceNumberRange {
+                                    starting_sequence_number: sequence::stringify_sequence(
+                                        &sequence::SeqObj {
+                                            shard_create_time: now + 1000,
+                                            shard_ix: new_ix1,
+                                            seq_ix: None,
+                                            seq_time: None,
+                                            byte1: None,
+                                            seq_rand: None,
+                                            version: 2,
+                                        },
+                                    ),
+                                    ending_sequence_number: None,
+                                },
+                                shard_id: sequence::shard_id_name(new_ix1),
+                            });
+
+                            let new_ix2 = stream.shards.len() as i64;
+                            stream.shards.push(Shard {
+                                parent_shard_id: Some(shard_id),
+                                adjacent_parent_shard_id: None,
+                                hash_key_range: HashKeyRange::new(
+                                    hash_key.to_string(),
+                                    shard_end.to_string(),
+                                ),
+                                sequence_number_range: SequenceNumberRange {
+                                    starting_sequence_number: sequence::stringify_sequence(
+                                        &sequence::SeqObj {
+                                            shard_create_time: now + 1000,
+                                            shard_ix: new_ix2,
+                                            seq_ix: None,
+                                            seq_time: None,
+                                            byte1: None,
+                                            seq_rand: None,
+                                            version: 2,
+                                        },
+                                    ),
+                                    ending_sequence_number: None,
+                                },
+                                shard_id: sequence::shard_id_name(new_ix2),
+                            });
+
+                            Ok(shard_to_split)
+                        },
+                    )
+                    .await
+                    .map_err(|err| err.to_string())?;
+                self.clear_throughput_windows_for_shards(&stream_name, [cleared_shard_id.as_str()]);
+                Ok(())
+            }
+            PendingTransition::MergeShards {
+                stream_name,
+                shard_to_merge,
+                adjacent_shard_to_merge,
+                ..
+            } => {
+                let cleared_shard_ids = self
+                    .update_stream_with_transition(
+                        &stream_name,
+                        TransitionMutation::Remove(key),
+                        move |stream| {
+                            if stream.stream_status != StreamStatus::Updating {
+                                return Err(KinesisErrorResponse::server_error(
+                                    None,
+                                    Some("recovered MergeShards transition found stream in unexpected state"),
+                                ));
+                            }
+
+                            let (shard_id0, shard_ix0) =
+                                sequence::resolve_shard_id(&shard_to_merge).map_err(|_| {
+                                    KinesisErrorResponse::server_error(
+                                        None,
+                                        Some("recovered MergeShards transition has invalid shard id"),
+                                    )
+                                })?;
+                            let (shard_id1, shard_ix1) =
+                                sequence::resolve_shard_id(&adjacent_shard_to_merge).map_err(|_| {
+                                    KinesisErrorResponse::server_error(
+                                        None,
+                                        Some("recovered MergeShards transition has invalid adjacent shard id"),
+                                    )
+                                })?;
+
+                            let now = current_time_ms();
+                            stream.stream_status = StreamStatus::Active;
+
+                            for &ix in &[shard_ix0, shard_ix1] {
+                                let shard = &mut stream.shards[ix as usize];
+                                let create_time = sequence::parse_sequence(
+                                    &shard.sequence_number_range.starting_sequence_number,
+                                )
+                                .map(|s| s.shard_create_time)
+                                .unwrap_or(0);
+
+                                shard.sequence_number_range.ending_sequence_number =
+                                    Some(sequence::stringify_sequence(&sequence::SeqObj {
+                                        shard_create_time: create_time,
+                                        shard_ix: ix,
+                                        seq_ix: Some(sequence::MAX_SEQ_IX),
+                                        seq_time: Some(now),
+                                        byte1: None,
+                                        seq_rand: None,
+                                        version: 2,
+                                    }));
+                            }
+
+                            let new_ix = stream.shards.len() as i64;
+                            let starting_hash = stream.shards[shard_ix0 as usize]
+                                .hash_key_range
+                                .starting_hash_key
+                                .clone();
+                            let ending_hash = stream.shards[shard_ix1 as usize]
+                                .hash_key_range
+                                .ending_hash_key
+                                .clone();
+
+                            stream.shards.push(Shard {
+                                parent_shard_id: Some(shard_id0),
+                                adjacent_parent_shard_id: Some(shard_id1),
+                                hash_key_range: HashKeyRange::new(starting_hash, ending_hash),
                                 sequence_number_range: SequenceNumberRange {
                                     starting_sequence_number: sequence::stringify_sequence(
                                         &sequence::SeqObj {
@@ -2399,226 +2782,17 @@ impl Store {
                                     ),
                                     ending_sequence_number: None,
                                 },
+                                shard_id: sequence::shard_id_name(new_ix),
                             });
-                        }
 
-                        stream.stream_status = StreamStatus::Active;
-                        Ok(())
-                    },
-                )
-                .await
-                .map_err(|err| err.to_string()),
-            PendingTransition::SplitShard {
-                stream_name,
-                shard_to_split,
-                new_starting_hash_key,
-                ..
-            } => self
-                .update_stream_with_transition(
-                    &stream_name,
-                    TransitionMutation::Remove(key),
-                    move |stream| {
-                        if stream.stream_status != StreamStatus::Updating {
-                            return Err(KinesisErrorResponse::server_error(
-                                None,
-                                Some("recovered SplitShard transition found stream in unexpected state"),
-                            ));
-                        }
-
-                        let (shard_id, shard_ix) = sequence::resolve_shard_id(&shard_to_split)
-                            .map_err(|_| {
-                                KinesisErrorResponse::server_error(
-                                    None,
-                                    Some("recovered SplitShard transition has invalid shard id"),
-                                )
-                            })?;
-                        if shard_ix >= stream.shards.len() as i64 {
-                            return Err(KinesisErrorResponse::server_error(
-                                None,
-                                Some("recovered SplitShard transition points to missing shard"),
-                            ));
-                        }
-
-                        let hash_key = new_starting_hash_key.parse::<u128>().map_err(|_| {
-                            KinesisErrorResponse::server_error(
-                                None,
-                                Some("recovered SplitShard transition has invalid hash key"),
-                            )
-                        })?;
-                        let shard_start = stream.shards[shard_ix as usize]
-                            .hash_key_range
-                            .start_u128();
-                        let shard_end = stream.shards[shard_ix as usize]
-                            .hash_key_range
-                            .end_u128();
-
-                        let now = current_time_ms();
-                        stream.stream_status = StreamStatus::Active;
-
-                        let shard = &mut stream.shards[shard_ix as usize];
-                        let create_time = sequence::parse_sequence(
-                            &shard.sequence_number_range.starting_sequence_number,
-                        )
-                        .map(|s| s.shard_create_time)
-                        .unwrap_or(0);
-
-                        shard.sequence_number_range.ending_sequence_number =
-                            Some(sequence::stringify_sequence(&sequence::SeqObj {
-                                shard_create_time: create_time,
-                                shard_ix,
-                                seq_ix: Some(sequence::MAX_SEQ_IX),
-                                seq_time: Some(now),
-                                byte1: None,
-                                seq_rand: None,
-                                version: 2,
-                            }));
-
-                        let new_ix1 = stream.shards.len() as i64;
-                        stream.shards.push(Shard {
-                            parent_shard_id: Some(shard_id.clone()),
-                            adjacent_parent_shard_id: None,
-                            hash_key_range: HashKeyRange::new(
-                                shard_start.to_string(),
-                                (hash_key - 1).to_string(),
-                            ),
-                            sequence_number_range: SequenceNumberRange {
-                                starting_sequence_number: sequence::stringify_sequence(
-                                    &sequence::SeqObj {
-                                        shard_create_time: now + 1000,
-                                        shard_ix: new_ix1,
-                                        seq_ix: None,
-                                        seq_time: None,
-                                        byte1: None,
-                                        seq_rand: None,
-                                        version: 2,
-                                    },
-                                ),
-                                ending_sequence_number: None,
-                            },
-                            shard_id: sequence::shard_id_name(new_ix1),
-                        });
-
-                        let new_ix2 = stream.shards.len() as i64;
-                        stream.shards.push(Shard {
-                            parent_shard_id: Some(shard_id),
-                            adjacent_parent_shard_id: None,
-                            hash_key_range: HashKeyRange::new(
-                                hash_key.to_string(),
-                                shard_end.to_string(),
-                            ),
-                            sequence_number_range: SequenceNumberRange {
-                                starting_sequence_number: sequence::stringify_sequence(
-                                    &sequence::SeqObj {
-                                        shard_create_time: now + 1000,
-                                        shard_ix: new_ix2,
-                                        seq_ix: None,
-                                        seq_time: None,
-                                        byte1: None,
-                                        seq_rand: None,
-                                        version: 2,
-                                    },
-                                ),
-                                ending_sequence_number: None,
-                            },
-                            shard_id: sequence::shard_id_name(new_ix2),
-                        });
-
-                        Ok(())
-                    },
-                )
-                .await
-                .map_err(|err| err.to_string()),
-            PendingTransition::MergeShards {
-                stream_name,
-                shard_to_merge,
-                adjacent_shard_to_merge,
-                ..
-            } => self
-                .update_stream_with_transition(
-                    &stream_name,
-                    TransitionMutation::Remove(key),
-                    move |stream| {
-                        if stream.stream_status != StreamStatus::Updating {
-                            return Err(KinesisErrorResponse::server_error(
-                                None,
-                                Some("recovered MergeShards transition found stream in unexpected state"),
-                            ));
-                        }
-
-                        let (shard_id0, shard_ix0) =
-                            sequence::resolve_shard_id(&shard_to_merge).map_err(|_| {
-                                KinesisErrorResponse::server_error(
-                                    None,
-                                    Some("recovered MergeShards transition has invalid shard id"),
-                                )
-                            })?;
-                        let (shard_id1, shard_ix1) =
-                            sequence::resolve_shard_id(&adjacent_shard_to_merge).map_err(|_| {
-                                KinesisErrorResponse::server_error(
-                                    None,
-                                    Some("recovered MergeShards transition has invalid adjacent shard id"),
-                                )
-                            })?;
-
-                        let now = current_time_ms();
-                        stream.stream_status = StreamStatus::Active;
-
-                        for &ix in &[shard_ix0, shard_ix1] {
-                            let shard = &mut stream.shards[ix as usize];
-                            let create_time = sequence::parse_sequence(
-                                &shard.sequence_number_range.starting_sequence_number,
-                            )
-                            .map(|s| s.shard_create_time)
-                            .unwrap_or(0);
-
-                            shard.sequence_number_range.ending_sequence_number =
-                                Some(sequence::stringify_sequence(&sequence::SeqObj {
-                                    shard_create_time: create_time,
-                                    shard_ix: ix,
-                                    seq_ix: Some(sequence::MAX_SEQ_IX),
-                                    seq_time: Some(now),
-                                    byte1: None,
-                                    seq_rand: None,
-                                    version: 2,
-                                }));
-                        }
-
-                        let new_ix = stream.shards.len() as i64;
-                        let starting_hash = stream.shards[shard_ix0 as usize]
-                            .hash_key_range
-                            .starting_hash_key
-                            .clone();
-                        let ending_hash = stream.shards[shard_ix1 as usize]
-                            .hash_key_range
-                            .ending_hash_key
-                            .clone();
-
-                        stream.shards.push(Shard {
-                            parent_shard_id: Some(shard_id0),
-                            adjacent_parent_shard_id: Some(shard_id1),
-                            hash_key_range: HashKeyRange::new(starting_hash, ending_hash),
-                            sequence_number_range: SequenceNumberRange {
-                                starting_sequence_number: sequence::stringify_sequence(
-                                    &sequence::SeqObj {
-                                        shard_create_time: now + 1000,
-                                        shard_ix: new_ix,
-                                        seq_ix: None,
-                                        seq_time: None,
-                                        byte1: None,
-                                        seq_rand: None,
-                                        version: 2,
-                                    },
-                                ),
-                                ending_sequence_number: None,
-                            },
-                            shard_id: sequence::shard_id_name(new_ix),
-                        });
-
-                        Ok(())
-                    },
-                )
-                .await
-                .map_err(|err| err.to_string()),
+                            Ok([shard_to_merge, adjacent_shard_to_merge])
+                        },
+                    )
+                    .await
+                    .map_err(|err| err.to_string())?;
+                self.clear_throughput_windows_for_shards(&stream_name, cleared_shard_ids);
+                Ok(())
+            }
             PendingTransition::StartStreamEncryption { stream_name, .. } => self
                 .update_stream_with_transition(
                     &stream_name,

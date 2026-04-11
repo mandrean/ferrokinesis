@@ -1,8 +1,7 @@
 use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::sequence;
-use crate::store::{PendingTransition, Store, TransitionMutation};
-use crate::types::*;
+use crate::store::{PendingTransition, Store};
 use crate::util::current_time_ms;
 use serde_json::Value;
 
@@ -23,9 +22,6 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         )
     })?;
 
-    // Get shard sum across all streams (separate read transaction)
-    let shard_sum = store.sum_open_shards().await;
-
     let delay = store.options.update_stream_ms;
     let transition = PendingTransition::SplitShard {
         stream_name: stream_name.to_string(),
@@ -35,66 +31,13 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     };
 
     store
-        .update_stream_with_transition(stream_name, TransitionMutation::Upsert(transition.clone()), |stream| {
-            if stream.stream_status != StreamStatus::Active {
-                return Err(KinesisErrorResponse::client_error(
-                    constants::RESOURCE_IN_USE,
-                    Some(&format!(
-                        "Stream {} under account {} not ACTIVE, instead in state {}",
-                        stream_name, store.aws_account_id, stream.stream_status
-                    )),
-                ));
-            }
-
-            if shard_ix >= stream.shards.len() as i64 {
-                return Err(KinesisErrorResponse::client_error(
-                    constants::RESOURCE_NOT_FOUND,
-                    Some(&format!(
-                        "Could not find shard {} in stream {} under account {}.",
-                        shard_id, stream_name, store.aws_account_id
-                    )),
-                ));
-            }
-
-            if shard_sum + 1 > store.options.shard_limit {
-                return Err(KinesisErrorResponse::client_error(
-                    constants::LIMIT_EXCEEDED,
-                    Some(&format!(
-                        "This request would exceed the shard limit for the account {} in {}. \
-                         Current shard count for the account: {}. Limit: {}. \
-                         Number of additional shards that would have resulted from this request: 1. \
-                         Refer to the AWS Service Limits page \
-                         (http://docs.aws.amazon.com/general/latest/gr/aws_service_limits.html) \
-                         for current limits and how to request higher limits.",
-                        store.aws_account_id, store.aws_region, shard_sum, store.options.shard_limit
-                    )),
-                ));
-            }
-
-            let hash_key: u128 = new_starting_hash_key.parse().unwrap_or(0);
-            let shard = &stream.shards[shard_ix as usize];
-            let shard_start = shard.hash_key_range.start_u128();
-            let shard_end = shard.hash_key_range.end_u128();
-
-            // Strict interior constraint: the split key must be > start+1 AND < end.
-            // Equal to start+1 would give the lower child an empty hash range [start, start];
-            // equal to end would give the upper child an empty range [end, end]. Either
-            // degenerate case would prevent any partition key from routing to that child.
-            if hash_key <= shard_start + 1 || hash_key >= shard_end {
-                return Err(KinesisErrorResponse::client_error(
-                    constants::INVALID_ARGUMENT,
-                    Some(&format!(
-                        "NewStartingHashKey {} used in SplitShard() on shard {} in stream {} under account {} \
-                         is not both greater than one plus the shard's StartingHashKey {} and less than the shard's EndingHashKey {}.",
-                        new_starting_hash_key, shard_id, stream_name, store.aws_account_id,
-                        shard.hash_key_range.starting_hash_key, shard.hash_key_range.ending_hash_key
-                    )),
-                ));
-            }
-
-            stream.stream_status = StreamStatus::Updating;
-            Ok(())
-        })
+        .split_shard_with_reservation(
+            stream_name,
+            &shard_id,
+            shard_ix,
+            new_starting_hash_key,
+            transition.clone(),
+        )
         .await?;
     tracing::info!(stream = stream_name, "shard split");
     store.schedule_transition(transition);
