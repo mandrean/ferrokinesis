@@ -63,7 +63,7 @@ async fn put_records_large_batch_succeeds_by_default_without_limit_enforcement()
 }
 
 #[tokio::test]
-async fn put_records_ignore_throughput_limits_on_base_branch() {
+async fn put_records_returns_partial_failures_when_limits_are_enforced() {
     let server = TestServer::with_options(StoreOptions {
         create_stream_ms: 0,
         delete_stream_ms: 0,
@@ -91,9 +91,26 @@ async fn put_records_ignore_throughput_limits_on_base_branch() {
         .await;
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
-    assert_eq!(body["FailedRecordCount"], 0);
-    assert_eq!(body["Records"].as_array().unwrap().len(), 2);
-    assert_eq!(server.store.get_record_store(name).await.len(), 2);
+    assert_eq!(body["FailedRecordCount"], 1);
+
+    let records = body["Records"].as_array().unwrap();
+    assert_eq!(records.len(), 2);
+    assert!(records[0]["SequenceNumber"].is_string());
+    assert_eq!(
+        records[1]["ErrorCode"],
+        "ProvisionedThroughputExceededException"
+    );
+    assert_eq!(
+        records[1]["ErrorMessage"],
+        "Rate exceeded for shard shardId-000000000000 in stream test-put-records-throughput-limits."
+    );
+
+    let stored = server.store.get_record_store(name).await;
+    assert_eq!(stored.len(), 1, "throttled records must not be persisted");
+    assert!(
+        stored.values().all(|record| record.data == payload),
+        "persisted records should only contain the successful payload"
+    );
 }
 
 #[tokio::test]
