@@ -13,6 +13,7 @@ use crate::types::{
 const SNAPSHOT_FILE: &str = "snapshot.bin";
 const SNAPSHOT_TMP_FILE: &str = "snapshot.bin.tmp";
 const WAL_FILE: &str = "wal.log";
+const WAL_MAGIC: &[u8; 8] = b"FKWALv2\n";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PersistentSnapshot {
@@ -110,7 +111,9 @@ pub enum LoadError {
     Io(io::Error),
     Snapshot(serde_json::Error),
     Wal(serde_json::Error),
+    WalEntryTooLarge(u64),
     TruncatedWal,
+    UnsupportedWalFormat,
 }
 
 impl std::fmt::Display for LoadError {
@@ -119,7 +122,16 @@ impl std::fmt::Display for LoadError {
             Self::Io(err) => write!(f, "{err}"),
             Self::Snapshot(err) => write!(f, "failed to decode snapshot: {err}"),
             Self::Wal(err) => write!(f, "failed to decode wal entry: {err}"),
+            Self::WalEntryTooLarge(len) => {
+                write!(
+                    f,
+                    "wal entry length {len} exceeds this platform's address space"
+                )
+            }
             Self::TruncatedWal => write!(f, "wal is truncated"),
+            Self::UnsupportedWalFormat => {
+                write!(f, "unsupported wal format; recreate state dir")
+            }
         }
     }
 }
@@ -159,11 +171,21 @@ impl Persistence {
     pub fn append_wal_entry(&self, entry: &WalEntry) -> io::Result<()> {
         let bytes = serde_json::to_vec(entry)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+        let len = u64::try_from(bytes.len()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "serialized wal entry exceeds u64 length prefix",
+            )
+        })?;
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
+            .read(true)
             .open(self.state_dir.join(WAL_FILE))?;
-        file.write_all(&(bytes.len() as u32).to_le_bytes())?;
+        if file.metadata()?.len() == 0 {
+            file.write_all(WAL_MAGIC)?;
+        }
+        file.write_all(&len.to_le_bytes())?;
         file.write_all(&bytes)?;
         file.sync_all()
     }
@@ -185,6 +207,7 @@ impl Persistence {
 
         let wal_path = self.state_dir.join(WAL_FILE);
         let mut wal = File::create(wal_path)?;
+        wal.write_all(WAL_MAGIC)?;
         wal.flush()?;
         wal.sync_all()?;
         sync_directory(&self.state_dir)
@@ -209,9 +232,22 @@ impl Persistence {
         let file = File::open(path)?;
         let mut reader = BufReader::new(file);
         let mut entries = Vec::new();
+        let mut magic = [0u8; WAL_MAGIC.len()];
+
+        match reader.read_exact(&mut magic) {
+            Ok(()) => {}
+            Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => {
+                return Err(LoadError::UnsupportedWalFormat);
+            }
+            Err(err) => return Err(LoadError::Io(err)),
+        }
+
+        if magic != *WAL_MAGIC {
+            return Err(LoadError::UnsupportedWalFormat);
+        }
 
         loop {
-            let mut len_buf = [0u8; 4];
+            let mut len_buf = [0u8; 8];
             let read = match reader.read(&mut len_buf) {
                 Ok(0) => break,
                 Ok(read) => read,
@@ -225,7 +261,7 @@ impl Persistence {
                         _ => LoadError::Io(err),
                     })?;
             }
-            let len = u32::from_le_bytes(len_buf) as usize;
+            let len = decode_wal_entry_len(len_buf)?;
             let mut entry_buf = vec![0u8; len];
             if reader.read_exact(&mut entry_buf).is_err() {
                 return Err(LoadError::TruncatedWal);
@@ -236,6 +272,11 @@ impl Persistence {
 
         Ok(entries)
     }
+}
+
+fn decode_wal_entry_len(len_buf: [u8; 8]) -> Result<usize, LoadError> {
+    let len = u64::from_le_bytes(len_buf);
+    usize::try_from(len).map_err(|_| LoadError::WalEntryTooLarge(len))
 }
 
 #[cfg(unix)]
@@ -253,6 +294,7 @@ mod tests {
     use crate::types::{
         EncryptionType, EpochSeconds, StreamBuilder, StreamMode, StreamModeDetails, StreamStatus,
     };
+    use tempfile::tempdir;
 
     #[test]
     fn persistent_snapshot_round_trips() {
@@ -302,5 +344,62 @@ mod tests {
         assert_eq!(decoded.streams[0].warm_throughput_mibps, 9);
         assert_eq!(decoded.streams[0].max_record_size_kib, 2048);
         assert_eq!(decoded.streams[0].shard_counters, vec![7]);
+    }
+
+    #[test]
+    fn wal_round_trips_with_header_and_u64_length_prefix() {
+        let dir = tempdir().unwrap();
+        let persistence = Persistence::new(dir.path().to_path_buf()).unwrap();
+        let snapshot = PersistentSnapshot {
+            created_at_ms: 42,
+            ..PersistentSnapshot::default()
+        };
+
+        persistence
+            .append_wal_entry(&WalEntry::Snapshot(snapshot.clone()))
+            .unwrap();
+
+        let wal_bytes = fs::read(dir.path().join(WAL_FILE)).unwrap();
+        assert!(wal_bytes.starts_with(WAL_MAGIC));
+
+        let (loaded_snapshot, loaded_entries) = persistence.load().unwrap().unwrap();
+        assert_eq!(loaded_snapshot.created_at_ms, 0);
+        assert_eq!(loaded_entries.len(), 1);
+        assert!(matches!(
+            &loaded_entries[0],
+            WalEntry::Snapshot(entry) if entry.created_at_ms == snapshot.created_at_ms
+        ));
+    }
+
+    #[test]
+    fn legacy_wal_without_header_is_rejected() {
+        let dir = tempdir().unwrap();
+        let persistence = Persistence::new(dir.path().to_path_buf()).unwrap();
+
+        fs::write(dir.path().join(WAL_FILE), []).unwrap();
+
+        let err = persistence.load().unwrap_err();
+        assert!(matches!(err, LoadError::UnsupportedWalFormat));
+        assert_eq!(
+            err.to_string(),
+            "unsupported wal format; recreate state dir"
+        );
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn wal_entry_length_helper_supports_lengths_larger_than_u32_max() {
+        let len = u64::from(u32::MAX) + 1;
+        assert_eq!(
+            decode_wal_entry_len(len.to_le_bytes()).unwrap(),
+            len as usize
+        );
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn wal_entry_length_overflow_is_reported_without_allocating() {
+        let err = decode_wal_entry_len(u64::MAX.to_le_bytes()).unwrap_err();
+        assert!(matches!(err, LoadError::WalEntryTooLarge(u64::MAX)));
     }
 }

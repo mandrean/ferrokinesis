@@ -4,7 +4,7 @@ use common::*;
 use ferrokinesis::store::StoreOptions;
 use reqwest::Method;
 use reqwest::header::HeaderMap;
-use serde_json::Value;
+use serde_json::{Value, json};
 use tempfile::NamedTempFile;
 
 #[tokio::test]
@@ -160,4 +160,120 @@ async fn health_ready_returns_503_when_durable_state_fails_to_initialize() {
             .contains_stream("blocked-during-durable-init-failure")
             .await
     );
+}
+
+#[tokio::test]
+async fn metrics_count_known_operation_failures_before_dispatch() {
+    let server = TestServer::new().await;
+    let mut headers = HeaderMap::new();
+    headers.insert("Content-Type", AMZ_JSON.parse().unwrap());
+    headers.insert(
+        "X-Amz-Target",
+        format!("{VERSION}.CreateStream").parse().unwrap(),
+    );
+    headers.insert(
+        "Authorization",
+        "AWS4-HMAC-SHA256 Credential=AKID/20150101/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=abcd1234"
+            .parse()
+            .unwrap(),
+    );
+    headers.insert("X-Amz-Date", "20150101T000000Z".parse().unwrap());
+
+    let res = server
+        .raw_request(
+            Method::POST,
+            "/",
+            headers,
+            serde_json::to_vec(&json!({
+                "StreamName": "metrics-invalid-create",
+                "ShardCount": "not-a-number",
+            }))
+            .unwrap(),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+
+    let body = server
+        .raw_request(Method::GET, "/metrics", HeaderMap::new(), vec![])
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        body.contains("ferrokinesis_requests_total{operation=\"CreateStream\",result=\"error\"} 1")
+    );
+}
+
+#[tokio::test]
+async fn metrics_count_failures_without_parsed_operation_separately() {
+    let server = TestServer::new().await;
+    let mut headers = HeaderMap::new();
+    headers.insert("Content-Type", AMZ_JSON.parse().unwrap());
+    headers.insert(
+        "X-Amz-Target",
+        format!("{VERSION}.NoSuchOperation").parse().unwrap(),
+    );
+    headers.insert(
+        "Authorization",
+        "AWS4-HMAC-SHA256 Credential=AKID/20150101/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=abcd1234"
+            .parse()
+            .unwrap(),
+    );
+    headers.insert("X-Amz-Date", "20150101T000000Z".parse().unwrap());
+
+    let res = server
+        .raw_request(Method::POST, "/", headers, b"{}".to_vec())
+        .await;
+    assert_eq!(res.status(), 400);
+
+    let body = server
+        .raw_request(Method::GET, "/metrics", HeaderMap::new(), vec![])
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert!(body.contains("ferrokinesis_request_failures_total{reason=\"unknown_operation\"} 1"));
+}
+
+#[tokio::test]
+async fn readiness_stays_up_when_retained_byte_backpressure_is_hit() {
+    let server = TestServer::with_options(StoreOptions {
+        create_stream_ms: 0,
+        delete_stream_ms: 0,
+        update_stream_ms: 0,
+        shard_limit: 50,
+        max_retained_bytes: Some(1),
+        ..Default::default()
+    })
+    .await;
+    let name = "retained-ready";
+    server.create_stream(name, 1).await;
+    server.store.metrics().set_retained(2, 1);
+
+    let ready = server
+        .raw_request(Method::GET, "/_health/ready", HeaderMap::new(), vec![])
+        .await;
+    assert_eq!(ready.status(), 200);
+    assert_eq!(ready.text().await.unwrap(), "OK");
+
+    let health = server
+        .raw_request(Method::GET, "/_health", HeaderMap::new(), vec![])
+        .await;
+    assert_eq!(health.status(), 200);
+
+    let (status, body) = decode_body(
+        server
+            .request(
+                "PutRecord",
+                &json!({
+                    "StreamName": name,
+                    "Data": "AAAA",
+                    "PartitionKey": "pk",
+                }),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert_eq!(body["__type"], "LimitExceededException");
 }

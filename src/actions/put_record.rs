@@ -75,13 +75,17 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         }
     } as u64;
 
-    store
+    let reservation = store
         .try_reserve_shard_throughput(&stream_name, &alloc.shard_id, decoded_len, alloc.now)
         .await?;
 
-    store
+    if let Err(err) = store
         .put_record(&stream_name, &alloc.stream_key, &record)
-        .await?;
+        .await
+    {
+        store.refund_shard_throughput(reservation).await;
+        return Err(err);
+    }
 
     #[cfg(feature = "server")]
     if let Some(ref writer) = store.capture_writer {

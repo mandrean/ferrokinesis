@@ -12,6 +12,7 @@
 use crate::actions::{self, Operation};
 use crate::constants;
 use crate::error::KinesisErrorResponse;
+use crate::metrics::PreOperationFailureReason;
 #[cfg(feature = "mirror")]
 use crate::mirror::Mirror;
 use crate::store::Store;
@@ -88,7 +89,13 @@ pub async fn handler(
             }
             response_headers.insert("Access-Control-Max-Age", "172800".parse().unwrap());
             response_headers.insert("Content-Length", "0".parse().unwrap());
-            return (StatusCode::OK, response_headers, "").into_response();
+            return finalize_response(
+                &store,
+                None,
+                None,
+                request_started_ms,
+                (StatusCode::OK, response_headers, "").into_response(),
+            );
         }
 
         response_headers.insert(
@@ -104,11 +111,17 @@ pub async fn handler(
             "x-amzn-ErrorType",
             constants::ACCESS_DENIED.parse().unwrap(),
         );
-        return send_xml_error(
-            h,
-            constants::ACCESS_DENIED,
-            "Unable to determine service/operation name to be authorized",
-            403,
+        return finalize_response(
+            &store,
+            None,
+            Some(PreOperationFailureReason::AccessDenied),
+            request_started_ms,
+            send_xml_error(
+                h,
+                constants::ACCESS_DENIED,
+                "Unable to determine service/operation name to be authorized",
+                403,
+            ),
         );
     }
 
@@ -155,7 +168,15 @@ pub async fn handler(
             constants::UNKNOWN_OPERATION
         };
         let err = KinesisErrorResponse::client_error(error_type, None);
-        return send_kinesis_error(&response_headers, response_content_type, &err);
+        return finalize_response(
+            &store,
+            operation,
+            operation
+                .is_none()
+                .then_some(PreOperationFailureReason::UnknownOperation),
+            request_started_ms,
+            send_kinesis_error(&response_headers, response_content_type, &err),
+        );
     }
 
     if !content_valid {
@@ -165,11 +186,19 @@ pub async fn handler(
                 "x-amzn-ErrorType",
                 constants::ACCESS_DENIED.parse().unwrap(),
             );
-            return send_xml_error(
-                h,
-                constants::ACCESS_DENIED,
-                "Unable to determine service/operation name to be authorized",
-                403,
+            return finalize_response(
+                &store,
+                operation,
+                operation
+                    .is_none()
+                    .then_some(PreOperationFailureReason::AccessDenied),
+                request_started_ms,
+                send_xml_error(
+                    h,
+                    constants::ACCESS_DENIED,
+                    "Unable to determine service/operation name to be authorized",
+                    403,
+                ),
             );
         }
         let mut h = response_headers.clone();
@@ -177,7 +206,15 @@ pub async fn handler(
             "x-amzn-ErrorType",
             constants::UNKNOWN_OPERATION.parse().unwrap(),
         );
-        return send_xml_error_code(h, constants::UNKNOWN_OPERATION, 404);
+        return finalize_response(
+            &store,
+            operation,
+            operation
+                .is_none()
+                .then_some(PreOperationFailureReason::UnknownOperation),
+            request_started_ms,
+            send_xml_error_code(h, constants::UNKNOWN_OPERATION, 404),
+        );
     }
 
     // Parse body
@@ -195,42 +232,78 @@ pub async fn handler(
         Some(Value::Object(map)) => Value::Object(map),
         Some(_) | None => {
             if content_type == "application/json" {
-                return send_json_response(
-                    response_headers.clone(),
-                    "application/json",
-                    &json!({
-                        "Output": {"__type": "com.amazon.coral.service#SerializationException"},
-                        "Version": "1.0",
-                    }),
-                    400,
+                return finalize_response(
+                    &store,
+                    operation,
+                    operation
+                        .is_none()
+                        .then_some(PreOperationFailureReason::SerializationException),
+                    request_started_ms,
+                    send_json_response(
+                        response_headers.clone(),
+                        "application/json",
+                        &json!({
+                            "Output": {"__type": "com.amazon.coral.service#SerializationException"},
+                            "Version": "1.0",
+                        }),
+                        400,
+                    ),
                 );
             }
             let err = KinesisErrorResponse::client_error(constants::SERIALIZATION_EXCEPTION, None);
-            return send_kinesis_error(&response_headers, response_content_type, &err);
+            return finalize_response(
+                &store,
+                operation,
+                operation
+                    .is_none()
+                    .then_some(PreOperationFailureReason::SerializationException),
+                request_started_ms,
+                send_kinesis_error(&response_headers, response_content_type, &err),
+            );
         }
     };
 
     // After this point, application/json doesn't progress further
     if content_type == "application/json" {
-        return send_json_response(
-            response_headers.clone(),
-            "application/json",
-            &json!({
-                "Output": {"__type": "com.amazon.coral.service#UnknownOperationException"},
-                "Version": "1.0",
-            }),
-            404,
+        return finalize_response(
+            &store,
+            operation,
+            operation
+                .is_none()
+                .then_some(PreOperationFailureReason::UnknownOperation),
+            request_started_ms,
+            send_json_response(
+                response_headers.clone(),
+                "application/json",
+                &json!({
+                    "Output": {"__type": "com.amazon.coral.service#UnknownOperationException"},
+                    "Version": "1.0",
+                }),
+                404,
+            ),
         );
     }
 
     let Some(operation) = operation else {
         let err = KinesisErrorResponse::client_error(constants::UNKNOWN_OPERATION, None);
-        return send_kinesis_error(&response_headers, response_content_type, &err);
+        return finalize_response(
+            &store,
+            None,
+            Some(PreOperationFailureReason::UnknownOperation),
+            request_started_ms,
+            send_kinesis_error(&response_headers, response_content_type, &err),
+        );
     };
 
     if !service_valid {
         let err = KinesisErrorResponse::client_error(constants::UNKNOWN_OPERATION, None);
-        return send_kinesis_error(&response_headers, response_content_type, &err);
+        return finalize_response(
+            &store,
+            Some(operation),
+            None,
+            request_started_ms,
+            send_kinesis_error(&response_headers, response_content_type, &err),
+        );
     }
 
     // Auth checking
@@ -239,24 +312,36 @@ pub async fn handler(
     let auth_query = query_string.contains("X-Amz-Algorithm");
 
     if auth_header.is_some() && auth_query {
-        return send_error_response(
-            &response_headers,
-            content_valid,
-            response_content_type,
-            constants::INVALID_SIGNATURE,
-            "Found both 'X-Amz-Algorithm' as a query-string param and 'Authorization' as HTTP header.",
-            400,
+        return finalize_response(
+            &store,
+            Some(operation),
+            None,
+            request_started_ms,
+            send_error_response(
+                &response_headers,
+                content_valid,
+                response_content_type,
+                constants::INVALID_SIGNATURE,
+                "Found both 'X-Amz-Algorithm' as a query-string param and 'Authorization' as HTTP header.",
+                400,
+            ),
         );
     }
 
     if auth_header.is_none() && !auth_query {
-        return send_error_response(
-            &response_headers,
-            content_valid,
-            response_content_type,
-            constants::MISSING_AUTH_TOKEN,
-            "Missing Authentication Token",
-            400,
+        return finalize_response(
+            &store,
+            Some(operation),
+            None,
+            request_started_ms,
+            send_error_response(
+                &response_headers,
+                content_valid,
+                response_content_type,
+                constants::MISSING_AUTH_TOKEN,
+                "Missing Authentication Token",
+                400,
+            ),
         );
     }
 
@@ -286,13 +371,19 @@ pub async fn handler(
         }
         if !msg.is_empty() {
             msg += &format!("Authorization={auth}");
-            return send_error_response(
-                &response_headers,
-                content_valid,
-                response_content_type,
-                constants::INCOMPLETE_SIGNATURE,
-                &msg,
-                403,
+            return finalize_response(
+                &store,
+                Some(operation),
+                None,
+                request_started_ms,
+                send_error_response(
+                    &response_headers,
+                    content_valid,
+                    response_content_type,
+                    constants::INCOMPLETE_SIGNATURE,
+                    &msg,
+                    403,
+                ),
             );
         }
     } else {
@@ -327,13 +418,19 @@ pub async fn handler(
         }
         if !msg.is_empty() {
             msg += "Re-examine the query-string parameters.";
-            return send_error_response(
-                &response_headers,
-                content_valid,
-                response_content_type,
-                constants::INCOMPLETE_SIGNATURE,
-                &msg,
-                403,
+            return finalize_response(
+                &store,
+                Some(operation),
+                None,
+                request_started_ms,
+                send_error_response(
+                    &response_headers,
+                    content_valid,
+                    response_content_type,
+                    constants::INCOMPLETE_SIGNATURE,
+                    &msg,
+                    403,
+                ),
             );
         }
     }
@@ -346,12 +443,24 @@ pub async fn handler(
     let data = match validation::check_types(&data, &field_refs) {
         Ok(d) => d,
         Err(err) => {
-            return send_kinesis_error(&response_headers, response_content_type, &err);
+            return finalize_response(
+                &store,
+                Some(operation),
+                None,
+                request_started_ms,
+                send_kinesis_error(&response_headers, response_content_type, &err),
+            );
         }
     };
 
     if let Err(err) = validation::check_validations(&data, &field_refs, None) {
-        return send_kinesis_error(&response_headers, response_content_type, &err);
+        return finalize_response(
+            &store,
+            Some(operation),
+            None,
+            request_started_ms,
+            send_kinesis_error(&response_headers, response_content_type, &err),
+        );
     }
 
     let span = tracing::info_span!("kinesis", %operation, %request_id);
@@ -360,32 +469,32 @@ pub async fn handler(
     if operation == Operation::SubscribeToShard {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let response = match actions::subscribe_to_shard::execute_streaming(
-                &store,
-                data,
-                response_content_type,
-            )
-            .instrument(span.clone())
-            .await
-            {
-                Ok(body) => {
-                    tracing::debug!(parent: &span, "ok");
-                    response_headers.insert(
-                        "Content-Type",
-                        "application/vnd.amazon.eventstream".parse().unwrap(),
-                    );
-                    (StatusCode::OK, response_headers, body).into_response()
-                }
-                Err(ref err) => {
-                    log_and_send_error(&span, &response_headers, response_content_type, err)
+            let response = match store.check_available() {
+                Ok(()) => match actions::subscribe_to_shard::execute_streaming(
+                    &store,
+                    data,
+                    response_content_type,
+                )
+                .instrument(span.clone())
+                .await
+                {
+                    Ok(body) => {
+                        tracing::debug!(parent: &span, "ok");
+                        response_headers.insert(
+                            "Content-Type",
+                            "application/vnd.amazon.eventstream".parse().unwrap(),
+                        );
+                        (StatusCode::OK, response_headers, body).into_response()
+                    }
+                    Err(ref err) => {
+                        log_and_send_error(&span, &response_headers, response_content_type, err)
+                    }
+                },
+                Err(err) => {
+                    log_and_send_error(&span, &response_headers, response_content_type, &err)
                 }
             };
-            store.metrics().record_request(
-                operation,
-                response.status().is_success(),
-                elapsed_request_micros(request_started_ms),
-            );
-            return response;
+            return finalize_response(&store, Some(operation), None, request_started_ms, response);
         }
 
         #[cfg(target_arch = "wasm32")]
@@ -396,12 +505,7 @@ pub async fn handler(
             );
             let response =
                 log_and_send_error(&span, &response_headers, response_content_type, &err);
-            store.metrics().record_request(
-                operation,
-                false,
-                elapsed_request_micros(request_started_ms),
-            );
-            return response;
+            return finalize_response(&store, Some(operation), None, request_started_ms, response);
         }
     }
 
@@ -456,19 +560,33 @@ pub async fn handler(
         let _ = (mirror, mirrorable_result);
     }
 
-    store.metrics().record_request(
-        operation,
-        response.status().is_success(),
-        elapsed_request_micros(request_started_ms),
-    );
-
-    response
+    finalize_response(&store, Some(operation), None, request_started_ms, response)
 }
 
 fn elapsed_request_micros(request_started_ms: u64) -> u64 {
     crate::util::current_time_ms()
         .saturating_sub(request_started_ms)
         .saturating_mul(1000)
+}
+
+fn finalize_response(
+    store: &Store,
+    operation: Option<Operation>,
+    pre_operation_failure: Option<PreOperationFailureReason>,
+    request_started_ms: u64,
+    response: Response,
+) -> Response {
+    let duration_micros = elapsed_request_micros(request_started_ms);
+    if let Some(operation) = operation {
+        store
+            .metrics()
+            .record_request(operation, response.status().is_success(), duration_micros);
+    } else if let Some(reason) = pre_operation_failure {
+        store
+            .metrics()
+            .record_pre_operation_failure(reason, duration_micros);
+    }
+    response
 }
 
 fn send_kinesis_error(

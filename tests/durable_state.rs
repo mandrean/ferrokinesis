@@ -208,7 +208,7 @@ fn write_legacy_snapshot(state_dir: &Path, mut snapshot: Value) {
         serde_json::to_vec(&snapshot).unwrap(),
     )
     .unwrap();
-    fs::write(state_dir.join("wal.log"), []).unwrap();
+    fs::write(state_dir.join("wal.log"), b"FKWALv2\n").unwrap();
 }
 
 fn break_wal(state_dir: &Path) {
@@ -293,7 +293,7 @@ async fn durable_store_restores_from_snapshot_after_restart() {
     let persisted = Persistence::new(dir.path().to_path_buf()).unwrap().load();
     assert!(persisted.is_ok(), "{persisted:?}");
     assert!(dir.path().join("snapshot.bin").exists());
-    assert_eq!(fs::metadata(dir.path().join("wal.log")).unwrap().len(), 0);
+    assert_eq!(fs::metadata(dir.path().join("wal.log")).unwrap().len(), 8);
 
     let recovered = Store::new(options);
     let ready = recovered.check_ready();
@@ -1053,6 +1053,13 @@ async fn recovered_store_rejects_writes_when_replay_failed() {
     wal.sync_all().unwrap();
 
     let recovered = Store::new(options);
+    assert!(!recovered.contains_stream("replay-failure").await);
+
+    let read_err = dispatch(&recovered, Operation::ListStreams, json!({}))
+        .await
+        .unwrap_err();
+    assert_eq!(read_err.status_code, 500);
+
     let err = put_record(&recovered, "replay-failure", "BBBB", "pk-2")
         .await
         .unwrap_err();
@@ -1088,6 +1095,97 @@ async fn retained_bytes_cap_rejects_put_record_and_put_records_without_growth() 
     assert_eq!(err.body.error_type, "LimitExceededException");
     assert_eq!(store.metrics().retained_bytes(), 0);
     assert_eq!(store.metrics().retained_records(), 0);
+}
+
+#[tokio::test]
+async fn put_record_refunds_throughput_when_retained_cap_rejects_write() {
+    let store = Store::new(StoreOptions {
+        create_stream_ms: 0,
+        delete_stream_ms: 0,
+        update_stream_ms: 0,
+        shard_limit: 50,
+        enforce_limits: true,
+        max_retained_bytes: Some(0),
+        ..StoreOptions::default()
+    });
+    create_active_stream(&store, "throughput-refund-retained").await;
+
+    let anchor_ms = current_time_ms();
+    let err = put_record(&store, "throughput-refund-retained", "QUFBQQ==", "pk")
+        .await
+        .unwrap_err();
+    assert_eq!(err.body.error_type, "LimitExceededException");
+
+    store
+        .try_reserve_shard_throughput(
+            "throughput-refund-retained",
+            "shardId-000000000000",
+            1_048_576,
+            anchor_ms,
+        )
+        .await
+        .expect("failed PutRecord should refund shard throughput");
+}
+
+#[tokio::test]
+async fn put_record_refunds_throughput_when_persistence_fails() {
+    let dir = tempdir().unwrap();
+    let mut options = durable_options(dir.path(), 0);
+    options.enforce_limits = true;
+    let store = Store::new(options);
+    create_active_stream(&store, "throughput-refund-persistence").await;
+
+    break_wal(dir.path());
+
+    let anchor_ms = current_time_ms();
+    let err = put_record(&store, "throughput-refund-persistence", "QUFBQQ==", "pk")
+        .await
+        .unwrap_err();
+    assert_eq!(err.status_code, 500);
+
+    store
+        .try_reserve_shard_throughput(
+            "throughput-refund-persistence",
+            "shardId-000000000000",
+            1_048_576,
+            anchor_ms,
+        )
+        .await
+        .expect("persistence rollback should refund shard throughput");
+}
+
+#[tokio::test]
+async fn put_records_refunds_throughput_when_batch_rolls_back() {
+    let store = Store::new(StoreOptions {
+        create_stream_ms: 0,
+        delete_stream_ms: 0,
+        update_stream_ms: 0,
+        shard_limit: 50,
+        enforce_limits: true,
+        max_retained_bytes: Some(0),
+        ..StoreOptions::default()
+    });
+    create_active_stream(&store, "throughput-refund-batch").await;
+
+    let anchor_ms = current_time_ms();
+    let err = put_records(
+        &store,
+        "throughput-refund-batch",
+        &[("QUFBQQ==", "pk-a"), ("QkJCQg==", "pk-b")],
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.body.error_type, "LimitExceededException");
+
+    store
+        .try_reserve_shard_throughput(
+            "throughput-refund-batch",
+            "shardId-000000000000",
+            1_048_576,
+            anchor_ms,
+        )
+        .await
+        .expect("failed PutRecords batch should refund shard throughput");
 }
 
 #[tokio::test]

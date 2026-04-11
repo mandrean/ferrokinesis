@@ -106,6 +106,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
 
     let mut return_records: Vec<Value> = Vec::with_capacity(records.len());
     let mut batch: Vec<(String, StoredRecordRef<'_>)> = Vec::with_capacity(records.len());
+    let mut reservations = Vec::with_capacity(records.len());
     let mut failed_record_count = 0u64;
 
     for (i, record) in records.iter().enumerate() {
@@ -121,17 +122,20 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
             }
         } as u64;
 
-        if let Err(err) = store
+        let reservation = match store
             .try_reserve_shard_throughput(&stream_name, &alloc.shard_id, decoded_len, alloc.now)
             .await
         {
-            failed_record_count += 1;
-            return_records.push(json!({
-                constants::ERROR_CODE: err.body.error_type,
-                "ErrorMessage": err.body.message.unwrap_or_else(|| "Rate exceeded for shard".to_string()),
-            }));
-            continue;
-        }
+            Ok(reservation) => reservation,
+            Err(err) => {
+                failed_record_count += 1;
+                return_records.push(json!({
+                    constants::ERROR_CODE: err.body.error_type,
+                    "ErrorMessage": err.body.message.unwrap_or_else(|| "Rate exceeded for shard".to_string()),
+                }));
+                continue;
+            }
+        };
 
         batch.push((
             alloc.stream_key.clone(),
@@ -141,6 +145,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                 approximate_arrival_timestamp: (alloc.now / 1000) as f64,
             },
         ));
+        reservations.push(reservation);
 
         return_records.push(json!({
             "ShardId": alloc.shard_id,
@@ -148,8 +153,13 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         }));
     }
 
-    if !batch.is_empty() {
-        store.put_records_batch(&stream_name, &batch).await?;
+    if !batch.is_empty()
+        && let Err(err) = store.put_records_batch(&stream_name, &batch).await
+    {
+        for reservation in reservations {
+            store.refund_shard_throughput(reservation).await;
+        }
+        return Err(err);
     }
 
     #[cfg(feature = "server")]

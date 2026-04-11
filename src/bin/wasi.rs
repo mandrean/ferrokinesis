@@ -215,10 +215,15 @@ impl WasiConfig {
                 .unwrap_or(defaults.retention_check_interval_secs),
                 enforce_limits: read_parsed_env(&mut read, "FERROKINESIS_ENFORCE_LIMITS")?
                     .unwrap_or(defaults.enforce_limits),
-                state_dir: read_env("FERROKINESIS_STATE_DIR")?.or(defaults.state_dir.clone()),
-                snapshot_interval_secs: read_env("FERROKINESIS_SNAPSHOT_INTERVAL_SECS")?
-                    .unwrap_or(defaults.snapshot_interval_secs),
-                max_retained_bytes: read_env("FERROKINESIS_MAX_RETAINED_BYTES")?
+                state_dir: read("FERROKINESIS_STATE_DIR")?
+                    .map(std::path::PathBuf::from)
+                    .or(defaults.state_dir.clone()),
+                snapshot_interval_secs: read_parsed_env(
+                    &mut read,
+                    "FERROKINESIS_SNAPSHOT_INTERVAL_SECS",
+                )?
+                .unwrap_or(defaults.snapshot_interval_secs),
+                max_retained_bytes: read_parsed_env(&mut read, "FERROKINESIS_MAX_RETAINED_BYTES")?
                     .or(defaults.max_retained_bytes),
                 aws_account_id: read("AWS_ACCOUNT_ID")?
                     .unwrap_or_else(|| defaults.aws_account_id.clone()),
@@ -692,5 +697,31 @@ mod tests {
             .try_reserve_shard_throughput("stream", "shardId-000000000000", 1_000, 2_000)
             .await;
         assert!(second.is_err(), "WASI env parsing should enable throttling");
+    }
+
+    #[test]
+    fn from_reader_uses_injected_reader_for_state_dir_snapshot_and_retained_bytes() {
+        let mut env = std::collections::HashMap::from([
+            (
+                "FERROKINESIS_STATE_DIR".to_string(),
+                "/tmp/ferrokinesis-state".to_string(),
+            ),
+            (
+                "FERROKINESIS_SNAPSHOT_INTERVAL_SECS".to_string(),
+                "17".to_string(),
+            ),
+            (
+                "FERROKINESIS_MAX_RETAINED_BYTES".to_string(),
+                "2048".to_string(),
+            ),
+        ]);
+
+        let config = WasiConfig::from_reader(|key| Ok(env.remove(key))).unwrap();
+        assert_eq!(
+            config.store_options.state_dir,
+            Some(std::path::PathBuf::from("/tmp/ferrokinesis-state"))
+        );
+        assert_eq!(config.store_options.snapshot_interval_secs, 17);
+        assert_eq!(config.store_options.max_retained_bytes, Some(2048));
     }
 }

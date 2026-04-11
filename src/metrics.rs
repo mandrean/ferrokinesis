@@ -46,6 +46,25 @@ const ALL_OPERATIONS: &[Operation] = &[
     Operation::UpdateStreamWarmThroughput,
 ];
 
+const ALL_PRE_OPERATION_FAILURE_REASONS: &[PreOperationFailureReason] = &[
+    PreOperationFailureReason::AccessDenied,
+    PreOperationFailureReason::IncompleteSignature,
+    PreOperationFailureReason::InvalidSignature,
+    PreOperationFailureReason::MissingAuthToken,
+    PreOperationFailureReason::SerializationException,
+    PreOperationFailureReason::UnknownOperation,
+];
+
+#[derive(Debug, Clone, Copy)]
+pub enum PreOperationFailureReason {
+    AccessDenied,
+    IncompleteSignature,
+    InvalidSignature,
+    MissingAuthToken,
+    SerializationException,
+    UnknownOperation,
+}
+
 #[derive(Debug)]
 pub struct AppMetrics {
     retained_bytes: AtomicU64,
@@ -58,6 +77,7 @@ pub struct AppMetrics {
     current_streams: AtomicU64,
     current_shards: AtomicU64,
     request_counters: Vec<OperationMetrics>,
+    pre_operation_failure_counters: Vec<AtomicU64>,
     active_iterators: Mutex<VecDeque<u64>>,
     iterator_ttl_ms: u64,
 }
@@ -106,6 +126,17 @@ fn operation_name(operation: &Operation) -> &'static str {
     }
 }
 
+fn pre_operation_failure_reason_name(reason: PreOperationFailureReason) -> &'static str {
+    match reason {
+        PreOperationFailureReason::AccessDenied => "access_denied",
+        PreOperationFailureReason::IncompleteSignature => "incomplete_signature",
+        PreOperationFailureReason::InvalidSignature => "invalid_signature",
+        PreOperationFailureReason::MissingAuthToken => "missing_auth_token",
+        PreOperationFailureReason::SerializationException => "serialization_exception",
+        PreOperationFailureReason::UnknownOperation => "unknown_operation",
+    }
+}
+
 #[derive(Debug)]
 struct OperationMetrics {
     ok_total: AtomicU64,
@@ -128,7 +159,7 @@ impl Default for OperationMetrics {
 impl AppMetrics {
     pub fn new(iterator_ttl_seconds: u64) -> Arc<Self> {
         let request_counters = std::iter::repeat_with(OperationMetrics::default)
-            .take(39)
+            .take(ALL_OPERATIONS.len())
             .collect();
         Arc::new(Self {
             retained_bytes: AtomicU64::new(0),
@@ -141,6 +172,9 @@ impl AppMetrics {
             current_streams: AtomicU64::new(0),
             current_shards: AtomicU64::new(0),
             request_counters,
+            pre_operation_failure_counters: std::iter::repeat_with(|| AtomicU64::new(0))
+                .take(ALL_PRE_OPERATION_FAILURE_REASONS.len())
+                .collect(),
             active_iterators: Mutex::new(VecDeque::new()),
             iterator_ttl_ms: iterator_ttl_seconds.saturating_mul(1000),
         })
@@ -212,6 +246,16 @@ impl AppMetrics {
             .store(duration_micros, Ordering::Relaxed);
     }
 
+    pub fn record_pre_operation_failure(
+        &self,
+        reason: PreOperationFailureReason,
+        duration_micros: u64,
+    ) {
+        self.pre_operation_failure_counters[reason as usize].fetch_add(1, Ordering::Relaxed);
+        self.last_request_duration_micros
+            .store(duration_micros, Ordering::Relaxed);
+    }
+
     pub async fn record_iterator(&self, now_ms: u64) {
         let mut active = self.active_iterators.lock().await;
         active.push_back(now_ms);
@@ -272,6 +316,14 @@ impl AppMetrics {
             "ferrokinesis_active_iterators {}\n",
             active_iterators
         ));
+        out.push_str("# TYPE ferrokinesis_request_failures_total counter\n");
+        for (index, reason) in ALL_PRE_OPERATION_FAILURE_REASONS.iter().enumerate() {
+            out.push_str(&format!(
+                "ferrokinesis_request_failures_total{{reason=\"{}\"}} {}\n",
+                pre_operation_failure_reason_name(*reason),
+                self.pre_operation_failure_counters[index].load(Ordering::Relaxed)
+            ));
+        }
 
         for (index, operation) in ALL_OPERATIONS.iter().enumerate() {
             let metrics = &self.request_counters[index];

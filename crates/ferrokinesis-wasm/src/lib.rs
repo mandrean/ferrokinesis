@@ -24,6 +24,7 @@ struct KinesisOptions {
     iterator_ttl_seconds: Option<u64>,
     retention_check_interval_secs: Option<u64>,
     enforce_limits: Option<bool>,
+    max_retained_bytes: Option<u64>,
     account_id: Option<String>,
     region: Option<String>,
     max_request_body_mb: Option<u64>,
@@ -50,30 +51,7 @@ impl Kinesis {
 
         let options = parse_options(options)?;
         let defaults = StoreOptions::default();
-        let store_options = StoreOptions {
-            create_stream_ms: options
-                .create_stream_ms
-                .unwrap_or(defaults.create_stream_ms),
-            delete_stream_ms: options
-                .delete_stream_ms
-                .unwrap_or(defaults.delete_stream_ms),
-            update_stream_ms: options
-                .update_stream_ms
-                .unwrap_or(defaults.update_stream_ms),
-            shard_limit: options.shard_limit.unwrap_or(defaults.shard_limit),
-            iterator_ttl_seconds: options
-                .iterator_ttl_seconds
-                .unwrap_or(defaults.iterator_ttl_seconds),
-            retention_check_interval_secs: options
-                .retention_check_interval_secs
-                .unwrap_or(defaults.retention_check_interval_secs),
-            enforce_limits: options.enforce_limits.unwrap_or(defaults.enforce_limits),
-            state_dir: defaults.state_dir,
-            snapshot_interval_secs: defaults.snapshot_interval_secs,
-            max_retained_bytes: defaults.max_retained_bytes,
-            aws_account_id: options.account_id.unwrap_or(defaults.aws_account_id),
-            aws_region: options.region.unwrap_or(defaults.aws_region),
-        };
+        let store_options = build_store_options(&options, &defaults);
 
         let max_bytes: usize = options
             .max_request_body_mb
@@ -149,6 +127,7 @@ fn parse_options(options: Option<JsValue>) -> Result<KinesisOptions, JsValue> {
             iterator_ttl_seconds: read_option(&value, "iteratorTtlSeconds")?,
             retention_check_interval_secs: read_option(&value, "retentionCheckIntervalSecs")?,
             enforce_limits: read_option(&value, "enforceLimits")?,
+            max_retained_bytes: read_option(&value, "maxRetainedBytes")?,
             account_id: read_option(&value, "accountId")?,
             region: read_option(&value, "region")?,
             max_request_body_mb: read_option(&value, "maxRequestBodyMb")?,
@@ -170,6 +149,56 @@ fn read_option<T: DeserializeOwned>(value: &JsValue, field: &str) -> Result<Opti
 
 fn js_error(message: impl Into<String>) -> JsValue {
     JsValue::from_str(&message.into())
+}
+
+fn build_store_options(options: &KinesisOptions, defaults: &StoreOptions) -> StoreOptions {
+    StoreOptions {
+        create_stream_ms: options
+            .create_stream_ms
+            .unwrap_or(defaults.create_stream_ms),
+        delete_stream_ms: options
+            .delete_stream_ms
+            .unwrap_or(defaults.delete_stream_ms),
+        update_stream_ms: options
+            .update_stream_ms
+            .unwrap_or(defaults.update_stream_ms),
+        shard_limit: options.shard_limit.unwrap_or(defaults.shard_limit),
+        iterator_ttl_seconds: options
+            .iterator_ttl_seconds
+            .unwrap_or(defaults.iterator_ttl_seconds),
+        retention_check_interval_secs: options
+            .retention_check_interval_secs
+            .unwrap_or(defaults.retention_check_interval_secs),
+        enforce_limits: options.enforce_limits.unwrap_or(defaults.enforce_limits),
+        state_dir: defaults.state_dir.clone(),
+        snapshot_interval_secs: defaults.snapshot_interval_secs,
+        max_retained_bytes: options.max_retained_bytes.or(defaults.max_retained_bytes),
+        aws_account_id: options
+            .account_id
+            .clone()
+            .unwrap_or_else(|| defaults.aws_account_id.clone()),
+        aws_region: options
+            .region
+            .clone()
+            .unwrap_or_else(|| defaults.aws_region.clone()),
+    }
+}
+
+#[cfg(test)]
+mod native_tests {
+    use super::*;
+
+    #[test]
+    fn build_store_options_threads_max_retained_bytes() {
+        let defaults = StoreOptions::default();
+        let options = KinesisOptions {
+            max_retained_bytes: Some(1234),
+            ..KinesisOptions::default()
+        };
+
+        let store_options = build_store_options(&options, &defaults);
+        assert_eq!(store_options.max_retained_bytes, Some(1234));
+    }
 }
 
 #[cfg(all(test, target_arch = "wasm32"))]

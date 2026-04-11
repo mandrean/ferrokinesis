@@ -250,6 +250,24 @@ pub struct SequenceAllocation {
     pub now: u64,
 }
 
+/// A charged shard-throughput reservation that may be refunded on rollback.
+#[derive(Debug, Clone)]
+pub struct ThroughputReservation {
+    key: Option<String>,
+    window_start_ms: u64,
+    bytes: u64,
+}
+
+impl ThroughputReservation {
+    fn disabled() -> Self {
+        Self {
+            key: None,
+            window_start_ms: 0,
+            bytes: 0,
+        }
+    }
+}
+
 /// Per-shard record map: shard_hex → sorted records.
 type ShardRecords = DashMap<String, Arc<RwLock<BTreeMap<String, Vec<u8>>>>>;
 
@@ -272,6 +290,77 @@ struct AppliedDeleteChange {
     records_arc: Arc<RwLock<BTreeMap<String, Vec<u8>>>>,
     key: String,
     deleted_bytes: Vec<u8>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct RestoredState {
+    streams: Vec<(String, Stream, Vec<u64>)>,
+    records: Vec<(String, Vec<(String, BTreeMap<String, Vec<u8>>)>)>,
+    consumers: Vec<(String, Vec<u8>)>,
+    policies: Vec<(String, String)>,
+    resource_tags: Vec<(String, BTreeMap<String, String>)>,
+    account_settings: Value,
+    pending_transitions: BTreeMap<String, PendingTransition>,
+    retained_bytes: u64,
+    retained_records: u64,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl RestoredState {
+    fn from_snapshot(snapshot: PersistentSnapshot) -> Result<Self, String> {
+        let PersistentSnapshot {
+            streams,
+            records,
+            consumers,
+            policies,
+            resource_tags,
+            account_settings_json,
+            pending_transitions,
+            retained_bytes,
+            retained_records,
+            ..
+        } = snapshot;
+
+        let account_settings = if account_settings_json.is_empty() {
+            Value::Object(Default::default())
+        } else {
+            serde_json::from_slice(&account_settings_json)
+                .map_err(|err| format!("failed to decode persisted account settings: {err}"))?
+        };
+
+        Ok(Self {
+            streams: streams
+                .into_iter()
+                .map(|stream| {
+                    let (name, stream_value, shard_counters) = stream.into_parts();
+                    (name, stream_value, shard_counters)
+                })
+                .collect(),
+            records: records
+                .into_iter()
+                .fold(BTreeMap::new(), |mut acc, shard_records| {
+                    acc.entry(shard_records.stream_name)
+                        .or_insert_with(Vec::new)
+                        .push((
+                            shard_records.shard_hex,
+                            shard_records.records.into_iter().collect(),
+                        ));
+                    acc
+                })
+                .into_iter()
+                .collect(),
+            consumers,
+            policies,
+            resource_tags,
+            account_settings,
+            pending_transitions: pending_transitions
+                .into_iter()
+                .map(|transition| (transition.key(), transition))
+                .collect(),
+            retained_bytes,
+            retained_records,
+        })
+    }
 }
 
 /// Shared inner state behind an [`Arc`] for cheap [`Store`] clones.
@@ -450,66 +539,46 @@ impl Store {
             return Ok(());
         };
 
-        persistence
-            .last_snapshot_ms
-            .store(snapshot.created_at_ms, Ordering::Relaxed);
-        self.metrics.set_last_snapshot_ms(snapshot.created_at_ms);
-        self.restore_snapshot(snapshot)?;
         self.metrics.set_replay_complete(false);
         self.health.replay_complete.store(false, Ordering::Relaxed);
 
+        let mut restored_snapshot = snapshot;
         for entry in entries {
-            self.apply_wal_entry(entry)?;
+            Self::apply_wal_entry(&mut restored_snapshot, entry)?;
         }
 
+        let created_at_ms = restored_snapshot.created_at_ms;
+        let restored_state = RestoredState::from_snapshot(restored_snapshot)?;
+        self.install_restored_state(restored_state);
+        persistence
+            .last_snapshot_ms
+            .store(created_at_ms, Ordering::Relaxed);
+        self.metrics.set_last_snapshot_ms(created_at_ms);
         self.metrics.set_replay_complete(true);
         self.health.replay_complete.store(true, Ordering::Relaxed);
         Ok(())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn apply_wal_entry(&self, entry: WalEntry) -> Result<(), String> {
+    fn apply_wal_entry(snapshot: &mut PersistentSnapshot, entry: WalEntry) -> Result<(), String> {
         match entry {
-            WalEntry::Snapshot(snapshot) => self.restore_snapshot(snapshot),
+            WalEntry::Snapshot(next_snapshot) => {
+                *snapshot = next_snapshot;
+                Ok(())
+            }
         }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn restore_snapshot(&self, snapshot: PersistentSnapshot) -> Result<(), String> {
-        let PersistentSnapshot {
-            streams,
-            records,
-            consumers,
-            policies,
-            resource_tags,
-            account_settings_json,
-            pending_transitions,
-            retained_bytes,
-            retained_records,
-            ..
-        } = snapshot;
+    fn install_restored_state(&self, restored_state: RestoredState) {
         self.inner.streams.clear();
         self.inner.stream_records.clear();
         self.inner.consumers.clear();
         self.inner.policies.clear();
         self.inner.resource_tags.clear();
-        if let Ok(mut transitions) = self.inner.pending_transitions.try_write() {
-            transitions.clear();
-            for transition in pending_transitions {
-                transitions.insert(transition.key(), transition);
-            }
-        }
-        if let Ok(mut settings) = self.inner.account_settings.try_write() {
-            *settings = if account_settings_json.is_empty() {
-                Value::Object(Default::default())
-            } else {
-                serde_json::from_slice(&account_settings_json)
-                    .map_err(|err| format!("failed to decode persisted account settings: {err}"))?
-            };
-        }
+        self.inner.throughput_windows.clear();
 
-        for stream in streams {
-            let (name, stream_value, shard_counters) = stream.into_parts();
+        for (name, stream_value, shard_counters) in restored_state.streams {
             let entry = Arc::new(StreamEntry {
                 stream: RwLock::new(stream_value),
                 shard_seq: RwLock::new(
@@ -524,29 +593,34 @@ impl Store {
             self.inner.streams.insert(name, entry);
         }
 
-        for shard_records in records {
-            let shard_map = self
-                .inner
-                .stream_records
-                .entry(shard_records.stream_name)
-                .or_default();
-            let records = shard_records.records.into_iter().collect();
-            shard_map.insert(shard_records.shard_hex, Arc::new(RwLock::new(records)));
+        for (stream_name, shards) in restored_state.records {
+            let shard_map = self.inner.stream_records.entry(stream_name).or_default();
+            for (shard_hex, records) in shards {
+                shard_map.insert(shard_hex, Arc::new(RwLock::new(records)));
+            }
         }
 
-        for (consumer_arn, bytes) in consumers {
+        for (consumer_arn, bytes) in restored_state.consumers {
             self.inner.consumers.insert(consumer_arn, bytes);
         }
-        for (resource_arn, policy) in policies {
+        for (resource_arn, policy) in restored_state.policies {
             self.inner.policies.insert(resource_arn, policy);
         }
-        for (resource_arn, tags) in resource_tags {
+        for (resource_arn, tags) in restored_state.resource_tags {
             self.inner.resource_tags.insert(resource_arn, tags);
         }
+        if let Ok(mut transitions) = self.inner.pending_transitions.try_write() {
+            *transitions = restored_state.pending_transitions;
+        }
+        if let Ok(mut settings) = self.inner.account_settings.try_write() {
+            *settings = restored_state.account_settings;
+        }
 
-        self.metrics.set_retained(retained_bytes, retained_records);
+        self.metrics.set_retained(
+            restored_state.retained_bytes,
+            restored_state.retained_records,
+        );
         self.refresh_topology_metrics_sync();
-        Ok(())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -871,17 +945,25 @@ impl Store {
             .unwrap_or_else(|| "durable state is not ready".to_string())
     }
 
-    pub(crate) fn check_writable(&self) -> Result<(), KinesisErrorResponse> {
+    fn availability_block_reason(&self) -> Option<String> {
         if !self.health.durable_ok.load(Ordering::Relaxed) {
-            let detail = self.durable_state_error_detail();
-            return Err(KinesisErrorResponse::server_error(None, Some(&detail)));
+            return Some(self.durable_state_error_detail());
         }
         if !self.health.replay_complete.load(Ordering::Relaxed) {
-            return Err(KinesisErrorResponse::server_error(
-                None,
-                Some("durable replay is not complete"),
-            ));
+            return Some("durable replay is not complete".to_string());
         }
+        None
+    }
+
+    pub(crate) fn check_available(&self) -> Result<(), KinesisErrorResponse> {
+        if let Some(detail) = self.availability_block_reason() {
+            return Err(KinesisErrorResponse::server_error(None, Some(&detail)));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn check_writable(&self) -> Result<(), KinesisErrorResponse> {
+        self.check_available()?;
         if self.retained_capacity_exceeded() {
             return Err(self.retained_limit_error(self.metrics.retained_bytes(), 0));
         }
@@ -893,11 +975,8 @@ impl Store {
         if !self.durable_state_requested() {
             return None;
         }
-        if !self.health.durable_ok.load(Ordering::Relaxed) {
-            return Some(self.durable_state_error_detail());
-        }
-        if !self.health.replay_complete.load(Ordering::Relaxed) {
-            return Some("durable replay is not complete".to_string());
+        if let Some(detail) = self.availability_block_reason() {
+            return Some(detail);
         }
         if self.persistence.is_none() {
             return Some("durable state backend is unavailable".to_string());
@@ -2291,28 +2370,8 @@ impl Store {
     /// in-memory implementation this never happens, but the signature is kept
     /// for API compatibility.
     pub fn check_ready(&self) -> Result<(), StoreHealthError> {
-        if !self.health.durable_ok.load(Ordering::Relaxed) {
-            let detail = self
-                .health
-                .last_error
-                .read()
-                .ok()
-                .and_then(|guard| guard.clone())
-                .unwrap_or_else(|| "durable state is not ready".to_string());
+        if let Some(detail) = self.availability_block_reason() {
             return Err(StoreHealthError::ReadFailed(detail));
-        }
-        if !self.health.replay_complete.load(Ordering::Relaxed) {
-            return Err(StoreHealthError::ReadFailed(
-                "durable replay is not complete".to_string(),
-            ));
-        }
-        if self.retained_capacity_exceeded() {
-            let limit = self.options.max_retained_bytes.unwrap();
-            return Err(StoreHealthError::ReadFailed(format!(
-                "retained bytes limit exceeded: {} > {}",
-                self.metrics.retained_bytes(),
-                limit
-            )));
         }
         Ok(())
     }
@@ -2986,16 +3045,16 @@ impl Store {
         shard_id: &str,
         bytes: u64,
         now_ms: u64,
-    ) -> Result<(), KinesisErrorResponse> {
+    ) -> Result<ThroughputReservation, KinesisErrorResponse> {
         if !self.options.enforce_limits {
-            return Ok(());
+            return Ok(ThroughputReservation::disabled());
         }
 
         let key = throughput_window_key(stream_name, shard_id);
         let window = self
             .inner
             .throughput_windows
-            .entry(key)
+            .entry(key.clone())
             .or_insert_with(|| {
                 Arc::new(Mutex::new(ShardThroughputWindow {
                     window_start_ms: now_ms,
@@ -3008,7 +3067,38 @@ impl Store {
         let mut window = window.lock().await;
         roll_throughput_window(&mut window, now_ms);
         reserve_throughput_window(&mut window, bytes)?;
-        Ok(())
+        Ok(ThroughputReservation {
+            key: Some(key),
+            window_start_ms: window.window_start_ms,
+            bytes,
+        })
+    }
+
+    /// Refunds a previously charged shard-throughput reservation.
+    ///
+    /// Refunds are applied only if the original throughput window is still
+    /// current, preventing a rollback from mutating a newer second's quota.
+    pub async fn refund_shard_throughput(&self, reservation: ThroughputReservation) {
+        let Some(key) = reservation.key else {
+            return;
+        };
+
+        let Some(window) = self
+            .inner
+            .throughput_windows
+            .get(&key)
+            .map(|entry| Arc::clone(entry.value()))
+        else {
+            return;
+        };
+
+        let mut window = window.lock().await;
+        if window.window_start_ms != reservation.window_start_ms {
+            return;
+        }
+
+        window.bytes = window.bytes.saturating_sub(reservation.bytes);
+        window.records = window.records.saturating_sub(1);
     }
 
     fn clear_throughput_windows_for_stream(&self, stream_name: &str) {
