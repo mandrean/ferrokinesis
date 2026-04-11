@@ -63,6 +63,56 @@ async fn put_records_large_batch_succeeds_by_default_without_limit_enforcement()
 }
 
 #[tokio::test]
+async fn put_records_throttle_whole_batch_when_limits_are_enforced() {
+    let server = TestServer::with_options(StoreOptions {
+        create_stream_ms: 0,
+        delete_stream_ms: 0,
+        update_stream_ms: 0,
+        shard_limit: 50,
+        enforce_limits: true,
+        ..Default::default()
+    })
+    .await;
+    let name = "test-put-records-throughput-limits";
+    let payload = BASE64.encode(vec![b'b'; 600_000]);
+    server.create_stream(name, 1).await;
+
+    let res = server
+        .request(
+            "PutRecords",
+            &json!({
+                "StreamName": name,
+                "Records": [
+                    {"Data": payload.clone(), "PartitionKey": "key"},
+                    {"Data": payload.clone(), "PartitionKey": "key"},
+                ],
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "ProvisionedThroughputExceededException");
+    assert_eq!(body["message"], "Rate exceeded for shard.");
+    assert!(
+        server.store.get_record_store(name).await.is_empty(),
+        "failed batch must not persist any records"
+    );
+
+    let follow_up = server
+        .request(
+            "PutRecords",
+            &json!({
+                "StreamName": name,
+                "Records": [
+                    {"Data": payload, "PartitionKey": "key"},
+                ],
+            }),
+        )
+        .await;
+    assert_eq!(follow_up.status(), 200);
+}
+
+#[tokio::test]
 async fn put_records_stream_not_found() {
     let server = TestServer::new().await;
     let res = server

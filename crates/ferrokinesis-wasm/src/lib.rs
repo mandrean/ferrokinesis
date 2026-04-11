@@ -23,6 +23,7 @@ struct KinesisOptions {
     shard_limit: Option<u32>,
     iterator_ttl_seconds: Option<u64>,
     retention_check_interval_secs: Option<u64>,
+    enforce_limits: Option<bool>,
     account_id: Option<String>,
     region: Option<String>,
     max_request_body_mb: Option<u64>,
@@ -66,7 +67,7 @@ impl Kinesis {
             retention_check_interval_secs: options
                 .retention_check_interval_secs
                 .unwrap_or(defaults.retention_check_interval_secs),
-            enforce_limits: defaults.enforce_limits,
+            enforce_limits: options.enforce_limits.unwrap_or(defaults.enforce_limits),
             aws_account_id: options.account_id.unwrap_or(defaults.aws_account_id),
             aws_region: options.region.unwrap_or(defaults.aws_region),
         };

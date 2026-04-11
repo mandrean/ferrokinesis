@@ -26,7 +26,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, OwnedMutexGuard, RwLock};
 
 const DEFAULT_SHARD_WRITE_BYTES_PER_SEC: u64 = 1024 * 1024;
 const DEFAULT_SHARD_WRITE_RECORDS_PER_SEC: u64 = 1000;
@@ -133,6 +133,18 @@ struct ShardThroughputWindow {
     window_start_ms: u64,
     bytes: u64,
     records: u64,
+}
+
+/// Pending throughput reservation for a specific shard write.
+pub struct ShardThroughputReservation<'a> {
+    /// Stream containing the target shard.
+    pub stream_name: &'a str,
+    /// Shard being written to.
+    pub shard_id: &'a str,
+    /// Decoded record payload size in bytes.
+    pub bytes: u64,
+    /// Timestamp at which the write should be charged.
+    pub now_ms: u64,
 }
 
 /// Shared inner state behind an [`Arc`] for cheap [`Store`] clones.
@@ -287,6 +299,10 @@ impl Store {
     pub async fn delete_stream(&self, name: &str) {
         self.inner.streams.remove(name);
         self.inner.stream_records.remove(name);
+        let prefix = format!("{name}:");
+        self.inner
+            .throughput_windows
+            .retain(|key, _| !key.starts_with(&prefix));
     }
 
     /// Returns `true` if a stream with the given name exists.
@@ -877,7 +893,7 @@ impl Store {
             return Ok(());
         }
 
-        let key = format!("{stream_name}:{shard_id}");
+        let key = throughput_window_key(stream_name, shard_id);
         let window = self
             .inner
             .throughput_windows
@@ -892,23 +908,68 @@ impl Store {
             .clone();
 
         let mut window = window.lock().await;
-        if now_ms.saturating_sub(window.window_start_ms) >= 1000 {
-            window.window_start_ms = now_ms;
-            window.bytes = 0;
-            window.records = 0;
+        roll_throughput_window(&mut window, now_ms);
+        reserve_throughput_window(&mut window, bytes)?;
+        Ok(())
+    }
+
+    /// Reserves shard write throughput for a batch atomically.
+    ///
+    /// When `enforce_limits` is disabled this is a no-op. When enabled, either
+    /// the full batch reservation is applied or no throughput debt is recorded.
+    pub async fn try_reserve_shard_throughput_batch(
+        &self,
+        reservations: &[ShardThroughputReservation<'_>],
+    ) -> Result<(), KinesisErrorResponse> {
+        if !self.options.enforce_limits || reservations.is_empty() {
+            return Ok(());
         }
 
-        if window.bytes.saturating_add(bytes) > DEFAULT_SHARD_WRITE_BYTES_PER_SEC
-            || window.records.saturating_add(1) > DEFAULT_SHARD_WRITE_RECORDS_PER_SEC
-        {
-            return Err(KinesisErrorResponse::client_error(
-                "ProvisionedThroughputExceededException",
-                Some("Rate exceeded for shard."),
-            ));
+        let mut grouped = BTreeMap::new();
+        for reservation in reservations {
+            let key = throughput_window_key(reservation.stream_name, reservation.shard_id);
+            let window = self
+                .inner
+                .throughput_windows
+                .entry(key.clone())
+                .or_insert_with(|| {
+                    Arc::new(Mutex::new(ShardThroughputWindow {
+                        window_start_ms: reservation.now_ms,
+                        bytes: 0,
+                        records: 0,
+                    }))
+                })
+                .clone();
+
+            grouped
+                .entry(key)
+                .or_insert_with(|| (window, Vec::new()))
+                .1
+                .push((reservation.bytes, reservation.now_ms));
         }
 
-        window.bytes += bytes;
-        window.records += 1;
+        let mut locked = Vec::with_capacity(grouped.len());
+        for (_, (window, pending)) in grouped {
+            locked.push((window.lock_owned().await, pending));
+        }
+
+        for (window, pending) in &locked {
+            let mut preview = ShardThroughputWindow {
+                window_start_ms: window.window_start_ms,
+                bytes: window.bytes,
+                records: window.records,
+            };
+
+            for &(bytes, now_ms) in pending {
+                roll_throughput_window(&mut preview, now_ms);
+                reserve_throughput_window(&mut preview, bytes)?;
+            }
+        }
+
+        for (mut window, pending) in locked {
+            apply_throughput_reservations(&mut window, &pending);
+        }
+
         Ok(())
     }
 }
@@ -960,4 +1021,49 @@ fn route_hash_to_shard(stream: &Stream, hash_key: &u128) -> (i64, String, u64) {
         }
     }
     (0, String::new(), 0)
+}
+
+fn throughput_window_key(stream_name: &str, shard_id: &str) -> String {
+    format!("{stream_name}:{shard_id}")
+}
+
+fn roll_throughput_window(window: &mut ShardThroughputWindow, now_ms: u64) {
+    if now_ms.saturating_sub(window.window_start_ms) >= 1000 {
+        window.window_start_ms = now_ms;
+        window.bytes = 0;
+        window.records = 0;
+    }
+}
+
+fn reserve_throughput_window(
+    window: &mut ShardThroughputWindow,
+    bytes: u64,
+) -> Result<(), KinesisErrorResponse> {
+    if window.bytes.saturating_add(bytes) > DEFAULT_SHARD_WRITE_BYTES_PER_SEC
+        || window.records.saturating_add(1) > DEFAULT_SHARD_WRITE_RECORDS_PER_SEC
+    {
+        return Err(KinesisErrorResponse::client_error(
+            "ProvisionedThroughputExceededException",
+            Some("Rate exceeded for shard."),
+        ));
+    }
+
+    window.bytes += bytes;
+    window.records += 1;
+    Ok(())
+}
+
+fn apply_throughput_reservations(
+    window: &mut OwnedMutexGuard<ShardThroughputWindow>,
+    pending: &[(u64, u64)],
+) {
+    for &(bytes, now_ms) in pending {
+        roll_throughput_window(window, now_ms);
+        let before = (window.window_start_ms, window.bytes, window.records);
+        let applied = reserve_throughput_window(window, bytes).is_ok();
+        debug_assert!(
+            applied,
+            "validated throughput reservation must still fit: before={before:?}, bytes={bytes}, now_ms={now_ms}"
+        );
+    }
 }

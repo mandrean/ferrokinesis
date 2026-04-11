@@ -87,6 +87,28 @@ async fn throughput_limits_enforce_record_and_byte_caps_per_shard() {
 }
 
 #[tokio::test]
+async fn deleting_stream_clears_throughput_windows() {
+    use ferrokinesis::store::Store;
+
+    let store = Store::new(StoreOptions {
+        enforce_limits: true,
+        ..StoreOptions::default()
+    });
+
+    store
+        .try_reserve_shard_throughput("stream", "shardId-000000000000", 600_000, 5_000)
+        .await
+        .expect("initial write should consume throughput");
+
+    store.delete_stream("stream").await;
+
+    store
+        .try_reserve_shard_throughput("stream", "shardId-000000000000", 600_000, 5_000)
+        .await
+        .expect("delete should clear stale throughput debt");
+}
+
+#[tokio::test]
 async fn store_get_records_range_direct() {
     use ferrokinesis::store::Store;
     use ferrokinesis::types::StoredRecord;
