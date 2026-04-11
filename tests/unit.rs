@@ -144,7 +144,8 @@ async fn store_get_records_range_direct() {
                 approximate_arrival_timestamp: 1.0,
             },
         )
-        .await;
+        .await
+        .unwrap();
 
     let records = store
         .get_records_range("test-grr", "aabbccdd/", "aabbccde/")

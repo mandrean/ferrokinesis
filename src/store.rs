@@ -382,8 +382,16 @@ impl Store {
     }
 
     /// Stores a single record under the given composite shard key.
-    pub async fn put_record<R: Serialize>(&self, stream_name: &str, key: &str, record: &R) {
-        let bytes = postcard::to_allocvec(record).unwrap();
+    pub async fn put_record<R: Serialize>(
+        &self,
+        stream_name: &str,
+        key: &str,
+        record: &R,
+    ) -> Result<(), KinesisErrorResponse> {
+        let bytes = postcard::to_allocvec(record).map_err(|err| {
+            let message = err.to_string();
+            KinesisErrorResponse::server_error(None, Some(&message))
+        })?;
         let shard_hex = shard_hex_from_key(key);
         let shard_map = ensure_shard_map(&self.inner.stream_records, stream_name);
         let records_arc = shard_map
@@ -394,33 +402,43 @@ impl Store {
         drop(shard_map);
         let mut records = records_arc.write().await;
         records.insert(key.to_string(), bytes);
+        Ok(())
     }
 
     /// Stores multiple records in a single batch.
-    pub async fn put_records_batch<R: Serialize>(&self, stream_name: &str, batch: &[(String, R)]) {
+    pub async fn put_records_batch<R: Serialize>(
+        &self,
+        stream_name: &str,
+        batch: &[(String, R)],
+    ) -> Result<(), KinesisErrorResponse> {
         // Phase 1: collect Arc refs and serialized bytes while holding the DashMap ref.
-        let pending: Vec<_> = {
+        let pending: Result<Vec<_>, KinesisErrorResponse> = {
             let shard_map = ensure_shard_map(&self.inner.stream_records, stream_name);
             batch
                 .iter()
                 .map(|(key, record)| {
-                    let bytes = postcard::to_allocvec(record).unwrap();
+                    let bytes = postcard::to_allocvec(record).map_err(|err| {
+                        let message = err.to_string();
+                        KinesisErrorResponse::server_error(None, Some(&message))
+                    })?;
                     let shard_hex = shard_hex_from_key(key);
                     let records_arc = shard_map
                         .entry(shard_hex.to_string())
                         .or_insert_with(|| Arc::new(RwLock::new(BTreeMap::new())))
                         .value()
                         .clone();
-                    (records_arc, key.clone(), bytes)
+                    Ok((records_arc, key.clone(), bytes))
                 })
                 .collect()
         }; // shard_map Ref dropped here — no DashMap lock held across await.
+        let pending = pending?;
 
         // Phase 2: insert records under per-shard write locks only.
         for (records_arc, key, bytes) in pending {
             let mut records = records_arc.write().await;
             records.insert(key, bytes);
         }
+        Ok(())
     }
 
     /// Deletes records whose sequence-number–embedded timestamp is older than
