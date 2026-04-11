@@ -71,14 +71,26 @@ pub mod util;
 pub mod validation;
 
 use axum::Router;
+#[cfg(all(feature = "server", not(target_arch = "wasm32")))]
+use axum::body::Body;
 use axum::middleware;
 use axum::routing::{any, get};
+#[cfg(all(feature = "server", not(target_arch = "wasm32")))]
+use hyper::body::Incoming;
+#[cfg(all(feature = "server", not(target_arch = "wasm32")))]
+use hyper_util::rt::{TokioExecutor, TokioIo};
+#[cfg(all(feature = "server", not(target_arch = "wasm32")))]
+use hyper_util::server::conn::auto::Builder as AutoBuilder;
+#[cfg(all(feature = "server", not(target_arch = "wasm32")))]
+use hyper_util::service::TowerToHyperService;
 use store::Store;
 #[cfg(any(
     not(target_arch = "wasm32"),
     all(target_os = "wasi", target_env = "p2", feature = "wasi"),
 ))]
 use store::StoreOptions;
+#[cfg(all(feature = "server", not(target_arch = "wasm32")))]
+use tower::ServiceExt as _;
 #[cfg(feature = "access-log")]
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 
@@ -153,6 +165,37 @@ pub fn create_router(store: Store) -> Router {
     );
 
     app
+}
+
+/// Serve an Axum app over a plain TCP listener with HTTP/1.1 and h2c auto-negotiation.
+#[cfg(all(feature = "server", not(target_arch = "wasm32")))]
+pub async fn serve_plain_http(
+    listener: tokio::net::TcpListener,
+    app: Router,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> std::io::Result<()> {
+    let mut shutdown = std::pin::pin!(shutdown);
+
+    loop {
+        tokio::select! {
+            _ = &mut shutdown => break Ok(()),
+            accept = listener.accept() => {
+                let (stream, _addr) = accept?;
+                let io = TokioIo::new(stream);
+                let service = TowerToHyperService::new(
+                    app.clone()
+                        .into_service::<Body>()
+                        .map_request(|req: axum::http::Request<Incoming>| req.map(Body::new)),
+                );
+                tokio::spawn(async move {
+                    let builder = AutoBuilder::new(TokioExecutor::new());
+                    if let Err(err) = builder.serve_connection_with_upgrades(io, service).await {
+                        tracing::debug!("plain connection closed with error: {err}");
+                    }
+                });
+            }
+        }
+    }
 }
 
 #[cfg(any(

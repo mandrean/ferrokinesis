@@ -439,7 +439,7 @@ describe("Shard management", () => {
 });
 
 describe("Stream consumers", () => {
-  // SubscribeToShard is SKIPPED — HTTP/1.1 only, no event-stream support
+  // SubscribeToShard is SKIPPED — this suite still uses the default Node HTTP/1.1 handler.
   const streamName = "node-consumers";
   let streamArn: string;
 

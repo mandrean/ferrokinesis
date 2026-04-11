@@ -7,7 +7,6 @@ import org.junit.jupiter.api.TestMethodOrder;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.core.SdkBytes;
-import software.amazon.awssdk.http.Protocol;
 import software.amazon.awssdk.http.nio.netty.NettyNioAsyncHttpClient;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.kinesis.KinesisAsyncClient;
@@ -53,9 +52,7 @@ public class KinesisV2ConformanceTest {
             .region(Region.US_EAST_1)
             .credentialsProvider(StaticCredentialsProvider.create(
                     AwsBasicCredentials.create("test", "test")))
-            .httpClient(NettyNioAsyncHttpClient.builder()
-                    .protocol(Protocol.HTTP1_1)
-                    .build())
+            .httpClient(NettyNioAsyncHttpClient.builder().build())
             .build();
 
     // Shared across ordered tests — requires @TestMethodOrder(OrderAnnotation) (do not run in parallel)

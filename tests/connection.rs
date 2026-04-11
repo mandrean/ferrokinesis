@@ -1,11 +1,61 @@
 mod common;
 
 use common::*;
-use reqwest::Method;
 use reqwest::header::{HeaderMap, HeaderValue};
+use reqwest::{Method, Version};
 use serde_json::{Value, json};
 
 // -- Basic connection tests --
+
+#[tokio::test]
+async fn plain_listener_accepts_h2c_prior_knowledge() {
+    let server = TestServer::new().await;
+    let client = reqwest::Client::builder()
+        .http2_prior_knowledge()
+        .build()
+        .unwrap();
+
+    let create = client
+        .post(server.url())
+        .header("Content-Type", AMZ_JSON)
+        .header("X-Amz-Target", format!("{VERSION}.CreateStream"))
+        .header(
+            "Authorization",
+            "AWS4-HMAC-SHA256 Credential=AKID/20150101/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=abcd1234",
+        )
+        .header("X-Amz-Date", "20150101T000000Z")
+        .body(json!({"StreamName":"h2c-stream","ShardCount":1}).to_string())
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(create.version(), Version::HTTP_2);
+    assert!(create.status().is_success());
+
+    let list = client
+        .post(server.url())
+        .header("Content-Type", AMZ_JSON)
+        .header("X-Amz-Target", format!("{VERSION}.ListStreams"))
+        .header(
+            "Authorization",
+            "AWS4-HMAC-SHA256 Credential=AKID/20150101/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=abcd1234",
+        )
+        .header("X-Amz-Date", "20150101T000000Z")
+        .body(json!({}).to_string())
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(list.version(), Version::HTTP_2);
+    let body: Value = list.json().await.unwrap();
+    assert!(
+        body["StreamNames"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|name| name.as_str() == Some("h2c-stream"))
+    );
+}
 
 #[tokio::test]
 async fn cbor_unknown_operation_if_post_no_auth() {
