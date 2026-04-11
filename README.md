@@ -27,7 +27,9 @@ npm --prefix demo run dev
 
 - Pure Rust implementation
 - Companion `ferro` CLI for streams, consumers, puts, tails, replay, and raw API calls
-- Fully in-memory storage using [DashMap](https://github.com/xacrimon/dashmap) + per-stream `RwLock` with lock-free per-shard sequence generation
+- Fast in-memory storage using [DashMap](https://github.com/xacrimon/dashmap) + per-stream `RwLock` with lock-free per-shard sequence generation
+- Optional durable single-node mode with WAL + snapshot persistence (`--state-dir`)
+- Optional retained-bytes backpressure cap (`--max-retained-bytes`) with explicit write rejection
 - Implements all 39 Kinesis Data Streams API operations
 - Supports both JSON and CBOR content types
 - Health check endpoints (`/_health`, `/_health/ready`, `/_health/live`) for Docker/K8s
@@ -273,6 +275,20 @@ ferrokinesis \
 
 If `--otlp-endpoint` is omitted, no OTLP exporter is started.
 When `--otlp-protocol http` is used with a base collector URL such as `http://localhost:4318`, ferrokinesis appends the standard `/v1/traces` path automatically.
+
+## Bounded Retained Growth
+
+For bounded single-node deployments, configure `max_retained_bytes` (`--max-retained-bytes`, env `FERROKINESIS_MAX_RETAINED_BYTES`).
+
+- The cap is applied to retained serialized record bytes, not process RSS.
+- `PutRecord` and `PutRecords` are rejected before mutation with `LimitExceededException` when `retained_bytes + incoming_bytes > max_retained_bytes`.
+- `/_health` and `/_health/ready` return `503` when replay restores retained data already above the configured cap.
+- No implicit FIFO eviction or silent trimming is performed to stay under the cap.
+
+Prometheus metrics for this contract are exposed on `/metrics`:
+- `ferrokinesis_retained_bytes`
+- `ferrokinesis_retained_records`
+- `ferrokinesis_rejected_writes_total`
 
 ## API & Test Coverage
 
