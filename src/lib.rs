@@ -203,6 +203,9 @@ pub async fn serve_plain_http(
 
     loop {
         tokio::select! {
+            biased;
+            // Once shutdown is ready we must stop admitting new sockets before
+            // draining existing connections.
             _ = &mut shutdown => break,
             accept = listener.accept() => {
                 let (stream, _addr) = accept?;
