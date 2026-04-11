@@ -2,7 +2,11 @@
   "operation": "DescribeStreamSummary",
   "scenario": "happy_path",
   "http_status": 200,
-  "required_headers": ["x-amzn-RequestId", "x-amz-id-2", "Content-Type"],
+  "required_headers": [
+    "x-amzn-RequestId",
+    "x-amz-id-2",
+    "Content-Type"
+  ],
   "body": {
     "StreamDescriptionSummary": {
       "ConsumerCount": 0,
@@ -22,5 +26,8 @@
       "StreamName": "test-stream",
       "StreamStatus": "ACTIVE"
     }
+  },
+  "expected_headers": {
+    "Content-Type": "application/x-amz-json-1.1"
   }
 }

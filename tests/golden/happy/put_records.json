@@ -2,7 +2,11 @@
   "operation": "PutRecords",
   "scenario": "happy_path",
   "http_status": 200,
-  "required_headers": ["x-amzn-RequestId", "x-amz-id-2", "Content-Type"],
+  "required_headers": [
+    "x-amzn-RequestId",
+    "x-amz-id-2",
+    "Content-Type"
+  ],
   "body": {
     "EncryptionType": "NONE",
     "FailedRecordCount": 0,
@@ -12,5 +16,8 @@
         "ShardId": "shardId-000000000000"
       }
     ]
+  },
+  "expected_headers": {
+    "Content-Type": "application/x-amz-json-1.1"
   }
 }

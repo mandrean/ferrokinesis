@@ -2,7 +2,11 @@
   "operation": "GetRecords",
   "scenario": "happy_path",
   "http_status": 200,
-  "required_headers": ["x-amzn-RequestId", "x-amz-id-2", "Content-Type"],
+  "required_headers": [
+    "x-amzn-RequestId",
+    "x-amz-id-2",
+    "Content-Type"
+  ],
   "body": {
     "MillisBehindLatest": 0,
     "NextShardIterator": "AAAAAAAAAAGQk4uPJqsB2vbGhwONKPMx...",
@@ -14,5 +18,8 @@
         "SequenceNumber": "49590338271490256608559692540925702759221480471064903682"
       }
     ]
+  },
+  "expected_headers": {
+    "Content-Type": "application/x-amz-json-1.1"
   }
 }

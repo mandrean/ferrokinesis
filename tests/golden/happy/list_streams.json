@@ -2,10 +2,16 @@
   "operation": "ListStreams",
   "scenario": "happy_path",
   "http_status": 200,
-  "required_headers": ["x-amzn-RequestId", "x-amz-id-2", "Content-Type"],
+  "required_headers": [
+    "x-amzn-RequestId",
+    "x-amz-id-2",
+    "Content-Type"
+  ],
   "body": {
     "HasMoreStreams": false,
-    "StreamNames": ["test-stream"],
+    "StreamNames": [
+      "test-stream"
+    ],
     "StreamSummaries": [
       {
         "StreamARN": "arn:aws:kinesis:us-east-1:000000000000:stream/test-stream",
@@ -17,5 +23,8 @@
         "StreamStatus": "ACTIVE"
       }
     ]
+  },
+  "expected_headers": {
+    "Content-Type": "application/x-amz-json-1.1"
   }
 }

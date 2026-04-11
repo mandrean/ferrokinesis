@@ -2,6 +2,13 @@
   "operation": "CreateStream",
   "scenario": "happy_path",
   "http_status": 200,
-  "required_headers": ["x-amzn-RequestId", "x-amz-id-2", "Content-Type"],
-  "body": null
+  "required_headers": [
+    "x-amzn-RequestId",
+    "x-amz-id-2",
+    "Content-Type"
+  ],
+  "body": null,
+  "expected_headers": {
+    "Content-Type": "application/x-amz-json-1.1"
+  }
 }
