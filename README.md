@@ -49,6 +49,17 @@ chmod +x ferrokinesis
 cargo install ferrokinesis
 ```
 
+To enable traffic mirroring, install with one of the mirror feature sets:
+
+```sh
+# Mirror with static env-var credentials only
+cargo install ferrokinesis --features mirror
+
+# Mirror with the AWS provider chain (~/.aws/credentials, ~/.aws/config,
+# ECS task roles, EC2 IMDS, and IRSA/web identity)
+cargo install ferrokinesis --features mirror-aws-config
+```
+
 ### WASI Preview 2 (Experimental)
 
 Build the experimental WASI listener binary:
@@ -146,6 +157,14 @@ Options:
   -h, --help
           Print help
 ```
+
+## Mirror Credentials
+
+The mirror CLI and TOML settings stay the same across builds, but credential resolution depends on the feature set you compile in.
+
+- `--features mirror` keeps the lightweight path and reads only `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optional `AWS_SESSION_TOKEN`.
+- `--features mirror-aws-config` enables the refreshable AWS credential provider chain for `~/.aws/credentials`, `~/.aws/config`, ECS task roles, EC2 IMDS, and IRSA/web identity.
+- If no credentials are available at runtime, mirror requests are still forwarded, but they are sent unsigned.
 
 ## Health Check Endpoints
 

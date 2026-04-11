@@ -65,7 +65,9 @@
 # [mirror]
 # Mirror PutRecord/PutRecords to another Kinesis-compatible endpoint.
 # Requests are forwarded async (fire-and-forget) after local processing completes.
-# Requires compiling with `--features mirror`.
+# Requires compiling with `--features mirror` for static env-var credentials only,
+# or `--features mirror-aws-config` for the refreshable AWS provider chain
+# (`~/.aws/credentials`, `~/.aws/config`, ECS task roles, EC2 IMDS, and IRSA/web identity).
 
 # Kinesis-compatible endpoint to mirror to (default: disabled)
 # CLI: --mirror-to | Env: FERROKINESIS_MIRROR_TO
