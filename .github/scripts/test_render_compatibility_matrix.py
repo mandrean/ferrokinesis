@@ -147,6 +147,123 @@ class RenderCompatibilityMatrixTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("duplicate compatibility result slugs", result.stderr)
 
+    def test_fails_when_row_outcome_is_empty(self) -> None:
+        workflow_text = textwrap.dedent(
+            """
+            jobs:
+              compatibility:
+                strategy:
+                  matrix:
+                    include:
+                      - name: Go v2
+                        slug: go-sdk-v2
+            """
+        )
+        row = {
+            "suite": "Go v2",
+            "slug": "go-sdk-v2",
+            "language": "go",
+            "directory": "tests/conformance/go-sdk-v2",
+            "needs_dynamodb": False,
+            "outcome": "",
+        }
+
+        result = self.run_script(workflow_text=workflow_text, rows=[row])
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("invalid compatibility outcome", result.stderr)
+        self.assertIn("go-sdk-v2", result.stderr)
+
+    def test_fails_when_row_outcome_is_unknown(self) -> None:
+        workflow_text = textwrap.dedent(
+            """
+            jobs:
+              compatibility:
+                strategy:
+                  matrix:
+                    include:
+                      - name: Go v2
+                        slug: go-sdk-v2
+            """
+        )
+        row = {
+            "suite": "Go v2",
+            "slug": "go-sdk-v2",
+            "language": "go",
+            "directory": "tests/conformance/go-sdk-v2",
+            "needs_dynamodb": False,
+            "outcome": "unknown",
+        }
+
+        result = self.run_script(workflow_text=workflow_text, rows=[row])
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("invalid compatibility outcome", result.stderr)
+        self.assertIn("go-sdk-v2", result.stderr)
+
+    def test_fails_when_row_outcome_is_missing(self) -> None:
+        workflow_text = textwrap.dedent(
+            """
+            jobs:
+              compatibility:
+                strategy:
+                  matrix:
+                    include:
+                      - name: Go v2
+                        slug: go-sdk-v2
+            """
+        )
+        row = {
+            "suite": "Go v2",
+            "slug": "go-sdk-v2",
+            "language": "go",
+            "directory": "tests/conformance/go-sdk-v2",
+            "needs_dynamodb": False,
+        }
+
+        result = self.run_script(workflow_text=workflow_text, rows=[row])
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("invalid compatibility outcome", result.stderr)
+        self.assertIn("go-sdk-v2", result.stderr)
+
+    def test_accepts_cancelled_and_skipped_rows(self) -> None:
+        workflow_text = textwrap.dedent(
+            """
+            jobs:
+              compatibility:
+                strategy:
+                  matrix:
+                    include:
+                      - name: Go v2
+                        slug: go-sdk-v2
+                      - name: Python (boto3)
+                        slug: python-boto3
+            """
+        )
+        rows = [
+            {
+                "suite": "Go v2",
+                "slug": "go-sdk-v2",
+                "language": "go",
+                "directory": "tests/conformance/go-sdk-v2",
+                "needs_dynamodb": False,
+                "outcome": "cancelled",
+            },
+            {
+                "suite": "Python (boto3)",
+                "slug": "python-boto3",
+                "language": "python",
+                "directory": "tests/conformance/python-boto3",
+                "needs_dynamodb": False,
+                "outcome": "skipped",
+            },
+        ]
+
+        result = self.run_script(workflow_text=workflow_text, rows=rows)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
