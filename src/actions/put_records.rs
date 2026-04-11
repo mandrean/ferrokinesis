@@ -5,7 +5,7 @@ use crate::error::KinesisErrorResponse;
 use crate::sequence;
 use crate::store::Store;
 use crate::types::StoredRecordRef;
-use crate::util::{base64_decoded_len, current_time_ms};
+use crate::util::base64_decoded_len;
 use serde_json::{Value, json};
 #[cfg(feature = "server")]
 use std::borrow::Cow;
@@ -38,10 +38,6 @@ fn build_capture_refs<'a>(
             shard_id: resp[constants::SHARD_ID].as_str().unwrap_or(""),
         })
         .collect()
-}
-
-fn throttled_error_message(stream: &str, shard_id: &str) -> String {
-    format!("Rate exceeded for shard {shard_id} in stream {stream}.")
 }
 
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
@@ -107,7 +103,6 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         .allocate_sequences_batch(&stream_name, &hash_keys)
         .await?;
 
-    let mut timestamps = Vec::with_capacity(records.len());
     let mut return_records: Vec<Value> = Vec::with_capacity(records.len());
     let mut batch: Vec<(String, StoredRecordRef<'_>)> = Vec::with_capacity(records.len());
     let mut failed_record_count = 0u64;
@@ -125,17 +120,14 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
             }
         } as u64;
 
-        let reserve_now = current_time_ms().max(alloc.now);
-        timestamps.push(reserve_now);
-
         if let Err(err) = store
-            .try_reserve_shard_throughput(&stream_name, &alloc.shard_id, decoded_len, reserve_now)
+            .try_reserve_shard_throughput(&stream_name, &alloc.shard_id, decoded_len, alloc.now)
             .await
         {
             failed_record_count += 1;
             return_records.push(json!({
                 constants::ERROR_CODE: err.body.error_type,
-                "ErrorMessage": throttled_error_message(&stream_name, &alloc.shard_id),
+                "ErrorMessage": err.body.message.unwrap_or_else(|| "Rate exceeded for shard".to_string()),
             }));
             continue;
         }
@@ -145,7 +137,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
             StoredRecordRef {
                 partition_key,
                 data: record_data,
-                approximate_arrival_timestamp: (reserve_now / 1000) as f64,
+                approximate_arrival_timestamp: (alloc.now / 1000) as f64,
             },
         ));
 
@@ -156,11 +148,12 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     }
 
     if !batch.is_empty() {
-        store.put_records_batch(&stream_name, &batch).await;
+        store.put_records_batch(&stream_name, &batch).await?;
     }
 
     #[cfg(feature = "server")]
     if let Some(ref writer) = store.capture_writer {
+        let timestamps: Vec<u64> = allocations.iter().map(|a| a.now).collect();
         let capture_refs = build_capture_refs(records, &return_records, &timestamps, &stream_name);
         writer.write_records(&capture_refs);
     }

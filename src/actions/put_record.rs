@@ -80,7 +80,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
 
     store
         .put_record(&stream_name, &alloc.stream_key, &record)
-        .await;
+        .await?;
 
     #[cfg(feature = "server")]
     if let Some(ref writer) = store.capture_writer {

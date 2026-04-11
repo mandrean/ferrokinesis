@@ -63,7 +63,7 @@ async fn put_records_large_batch_succeeds_by_default_without_limit_enforcement()
 }
 
 #[tokio::test]
-async fn put_records_returns_partial_failures_when_limits_are_enforced() {
+async fn put_records_returns_partial_failures_when_shard_limit_is_exceeded() {
     let server = TestServer::with_options(StoreOptions {
         create_stream_ms: 0,
         delete_stream_ms: 0,
@@ -73,8 +73,9 @@ async fn put_records_returns_partial_failures_when_limits_are_enforced() {
         ..Default::default()
     })
     .await;
-    let name = "test-put-records-throughput-limits";
-    let payload = BASE64.encode(vec![b'b'; 600_000]);
+    let name = "test-put-records-partial-failure";
+    let large_a = BASE64.encode(vec![b'a'; 700_000]);
+    let large_b = BASE64.encode(vec![b'b'; 400_000]);
     server.create_stream(name, 1).await;
 
     let res = server
@@ -83,8 +84,9 @@ async fn put_records_returns_partial_failures_when_limits_are_enforced() {
             &json!({
                 "StreamName": name,
                 "Records": [
-                    {"Data": payload.clone(), "PartitionKey": "key"},
-                    {"Data": payload.clone(), "PartitionKey": "key"},
+                    {"Data": large_a.clone(), "PartitionKey": "same-shard"},
+                    {"Data": large_b.clone(), "PartitionKey": "same-shard"},
+                    {"Data": "Yw==", "PartitionKey": "same-shard"},
                 ],
             }),
         )
@@ -94,22 +96,25 @@ async fn put_records_returns_partial_failures_when_limits_are_enforced() {
     assert_eq!(body["FailedRecordCount"], 1);
 
     let records = body["Records"].as_array().unwrap();
-    assert_eq!(records.len(), 2);
-    assert!(records[0]["SequenceNumber"].is_string());
+    assert_eq!(records.len(), 3);
+    assert!(records[0]["SequenceNumber"].as_str().is_some());
     assert_eq!(
         records[1]["ErrorCode"],
         "ProvisionedThroughputExceededException"
     );
-    assert_eq!(
-        records[1]["ErrorMessage"],
-        "Rate exceeded for shard shardId-000000000000 in stream test-put-records-throughput-limits."
+    assert!(
+        records[1]["ErrorMessage"]
+            .as_str()
+            .unwrap()
+            .contains("Rate exceeded for shard")
     );
+    assert!(records[2]["SequenceNumber"].as_str().is_some());
 
     let stored = server.store.get_record_store(name).await;
-    assert_eq!(stored.len(), 1, "throttled records must not be persisted");
+    assert_eq!(stored.len(), 2, "only successful records must be persisted");
     assert!(
-        stored.values().all(|record| record.data == payload),
-        "persisted records should only contain the successful payload"
+        stored.values().all(|record| record.data != large_b),
+        "persisted records must exclude the throttled payload"
     );
 }
 

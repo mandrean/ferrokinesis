@@ -35,7 +35,11 @@ async fn insert_backdated_record(
         ),
         approximate_arrival_timestamp: (seq_time / 1000) as f64,
     };
-    server.store.put_record(stream_name, &key, &record).await;
+    server
+        .store
+        .put_record(stream_name, &key, &record)
+        .await
+        .unwrap();
 }
 
 /// Get the shard_create_time from a stream's first shard.
