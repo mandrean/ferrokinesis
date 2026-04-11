@@ -504,7 +504,8 @@ pub async fn handler(
                     log_and_send_error(&span, &response_headers, response_content_type, &err)
                 }
             };
-            let response = finalize_response(&store, Some(operation), None, request_started_ms, response);
+            let response =
+                finalize_response(&store, Some(operation), None, request_started_ms, response);
             let latency_us = elapsed_request_micros(request_started_ms);
             log_request_completion(
                 &span,
@@ -525,7 +526,8 @@ pub async fn handler(
             );
             let response =
                 log_and_send_error(&span, &response_headers, response_content_type, &err);
-            let response = finalize_response(&store, Some(operation), None, request_started_ms, response);
+            let response =
+                finalize_response(&store, Some(operation), None, request_started_ms, response);
             let latency_us = elapsed_request_micros(request_started_ms);
             log_request_completion(
                 &span,

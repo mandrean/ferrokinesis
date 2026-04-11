@@ -254,8 +254,8 @@ pub fn load_config(path: &Path) -> Result<FileConfig, ConfigError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
     use std::io::Write;
+    use tempfile::NamedTempFile;
 
     #[test]
     fn load_config_rejects_zero_max_retained_bytes() {
