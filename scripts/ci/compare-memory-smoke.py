@@ -30,11 +30,15 @@ def main() -> int:
     head_hwm = int(head.get("vm_hwm_bytes", 0))
     base_median = int(base.get("post_cleanup_rss_median_bytes", base.get("rss_median_bytes", 0)))
     head_median = int(head.get("post_cleanup_rss_median_bytes", head.get("rss_median_bytes", 0)))
+    base_cleanup_samples = int(base.get("post_cleanup_rss_samples_count", 0))
+    head_cleanup_samples = int(head.get("post_cleanup_rss_samples_count", 0))
 
     hwm_limit = int(base_hwm * 1.15 + 32 * MIB)
     median_limit = int(base_median * 1.20 + 16 * MIB)
 
     checks = {
+        "base_post_cleanup_samples_present": base_cleanup_samples > 0,
+        "head_post_cleanup_samples_present": head_cleanup_samples > 0,
         "head_readiness_failures_is_zero": int(head.get("readiness_failures", 0)) == 0,
         "head_rejected_writes_is_zero": int(head.get("rejected_writes_total", 0)) == 0,
         "head_vm_hwm_within_threshold": head_hwm <= hwm_limit,
@@ -51,10 +55,12 @@ def main() -> int:
         "base": {
             "vm_hwm_bytes": base_hwm,
             "post_cleanup_rss_median_bytes": base_median,
+            "post_cleanup_rss_samples_count": base_cleanup_samples,
         },
         "head": {
             "vm_hwm_bytes": head_hwm,
             "post_cleanup_rss_median_bytes": head_median,
+            "post_cleanup_rss_samples_count": head_cleanup_samples,
             "readiness_failures": int(head.get("readiness_failures", 0)),
             "rejected_writes_total": int(head.get("rejected_writes_total", 0)),
         },
@@ -73,6 +79,8 @@ def main() -> int:
     print(f"  vm_hwm_limit_bytes: {hwm_limit}")
     print(f"  base post_cleanup_rss_median_bytes: {base_median}")
     print(f"  head post_cleanup_rss_median_bytes: {head_median}")
+    print(f"  base post_cleanup_rss_samples_count: {base_cleanup_samples}")
+    print(f"  head post_cleanup_rss_samples_count: {head_cleanup_samples}")
     print(f"  post_cleanup_rss_median_limit_bytes: {median_limit}")
     print("  checks:")
     for name, value in checks.items():

@@ -60,7 +60,6 @@ jobs:
           shared-key: check
           save-if: false
       - name: Run memory soak harness
-        continue-on-error: true
         run: |
           scripts/ci/memory-harness.sh \
             --repo-root "$PWD" \

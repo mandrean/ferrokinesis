@@ -250,17 +250,28 @@ jobs:
         with:
           shared-key: check
           save-if: false
-      - name: Prepare harness scripts
+      - name: Detect harness availability
+        id: harness
         run: |
-          git show ${{ github.event.pull_request.head.sha }}:scripts/ci/memory-harness.sh > /tmp/memory-harness.sh
-          git show ${{ github.event.pull_request.head.sha }}:scripts/ci/compare-memory-smoke.py > /tmp/compare-memory-smoke.py
-          chmod +x /tmp/memory-harness.sh /tmp/compare-memory-smoke.py
+          if git cat-file -e "${{ github.event.pull_request.base.sha }}:scripts/ci/memory-harness.sh" \
+            && git cat-file -e "${{ github.event.pull_request.base.sha }}:scripts/ci/compare-memory-smoke.py"; then
+            echo "base_has_harness=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "base_has_harness=false" >> "$GITHUB_OUTPUT"
+          fi
+          if git cat-file -e "${{ github.event.pull_request.head.sha }}:scripts/ci/memory-harness.sh" \
+            && git cat-file -e "${{ github.event.pull_request.head.sha }}:scripts/ci/compare-memory-smoke.py"; then
+            echo "head_has_harness=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::head revision is missing memory harness scripts"
+            exit 1
+          fi
       - name: Run base memory smoke
         id: memory_base
-        continue-on-error: true
+        if: steps.harness.outputs.base_has_harness == 'true'
         run: |
           git checkout ${{ github.event.pull_request.base.sha }}
-          /tmp/memory-harness.sh \
+          scripts/ci/memory-harness.sh \
             --repo-root "$PWD" \
             --profile base \
             --duration-secs 300 \
@@ -269,29 +280,44 @@ jobs:
       - name: Run head memory smoke
         id: memory_head
         if: always()
-        continue-on-error: true
         run: |
           git checkout ${{ github.event.pull_request.head.sha }}
-          /tmp/memory-harness.sh \
+          scripts/ci/memory-harness.sh \
             --repo-root "$PWD" \
             --profile head \
             --duration-secs 300 \
             --sample-interval-secs 5 \
             --output-dir artifacts/memory-smoke/head
-      - name: Compare base/head summaries
-        if: always()
-        continue-on-error: true
+      - name: Record skipped comparison when base lacks harness
+        if: always() && steps.harness.outputs.base_has_harness != 'true'
         run: |
           mkdir -p artifacts/memory-smoke
-          if [[ -f artifacts/memory-smoke/base/summary.json && -f artifacts/memory-smoke/head/summary.json ]]; then
-            /tmp/compare-memory-smoke.py \
-              artifacts/memory-smoke/base/summary.json \
-              artifacts/memory-smoke/head/summary.json \
-              artifacts/memory-smoke/comparison.json \
-              | tee artifacts/memory-smoke/comparison.txt
-          else
-            echo "base/head summary missing; skipping comparison" | tee artifacts/memory-smoke/comparison.txt
+          cat > artifacts/memory-smoke/comparison.json <<'JSON'
+          {
+            "ok": false,
+            "skipped": true,
+            "reason": "base revision does not contain memory harness scripts"
+          }
+          JSON
+          echo "base revision does not contain memory harness scripts; skipped base/head comparison" \
+            | tee artifacts/memory-smoke/comparison.txt
+      - name: Compare base/head summaries
+        if: always() && steps.harness.outputs.base_has_harness == 'true'
+        run: |
+          mkdir -p artifacts/memory-smoke
+          if [[ ! -f artifacts/memory-smoke/base/summary.json ]]; then
+            echo "::error::base summary missing"
+            exit 1
           fi
+          if [[ ! -f artifacts/memory-smoke/head/summary.json ]]; then
+            echo "::error::head summary missing"
+            exit 1
+          fi
+          scripts/ci/compare-memory-smoke.py \
+            artifacts/memory-smoke/base/summary.json \
+            artifacts/memory-smoke/head/summary.json \
+            artifacts/memory-smoke/comparison.json \
+            | tee artifacts/memory-smoke/comparison.txt
       - name: Upload memory smoke artifacts
         if: always()
         uses: actions/upload-artifact@v4
