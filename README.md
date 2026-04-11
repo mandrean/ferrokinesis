@@ -26,7 +26,9 @@ npm --prefix demo run dev
 ## Features
 
 - Pure Rust implementation
-- Fully in-memory storage using [DashMap](https://github.com/xacrimon/dashmap) + per-stream `RwLock` with lock-free per-shard sequence generation
+- Fast in-memory storage using [DashMap](https://github.com/xacrimon/dashmap) + per-stream `RwLock` with lock-free per-shard sequence generation
+- Optional durable single-node mode with WAL + snapshot persistence (`--state-dir`)
+- Optional retained-bytes backpressure cap (`--max-retained-bytes`) with explicit write rejection
 - Implements all 39 Kinesis Data Streams API operations
 - Supports both JSON and CBOR content types
 - Health check endpoints (`/_health`, `/_health/ready`, `/_health/live`) for Docker/K8s
@@ -169,14 +171,27 @@ Options:
       --shard-limit <SHARD_LIMIT>
           Shard limit for error reporting [env: FERROKINESIS_SHARD_LIMIT=]
       --iterator-ttl-seconds <ITERATOR_TTL_SECONDS>
-          Shard iterator time-to-live in seconds (minimum: 1, maximum: 86400)
-          [env: FERROKINESIS_ITERATOR_TTL_SECONDS=]
+          Shard iterator time-to-live in seconds (minimum: 1, maximum: 86400) [env: FERROKINESIS_ITERATOR_TTL_SECONDS=]
       --max-request-body-mb <MAX_REQUEST_BODY_MB>
-          Maximum request body size in megabytes (minimum: 1, maximum: 4096)
-          [env: FERROKINESIS_MAX_REQUEST_BODY_MB=]
+          Maximum request body size in megabytes (minimum: 1, maximum: 4096) [env: FERROKINESIS_MAX_REQUEST_BODY_MB=]
       --retention-check-interval-secs <RETENTION_CHECK_INTERVAL_SECS>
-          Retention reaper interval in seconds (0 = disabled, maximum: 86400)
-          [env: FERROKINESIS_RETENTION_CHECK_INTERVAL_SECS=]
+          Retention reaper interval in seconds (0 = disabled, maximum: 86400) [env: FERROKINESIS_RETENTION_CHECK_INTERVAL_SECS=]
+      --enforce-limits [<ENFORCE_LIMITS>]
+          Enable AWS-like shard write throughput throttling [env: FERROKINESIS_ENFORCE_LIMITS=] [possible values: true, false]
+      --state-dir <STATE_DIR>
+          Directory used to persist state with WAL + snapshots [env: FERROKINESIS_STATE_DIR=]
+      --snapshot-interval-secs <SNAPSHOT_INTERVAL_SECS>
+          Snapshot interval in seconds when durable mode is enabled (0 = disabled) [env: FERROKINESIS_SNAPSHOT_INTERVAL_SECS=]
+      --max-retained-bytes <MAX_RETAINED_BYTES>
+          Hard cap on retained serialized record bytes [env: FERROKINESIS_MAX_RETAINED_BYTES=]
+      --log-level <LOG_LEVEL>
+          Log level (off, error, warn, info, debug, trace) [env: FERROKINESIS_LOG_LEVEL=] [possible values: off, error, warn, info, debug, trace]
+      --access-log [<ACCESS_LOG>]
+          Enable per-request access logging (controls tower-http traces independently of RUST_LOG) [env: FERROKINESIS_ACCESS_LOG=] [possible values: true, false]
+      --capture <CAPTURE>
+          Path to write captured PutRecord/PutRecords data (NDJSON) [env: FERROKINESIS_CAPTURE=]
+      --scrub
+          Anonymize partition keys in capture output (requires --capture) [env: FERROKINESIS_SCRUB=]
   -h, --help
           Print help
 ```
@@ -204,6 +219,20 @@ The built-in `health-check` subcommand can be used for Docker `HEALTHCHECK`:
 ```dockerfile
 HEALTHCHECK CMD ["ferrokinesis", "health-check"]
 ```
+
+## Bounded Retained Growth
+
+For bounded single-node deployments, configure `max_retained_bytes` (`--max-retained-bytes`, env `FERROKINESIS_MAX_RETAINED_BYTES`).
+
+- The cap is applied to retained serialized record bytes, not process RSS.
+- `PutRecord` and `PutRecords` are rejected before mutation with `LimitExceededException` when `retained_bytes + incoming_bytes > max_retained_bytes`.
+- `/_health` and `/_health/ready` return `503` when replay restores retained data already above the configured cap.
+- No implicit FIFO eviction or silent trimming is performed to stay under the cap.
+
+Prometheus metrics for this contract are exposed on `/metrics`:
+- `ferrokinesis_retained_bytes`
+- `ferrokinesis_retained_records`
+- `ferrokinesis_rejected_writes_total`
 
 ## API & Test Coverage
 
