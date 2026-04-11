@@ -1,6 +1,6 @@
 use axum::extract::DefaultBodyLimit;
 use clap::{Args, Parser, Subcommand};
-use ferrokinesis::config::load_config;
+use ferrokinesis::config::{FileConfig, load_config};
 use ferrokinesis::store::StoreOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
@@ -160,6 +160,48 @@ struct ServeArgs {
 /// Resolve a value using precedence: CLI/env > config file > default.
 fn resolve<T>(cli: Option<T>, file: Option<T>, default: impl FnOnce() -> T) -> T {
     cli.or(file).unwrap_or_else(default)
+}
+
+fn resolve_store_options(
+    args: &ServeArgs,
+    file_cfg: &FileConfig,
+    defaults: &StoreOptions,
+) -> StoreOptions {
+    StoreOptions {
+        create_stream_ms: resolve(args.create_stream_ms, file_cfg.create_stream_ms, || {
+            defaults.create_stream_ms
+        }),
+        delete_stream_ms: resolve(args.delete_stream_ms, file_cfg.delete_stream_ms, || {
+            defaults.delete_stream_ms
+        }),
+        update_stream_ms: resolve(args.update_stream_ms, file_cfg.update_stream_ms, || {
+            defaults.update_stream_ms
+        }),
+        shard_limit: resolve(args.shard_limit, file_cfg.shard_limit, || {
+            defaults.shard_limit
+        }),
+        iterator_ttl_seconds: resolve(
+            args.iterator_ttl_seconds,
+            file_cfg.iterator_ttl_seconds,
+            || defaults.iterator_ttl_seconds,
+        ),
+        retention_check_interval_secs: resolve(
+            args.retention_check_interval_secs,
+            file_cfg.retention_check_interval_secs,
+            || defaults.retention_check_interval_secs,
+        ),
+        enforce_limits: resolve(args.enforce_limits, file_cfg.enforce_limits, || {
+            defaults.enforce_limits
+        }),
+        aws_account_id: resolve(args.account_id.clone(), file_cfg.account_id.clone(), || {
+            defaults.aws_account_id.clone()
+        }),
+        aws_region: resolve(
+            args.region.clone().or(args.default_region.clone()),
+            file_cfg.region.clone(),
+            || defaults.aws_region.clone(),
+        ),
+    }
 }
 
 #[derive(Args, Debug)]
@@ -643,6 +685,7 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
         .unwrap_or_default();
 
     let defaults = StoreOptions::default();
+    let options = resolve_store_options(&args, &file_cfg, &defaults);
     let port = resolve(args.port, file_cfg.port, || 4567);
     let max_request_body_mb = resolve(args.max_request_body_mb, file_cfg.max_request_body_mb, || 7);
     let log_level: String = resolve(args.log_level, file_cfg.log_level, || "info".into());
@@ -672,40 +715,6 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
         .with_env_filter(env_filter)
         .with_target(false)
         .init();
-
-    let options = StoreOptions {
-        create_stream_ms: resolve(args.create_stream_ms, file_cfg.create_stream_ms, || {
-            defaults.create_stream_ms
-        }),
-        delete_stream_ms: resolve(args.delete_stream_ms, file_cfg.delete_stream_ms, || {
-            defaults.delete_stream_ms
-        }),
-        update_stream_ms: resolve(args.update_stream_ms, file_cfg.update_stream_ms, || {
-            defaults.update_stream_ms
-        }),
-        shard_limit: resolve(args.shard_limit, file_cfg.shard_limit, || {
-            defaults.shard_limit
-        }),
-        iterator_ttl_seconds: resolve(
-            args.iterator_ttl_seconds,
-            file_cfg.iterator_ttl_seconds,
-            || defaults.iterator_ttl_seconds,
-        ),
-        retention_check_interval_secs: resolve(
-            args.retention_check_interval_secs,
-            file_cfg.retention_check_interval_secs,
-            || defaults.retention_check_interval_secs,
-        ),
-        enforce_limits: resolve(args.enforce_limits, file_cfg.enforce_limits, || {
-            defaults.enforce_limits
-        }),
-        aws_account_id: resolve(args.account_id, file_cfg.account_id, || {
-            defaults.aws_account_id
-        }),
-        aws_region: resolve(args.region.or(args.default_region), file_cfg.region, || {
-            defaults.aws_region
-        }),
-    };
 
     let capture_path = args.capture.or(file_cfg.capture);
     let scrub = args.scrub || file_cfg.scrub.unwrap_or(false);
@@ -852,4 +861,87 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ferrokinesis::store::Store;
+
+    fn serve_args() -> ServeArgs {
+        ServeArgs {
+            config: None,
+            port: None,
+            account_id: None,
+            region: None,
+            default_region: None,
+            create_stream_ms: None,
+            delete_stream_ms: None,
+            update_stream_ms: None,
+            shard_limit: None,
+            iterator_ttl_seconds: None,
+            max_request_body_mb: None,
+            retention_check_interval_secs: None,
+            enforce_limits: None,
+            log_level: None,
+            #[cfg(feature = "access-log")]
+            access_log: None,
+            capture: None,
+            scrub: false,
+            #[cfg(feature = "mirror")]
+            mirror_to: None,
+            #[cfg(feature = "mirror")]
+            mirror_diff: None,
+            #[cfg(feature = "mirror")]
+            mirror_concurrency: None,
+            #[cfg(feature = "mirror")]
+            mirror_max_retries: None,
+            #[cfg(feature = "mirror")]
+            mirror_initial_backoff_ms: None,
+            #[cfg(feature = "mirror")]
+            mirror_max_backoff_ms: None,
+            #[cfg(feature = "tls")]
+            tls_cert: None,
+            #[cfg(feature = "tls")]
+            tls_key: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_store_options_from_config_enables_actual_throttling() {
+        let args = serve_args();
+        let file_cfg = FileConfig {
+            enforce_limits: Some(true),
+            ..Default::default()
+        };
+        let options = resolve_store_options(&args, &file_cfg, &StoreOptions::default());
+        let store = Store::new(options);
+
+        let first = store
+            .try_reserve_shard_throughput("stream", "shardId-000000000000", 1_048_000, 1_000)
+            .await;
+        assert!(first.is_ok());
+
+        let second = store
+            .try_reserve_shard_throughput("stream", "shardId-000000000000", 1_000, 1_000)
+            .await;
+        assert!(second.is_err(), "resolved config should enable throttling");
+    }
+
+    #[tokio::test]
+    async fn cli_args_override_config_for_enforce_limits() {
+        let mut args = serve_args();
+        args.enforce_limits = Some(false);
+        let file_cfg = FileConfig {
+            enforce_limits: Some(true),
+            ..Default::default()
+        };
+        let options = resolve_store_options(&args, &file_cfg, &StoreOptions::default());
+        let store = Store::new(options);
+
+        let result = store
+            .try_reserve_shard_throughput("stream", "shardId-000000000000", 2 * 1024 * 1024, 1_000)
+            .await;
+        assert!(result.is_ok(), "CLI flag should disable throttling");
+    }
 }

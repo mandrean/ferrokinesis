@@ -108,6 +108,26 @@ async fn deleting_stream_clears_throughput_windows() {
         .expect("delete should clear stale throughput debt");
 }
 
+#[test]
+fn has_throughput_window_reports_exact_membership() {
+    use ferrokinesis::store::Store;
+
+    let store = Store::new(StoreOptions {
+        enforce_limits: true,
+        ..StoreOptions::default()
+    });
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        store
+            .try_reserve_shard_throughput("stream", "shardId-000000000000", 1, 5_000)
+            .await
+            .unwrap();
+    });
+
+    assert!(store.has_throughput_window("stream", "shardId-000000000000"));
+    assert!(!store.has_throughput_window("stream", "shardId-000000000001"));
+}
+
 #[tokio::test]
 async fn store_get_records_range_direct() {
     use ferrokinesis::store::Store;

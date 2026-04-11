@@ -3,7 +3,7 @@ use crate::capture::{CaptureOp, CaptureRecordRef};
 use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::sequence;
-use crate::store::{ShardThroughputReservation, Store};
+use crate::store::Store;
 use crate::types::StoredRecordRef;
 use serde_json::{Value, json};
 #[cfg(feature = "server")]
@@ -101,7 +101,6 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         .allocate_sequences_batch(&stream_name, &hash_keys)
         .await?;
 
-    let mut reservations = Vec::with_capacity(records.len());
     let mut return_records: Vec<Value> = Vec::with_capacity(records.len());
     let mut batch: Vec<(String, StoredRecordRef<'_>)> = Vec::with_capacity(records.len());
 
@@ -109,21 +108,6 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         let alloc = &allocations[i];
         let partition_key = record["PartitionKey"].as_str().unwrap_or("");
         let record_data = record["Data"].as_str().unwrap_or("");
-        let decoded_len = {
-            let decoded = crate::util::base64_decoded_len(record_data);
-            if decoded > 0 || record_data.is_empty() {
-                decoded
-            } else {
-                record_data.len()
-            }
-        } as u64;
-
-        reservations.push(ShardThroughputReservation {
-            stream_name: &stream_name,
-            shard_id: &alloc.shard_id,
-            bytes: decoded_len,
-            now_ms: alloc.now,
-        });
 
         batch.push((
             alloc.stream_key.clone(),
@@ -139,10 +123,6 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
             "SequenceNumber": alloc.seq_num,
         }));
     }
-
-    store
-        .try_reserve_shard_throughput_batch(&reservations)
-        .await?;
 
     store.put_records_batch(&stream_name, &batch).await;
 

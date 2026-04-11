@@ -26,7 +26,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::{Mutex, OwnedMutexGuard, RwLock};
+use tokio::sync::{Mutex, RwLock};
 
 const DEFAULT_SHARD_WRITE_BYTES_PER_SEC: u64 = 1024 * 1024;
 const DEFAULT_SHARD_WRITE_RECORDS_PER_SEC: u64 = 1000;
@@ -133,18 +133,6 @@ struct ShardThroughputWindow {
     window_start_ms: u64,
     bytes: u64,
     records: u64,
-}
-
-/// Pending throughput reservation for a specific shard write.
-pub struct ShardThroughputReservation<'a> {
-    /// Stream containing the target shard.
-    pub stream_name: &'a str,
-    /// Shard being written to.
-    pub shard_id: &'a str,
-    /// Decoded record payload size in bytes.
-    pub bytes: u64,
-    /// Timestamp at which the write should be charged.
-    pub now_ms: u64,
 }
 
 /// Shared inner state behind an [`Arc`] for cheap [`Store`] clones.
@@ -299,10 +287,7 @@ impl Store {
     pub async fn delete_stream(&self, name: &str) {
         self.inner.streams.remove(name);
         self.inner.stream_records.remove(name);
-        let prefix = format!("{name}:");
-        self.inner
-            .throughput_windows
-            .retain(|key, _| !key.starts_with(&prefix));
+        self.clear_throughput_windows_for_stream(name);
     }
 
     /// Returns `true` if a stream with the given name exists.
@@ -913,64 +898,37 @@ impl Store {
         Ok(())
     }
 
-    /// Reserves shard write throughput for a batch atomically.
-    ///
-    /// When `enforce_limits` is disabled this is a no-op. When enabled, either
-    /// the full batch reservation is applied or no throughput debt is recorded.
-    pub async fn try_reserve_shard_throughput_batch(
-        &self,
-        reservations: &[ShardThroughputReservation<'_>],
-    ) -> Result<(), KinesisErrorResponse> {
-        if !self.options.enforce_limits || reservations.is_empty() {
-            return Ok(());
+    fn clear_throughput_windows_for_stream(&self, stream_name: &str) {
+        let prefix = format!("{stream_name}:");
+        self.inner
+            .throughput_windows
+            .retain(|key, _| !key.starts_with(&prefix));
+    }
+
+    pub(crate) fn clear_throughput_windows_for_shards<I, S>(&self, stream_name: &str, shard_ids: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let keys = shard_ids
+            .into_iter()
+            .map(|shard_id| throughput_window_key(stream_name, shard_id.as_ref()))
+            .collect::<Vec<_>>();
+
+        if keys.is_empty() {
+            return;
         }
 
-        let mut grouped = BTreeMap::new();
-        for reservation in reservations {
-            let key = throughput_window_key(reservation.stream_name, reservation.shard_id);
-            let window = self
-                .inner
-                .throughput_windows
-                .entry(key.clone())
-                .or_insert_with(|| {
-                    Arc::new(Mutex::new(ShardThroughputWindow {
-                        window_start_ms: reservation.now_ms,
-                        bytes: 0,
-                        records: 0,
-                    }))
-                })
-                .clone();
+        self.inner
+            .throughput_windows
+            .retain(|key, _| !keys.iter().any(|candidate| candidate == key));
+    }
 
-            grouped
-                .entry(key)
-                .or_insert_with(|| (window, Vec::new()))
-                .1
-                .push((reservation.bytes, reservation.now_ms));
-        }
-
-        let mut locked = Vec::with_capacity(grouped.len());
-        for (_, (window, pending)) in grouped {
-            locked.push((window.lock_owned().await, pending));
-        }
-
-        for (window, pending) in &locked {
-            let mut preview = ShardThroughputWindow {
-                window_start_ms: window.window_start_ms,
-                bytes: window.bytes,
-                records: window.records,
-            };
-
-            for &(bytes, now_ms) in pending {
-                roll_throughput_window(&mut preview, now_ms);
-                reserve_throughput_window(&mut preview, bytes)?;
-            }
-        }
-
-        for (mut window, pending) in locked {
-            apply_throughput_reservations(&mut window, &pending);
-        }
-
-        Ok(())
+    #[doc(hidden)]
+    pub fn has_throughput_window(&self, stream_name: &str, shard_id: &str) -> bool {
+        self.inner
+            .throughput_windows
+            .contains_key(&throughput_window_key(stream_name, shard_id))
     }
 }
 
@@ -1051,19 +1009,4 @@ fn reserve_throughput_window(
     window.bytes += bytes;
     window.records += 1;
     Ok(())
-}
-
-fn apply_throughput_reservations(
-    window: &mut OwnedMutexGuard<ShardThroughputWindow>,
-    pending: &[(u64, u64)],
-) {
-    for &(bytes, now_ms) in pending {
-        roll_throughput_window(window, now_ms);
-        let before = (window.window_start_ms, window.bytes, window.records);
-        let applied = reserve_throughput_window(window, bytes).is_ok();
-        debug_assert!(
-            applied,
-            "validated throughput reservation must still fit: before={before:?}, bytes={bytes}, now_ms={now_ms}"
-        );
-    }
 }
