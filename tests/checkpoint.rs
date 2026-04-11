@@ -1,7 +1,7 @@
 mod common;
 
 use common::TestServer;
-use ferrokinesis::store::StoreOptions;
+use ferrokinesis::store::{DurableStateOptions, StoreOptions};
 use reqwest::Client;
 use reqwest::Method;
 use reqwest::header::{HeaderMap, HeaderValue};
@@ -106,8 +106,11 @@ fn checkpoint_store_options(state_dir: &std::path::Path) -> StoreOptions {
         delete_stream_ms: 0,
         update_stream_ms: 0,
         shard_limit: 50,
-        state_dir: Some(state_dir.to_path_buf()),
-        snapshot_interval_secs: 30,
+        durable: Some(DurableStateOptions {
+            state_dir: state_dir.to_path_buf(),
+            snapshot_interval_secs: 30,
+            max_retained_bytes: None,
+        }),
         ..Default::default()
     }
 }
