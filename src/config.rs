@@ -84,6 +84,16 @@ pub struct FileConfig {
     pub max_request_body_mb: Option<u64>,
     /// Log level (`off`, `error`, `warn`, `info`, `debug`, `trace`). Defaults to `"info"`.
     pub log_level: Option<String>,
+    /// Log format (`plain` or `json`). Defaults to `"plain"`.
+    pub log_format: Option<String>,
+    /// Optional OTLP endpoint for exporting traces.
+    pub otlp_endpoint: Option<String>,
+    /// OTLP protocol (`grpc` or `http`). Defaults to `"grpc"` when OTLP is enabled.
+    pub otlp_protocol: Option<String>,
+    /// Optional trace sample ratio (`0.0..=1.0`). Defaults to `1.0`.
+    pub otel_sample_ratio: Option<f64>,
+    /// Optional OpenTelemetry `service.name` resource value. Defaults to `"ferrokinesis"`.
+    pub otel_service_name: Option<String>,
     /// Enable per-request access logging. Defaults to `false`.
     #[cfg(feature = "access-log")]
     pub access_log: Option<bool>,
@@ -171,6 +181,30 @@ pub fn load_config(path: &Path) -> Result<FileConfig, ConfigError> {
             ),
         });
     }
+    if let Some(ref format) = config.log_format
+        && !["plain", "json"].contains(&format.as_str())
+    {
+        return Err(ConfigError::Validation {
+            path: path.display().to_string(),
+            message: format!("log_format must be one of: plain, json — got \"{format}\""),
+        });
+    }
+    if let Some(ref protocol) = config.otlp_protocol
+        && !["grpc", "http"].contains(&protocol.as_str())
+    {
+        return Err(ConfigError::Validation {
+            path: path.display().to_string(),
+            message: format!("otlp_protocol must be one of: grpc, http — got \"{protocol}\""),
+        });
+    }
+    if let Some(ratio) = config.otel_sample_ratio
+        && !(0.0..=1.0).contains(&ratio)
+    {
+        return Err(ConfigError::Validation {
+            path: path.display().to_string(),
+            message: format!("otel_sample_ratio must be between 0.0 and 1.0, got {ratio}"),
+        });
+    }
     #[cfg(feature = "mirror")]
     if let Some(ref mirror) = config.mirror
         && let Some(concurrency) = mirror.concurrency
@@ -220,6 +254,7 @@ pub fn load_config(path: &Path) -> Result<FileConfig, ConfigError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use tempfile::NamedTempFile;
 
     #[test]
@@ -251,6 +286,49 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("snapshot_interval_secs must be between 0 and 86400")
+        );
+    }
+
+    fn write_temp_toml(contents: &str) -> NamedTempFile {
+        let mut file = tempfile::NamedTempFile::new().expect("create temp config file");
+        file.write_all(contents.as_bytes())
+            .expect("write temp config file");
+        file
+    }
+
+    #[test]
+    fn rejects_invalid_log_format() {
+        let file = write_temp_toml("log_format = \"pretty\"\n");
+        let err = match load_config(file.path()) {
+            Ok(_) => panic!("invalid log_format should fail"),
+            Err(err) => err,
+        };
+        assert!(matches!(err, ConfigError::Validation { .. }));
+        assert!(err.to_string().contains("log_format must be one of"));
+    }
+
+    #[test]
+    fn rejects_invalid_otlp_protocol() {
+        let file = write_temp_toml("otlp_protocol = \"tcp\"\n");
+        let err = match load_config(file.path()) {
+            Ok(_) => panic!("invalid otlp_protocol should fail"),
+            Err(err) => err,
+        };
+        assert!(matches!(err, ConfigError::Validation { .. }));
+        assert!(err.to_string().contains("otlp_protocol must be one of"));
+    }
+
+    #[test]
+    fn rejects_out_of_range_otel_sample_ratio() {
+        let file = write_temp_toml("otel_sample_ratio = 1.1\n");
+        let err = match load_config(file.path()) {
+            Ok(_) => panic!("invalid otel_sample_ratio should fail"),
+            Err(err) => err,
+        };
+        assert!(matches!(err, ConfigError::Validation { .. }));
+        assert!(
+            err.to_string()
+                .contains("otel_sample_ratio must be between 0.0 and 1.0")
         );
     }
 }

@@ -5,12 +5,28 @@ use ferrokinesis::store::{
     DEFAULT_DURABLE_SNAPSHOT_INTERVAL_SECS, DurableStateOptions, StoreOptions,
     validate_durable_settings,
 };
+use opentelemetry::trace::TracerProvider as _;
+use opentelemetry_otlp::WithExportConfig;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process;
 use std::process::ExitCode;
 use std::time::Duration;
+use tracing_subscriber::prelude::*;
+use url::Url;
+
+const DEFAULT_LOG_FORMAT: &str = "plain";
+const DEFAULT_OTLP_PROTOCOL: &str = "grpc";
+const DEFAULT_OTEL_SAMPLE_RATIO: f64 = 1.0;
+const DEFAULT_OTEL_SERVICE_NAME: &str = "ferrokinesis";
+
+#[derive(Clone, Debug, Default)]
+struct TracingBootstrap {
+    otlp_enabled: bool,
+    startup_warning: Option<String>,
+    tracer_provider: Option<opentelemetry_sdk::trace::SdkTracerProvider>,
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "ferrokinesis")]
@@ -112,6 +128,26 @@ struct ServeArgs {
           value_parser = ["off", "error", "warn", "info", "debug", "trace"])]
     log_level: Option<String>,
 
+    /// Log format (plain or json)
+    #[arg(long, env = "FERROKINESIS_LOG_FORMAT", value_parser = ["plain", "json"])]
+    log_format: Option<String>,
+
+    /// Optional OTLP collector endpoint for trace export
+    #[arg(long, env = "FERROKINESIS_OTLP_ENDPOINT")]
+    otlp_endpoint: Option<String>,
+
+    /// OTLP transport protocol (grpc or http)
+    #[arg(long, env = "FERROKINESIS_OTLP_PROTOCOL", value_parser = ["grpc", "http"])]
+    otlp_protocol: Option<String>,
+
+    /// OpenTelemetry trace sample ratio (0.0 to 1.0)
+    #[arg(long, env = "FERROKINESIS_OTEL_SAMPLE_RATIO", value_parser = parse_sample_ratio)]
+    otel_sample_ratio: Option<f64>,
+
+    /// OpenTelemetry service.name resource attribute
+    #[arg(long, env = "FERROKINESIS_OTEL_SERVICE_NAME")]
+    otel_service_name: Option<String>,
+
     /// Enable per-request access logging (controls tower-http traces independently of RUST_LOG)
     #[cfg(feature = "access-log")]
     #[arg(long, env = "FERROKINESIS_ACCESS_LOG",
@@ -174,6 +210,215 @@ struct ServeArgs {
 /// Resolve a value using precedence: CLI/env > config file > default.
 fn resolve<T>(cli: Option<T>, file: Option<T>, default: impl FnOnce() -> T) -> T {
     cli.or(file).unwrap_or_else(default)
+}
+
+fn parse_sample_ratio(raw: &str) -> Result<f64, String> {
+    let ratio = raw
+        .parse::<f64>()
+        .map_err(|e| format!("invalid ratio {raw:?}: {e}"))?;
+    if (0.0..=1.0).contains(&ratio) {
+        Ok(ratio)
+    } else {
+        Err(format!(
+            "sample ratio must be between 0.0 and 1.0, got {ratio}"
+        ))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LogFormat {
+    Plain,
+    Json,
+}
+
+impl LogFormat {
+    fn parse(raw: &str) -> Result<Self, String> {
+        match raw {
+            "plain" => Ok(Self::Plain),
+            "json" => Ok(Self::Json),
+            _ => Err(format!("unsupported log format {raw:?}")),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OtlpProtocol {
+    Grpc,
+    Http,
+}
+
+impl OtlpProtocol {
+    fn parse(raw: &str) -> Result<Self, String> {
+        match raw {
+            "grpc" => Ok(Self::Grpc),
+            "http" => Ok(Self::Http),
+            _ => Err(format!("unsupported OTLP protocol {raw:?}")),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Grpc => "grpc",
+            Self::Http => "http",
+        }
+    }
+}
+
+fn init_tracing_subscriber(
+    log_level: &str,
+    log_format: LogFormat,
+    #[cfg(feature = "access-log")] access_log: bool,
+    otlp_endpoint: Option<&str>,
+    otlp_protocol: OtlpProtocol,
+    otel_sample_ratio: f64,
+    otel_service_name: &str,
+) -> Result<TracingBootstrap, String> {
+    let mut env_filter = if std::env::var("RUST_LOG").is_ok_and(|v| !v.is_empty()) {
+        tracing_subscriber::EnvFilter::from_default_env()
+    } else {
+        tracing_subscriber::EnvFilter::new(log_level)
+    };
+    #[cfg(feature = "access-log")]
+    {
+        if access_log {
+            env_filter = env_filter.add_directive("tower_http::trace=info".parse().unwrap());
+        } else {
+            env_filter = env_filter.add_directive("tower_http::trace=off".parse().unwrap());
+        }
+    }
+
+    let mut bootstrap = TracingBootstrap::default();
+    let otel_layer = match otlp_endpoint {
+        Some(endpoint) => match build_otel_trace_layer(
+            endpoint,
+            otlp_protocol,
+            otel_sample_ratio,
+            otel_service_name,
+        ) {
+            Ok((layer, tracer_provider)) => {
+                bootstrap.otlp_enabled = true;
+                bootstrap.tracer_provider = Some(tracer_provider);
+                Some(layer)
+            }
+            Err(err) => {
+                bootstrap.startup_warning = Some(format!(
+                    "failed to initialize OTLP trace exporter ({err}); continuing without OTLP export"
+                ));
+                None
+            }
+        },
+        None => None,
+    };
+
+    match log_format {
+        LogFormat::Plain => tracing_subscriber::registry()
+            .with(otel_layer)
+            .with(tracing_subscriber::fmt::layer().with_target(false))
+            .with(env_filter)
+            .try_init()
+            .map_err(|e| format!("failed to initialize tracing subscriber: {e}"))?,
+        LogFormat::Json => tracing_subscriber::registry()
+            .with(otel_layer)
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .json()
+                    .with_target(false)
+                    .with_current_span(true)
+                    .with_span_list(true),
+            )
+            .with(env_filter)
+            .try_init()
+            .map_err(|e| format!("failed to initialize tracing subscriber: {e}"))?,
+    }
+
+    if let Some(warning) = bootstrap.startup_warning.as_deref() {
+        tracing::warn!(%warning);
+    } else if let Some(endpoint) = otlp_endpoint
+        && bootstrap.otlp_enabled
+    {
+        tracing::info!(
+            endpoint,
+            protocol = otlp_protocol.as_str(),
+            sample_ratio = otel_sample_ratio,
+            service_name = otel_service_name,
+            "OTLP trace export enabled"
+        );
+    }
+
+    Ok(bootstrap)
+}
+
+fn build_otel_trace_layer(
+    endpoint: &str,
+    protocol: OtlpProtocol,
+    sample_ratio: f64,
+    service_name: &str,
+) -> Result<
+    (
+        tracing_opentelemetry::OpenTelemetryLayer<
+            tracing_subscriber::Registry,
+            opentelemetry_sdk::trace::Tracer,
+        >,
+        opentelemetry_sdk::trace::SdkTracerProvider,
+    ),
+    String,
+> {
+    let endpoint = resolve_otlp_endpoint(endpoint, protocol)?;
+    let resource = opentelemetry_sdk::Resource::builder()
+        .with_service_name(service_name.to_owned())
+        .build();
+
+    let span_exporter = match protocol {
+        OtlpProtocol::Grpc => opentelemetry_otlp::SpanExporter::builder()
+            .with_tonic()
+            .with_endpoint(endpoint)
+            .build()
+            .map_err(|e| format!("failed to build OTLP gRPC trace exporter: {e}"))?,
+        OtlpProtocol::Http => opentelemetry_otlp::SpanExporter::builder()
+            .with_http()
+            .with_endpoint(endpoint)
+            .build()
+            .map_err(|e| format!("failed to build OTLP HTTP trace exporter: {e}"))?,
+    };
+
+    let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_resource(resource)
+        .with_sampler(opentelemetry_sdk::trace::Sampler::TraceIdRatioBased(
+            sample_ratio,
+        ))
+        .with_batch_exporter(span_exporter)
+        .build();
+    let tracer = tracer_provider.tracer("ferrokinesis");
+    opentelemetry::global::set_tracer_provider(tracer_provider.clone());
+
+    Ok((
+        tracing_opentelemetry::layer().with_tracer(tracer),
+        tracer_provider,
+    ))
+}
+
+fn resolve_otlp_endpoint(endpoint: &str, protocol: OtlpProtocol) -> Result<String, String> {
+    match protocol {
+        OtlpProtocol::Grpc => Ok(endpoint.to_owned()),
+        OtlpProtocol::Http => normalize_otlp_http_endpoint(endpoint),
+    }
+}
+
+fn normalize_otlp_http_endpoint(endpoint: &str) -> Result<String, String> {
+    let mut url = Url::parse(endpoint)
+        .map_err(|e| format!("invalid OTLP HTTP endpoint {endpoint:?}: {e}"))?;
+    if matches!(url.path(), "" | "/") {
+        url.set_path("/v1/traces");
+    }
+    Ok(url.into())
+}
+
+fn shutdown_tracing(bootstrap: &TracingBootstrap) {
+    if let Some(provider) = bootstrap.tracer_provider.as_ref()
+        && let Err(err) = provider.shutdown()
+    {
+        tracing::warn!("failed to shut down OTLP tracer provider cleanly: {err}");
+    }
 }
 
 fn resolve_store_options(
@@ -742,32 +987,52 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
     let port = resolve(args.port, file_cfg.port, || 4567);
     let max_request_body_mb = resolve(args.max_request_body_mb, file_cfg.max_request_body_mb, || 7);
     let log_level: String = resolve(args.log_level, file_cfg.log_level, || "info".into());
+    let log_format = resolve(args.log_format, file_cfg.log_format, || {
+        DEFAULT_LOG_FORMAT.into()
+    });
+    let otlp_endpoint = args.otlp_endpoint.or(file_cfg.otlp_endpoint);
+    let otlp_protocol = resolve(args.otlp_protocol, file_cfg.otlp_protocol, || {
+        DEFAULT_OTLP_PROTOCOL.into()
+    });
+    let otel_sample_ratio = resolve(args.otel_sample_ratio, file_cfg.otel_sample_ratio, || {
+        DEFAULT_OTEL_SAMPLE_RATIO
+    });
+    let otel_service_name = resolve(args.otel_service_name, file_cfg.otel_service_name, || {
+        DEFAULT_OTEL_SERVICE_NAME.into()
+    });
     #[cfg(feature = "access-log")]
     let access_log = resolve(args.access_log, file_cfg.access_log, || false);
 
-    // Initialize tracing subscriber.
-    // RUST_LOG takes precedence when set; otherwise use the resolved log_level.
-    #[cfg_attr(not(feature = "access-log"), allow(unused_mut))]
-    let mut env_filter = if std::env::var("RUST_LOG").is_ok_and(|v| !v.is_empty()) {
-        tracing_subscriber::EnvFilter::from_default_env()
-    } else {
-        tracing_subscriber::EnvFilter::new(&log_level)
-    };
-    // Always apply access-log directive, regardless of RUST_LOG.
-    // Later add_directive calls override earlier ones for the same target.
-    #[cfg(feature = "access-log")]
-    {
-        if access_log {
-            env_filter = env_filter.add_directive("tower_http::trace=info".parse().unwrap());
-        } else {
-            env_filter = env_filter.add_directive("tower_http::trace=off".parse().unwrap());
+    let log_format = match LogFormat::parse(&log_format) {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("invalid log format: {err}");
+            return ExitCode::FAILURE;
         }
-    }
-
-    tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .with_target(false)
-        .init();
+    };
+    let otlp_protocol = match OtlpProtocol::parse(&otlp_protocol) {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("invalid OTLP protocol: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let tracing_bootstrap = match init_tracing_subscriber(
+        &log_level,
+        log_format,
+        #[cfg(feature = "access-log")]
+        access_log,
+        otlp_endpoint.as_deref(),
+        otlp_protocol,
+        otel_sample_ratio,
+        &otel_service_name,
+    ) {
+        Ok(bootstrap) => bootstrap,
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::FAILURE;
+        }
+    };
 
     let capture_path = args.capture.or(file_cfg.capture);
     let scrub = args.scrub || file_cfg.scrub.unwrap_or(false);
@@ -869,7 +1134,7 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
             let handle = axum_server::Handle::new();
             let server_handle = handle.clone();
 
-            let server = tokio::spawn(async move {
+            let mut server = tokio::spawn(async move {
                 axum_server::bind_rustls(
                     addr.parse::<std::net::SocketAddr>()
                         .expect("constructed addr always parses"),
@@ -880,37 +1145,53 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
                 .await
             });
 
-            tokio::select! {
-                result = server => {
+            let exit_code = tokio::select! {
+                result = &mut server => {
                     match result {
-                        Ok(Ok(())) => return ExitCode::SUCCESS,
+                        Ok(Ok(())) => ExitCode::SUCCESS,
                         Ok(Err(e)) => {
                             tracing::error!("server error: {e}");
-                            return ExitCode::FAILURE;
+                            ExitCode::FAILURE
                         }
                         Err(e) => {
                             tracing::error!("server task panicked: {e}");
-                            return ExitCode::FAILURE;
+                            ExitCode::FAILURE
                         }
                     }
                 }
                 _ = shutdown_signal() => {
                     tracing::info!("shutting down gracefully...");
                     handle.graceful_shutdown(Some(Duration::from_secs(10)));
-                    return ExitCode::SUCCESS;
+                    match server.await {
+                        Ok(Ok(())) => ExitCode::SUCCESS,
+                        Ok(Err(e)) => {
+                            tracing::error!("server error during shutdown: {e}");
+                            ExitCode::FAILURE
+                        }
+                        Err(e) => {
+                            tracing::error!("server task panicked during shutdown: {e}");
+                            ExitCode::FAILURE
+                        }
+                    }
                 }
-            }
+            };
+            shutdown_tracing(&tracing_bootstrap);
+            return exit_code;
         }
     }
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     tracing::info!("Listening at http://{addr}");
 
-    if let Err(e) = ferrokinesis::serve_plain_http(listener, app, shutdown_signal()).await {
-        tracing::error!("server error: {e}");
-        return ExitCode::FAILURE;
-    }
-    ExitCode::SUCCESS
+    let exit_code =
+        if let Err(e) = ferrokinesis::serve_plain_http(listener, app, shutdown_signal()).await {
+            tracing::error!("server error: {e}");
+            ExitCode::FAILURE
+        } else {
+            ExitCode::SUCCESS
+        };
+    shutdown_tracing(&tracing_bootstrap);
+    exit_code
 }
 
 #[cfg(test)]
@@ -937,6 +1218,11 @@ mod tests {
             snapshot_interval_secs: None,
             max_retained_bytes: None,
             log_level: None,
+            log_format: None,
+            otlp_endpoint: None,
+            otlp_protocol: None,
+            otel_sample_ratio: None,
+            otel_service_name: None,
             #[cfg(feature = "access-log")]
             access_log: None,
             capture: None,
@@ -1012,5 +1298,48 @@ mod tests {
         assert_eq!(durable.snapshot_interval_secs, 17);
         assert_eq!(durable.max_retained_bytes, Some(2048));
         assert_eq!(options.max_retained_bytes, Some(2048));
+    }
+
+    #[test]
+    fn parse_sample_ratio_accepts_bounds() {
+        assert_eq!(parse_sample_ratio("0.0").unwrap(), 0.0);
+        assert_eq!(parse_sample_ratio("1.0").unwrap(), 1.0);
+    }
+
+    #[test]
+    fn parse_sample_ratio_rejects_out_of_range() {
+        assert!(parse_sample_ratio("-0.1").is_err());
+        assert!(parse_sample_ratio("1.01").is_err());
+    }
+
+    #[test]
+    fn parse_log_format_and_protocol() {
+        assert_eq!(LogFormat::parse("plain").unwrap(), LogFormat::Plain);
+        assert_eq!(LogFormat::parse("json").unwrap(), LogFormat::Json);
+        assert!(LogFormat::parse("pretty").is_err());
+
+        assert_eq!(OtlpProtocol::parse("grpc").unwrap(), OtlpProtocol::Grpc);
+        assert_eq!(OtlpProtocol::parse("http").unwrap(), OtlpProtocol::Http);
+        assert!(OtlpProtocol::parse("udp").is_err());
+    }
+
+    #[test]
+    fn normalize_otlp_http_endpoint_defaults_to_v1_traces() {
+        assert_eq!(
+            normalize_otlp_http_endpoint("http://127.0.0.1:4318").unwrap(),
+            "http://127.0.0.1:4318/v1/traces"
+        );
+        assert_eq!(
+            normalize_otlp_http_endpoint("http://127.0.0.1:4318/").unwrap(),
+            "http://127.0.0.1:4318/v1/traces"
+        );
+    }
+
+    #[test]
+    fn normalize_otlp_http_endpoint_preserves_explicit_path() {
+        assert_eq!(
+            normalize_otlp_http_endpoint("http://127.0.0.1:4318/custom").unwrap(),
+            "http://127.0.0.1:4318/custom"
+        );
     }
 }

@@ -50,6 +50,27 @@
 # CLI: --log-level | Env: FERROKINESIS_LOG_LEVEL
 # log_level = "info"
 
+# Log format (plain or json, default: "plain")
+# CLI: --log-format | Env: FERROKINESIS_LOG_FORMAT
+# log_format = "plain"
+
+# Optional OTLP endpoint for trace export (disabled when omitted)
+# For OTLP/HTTP, a base URL like http://localhost:4318 automatically uses /v1/traces.
+# CLI: --otlp-endpoint | Env: FERROKINESIS_OTLP_ENDPOINT
+# otlp_endpoint = "http://localhost:4317"
+
+# OTLP transport protocol (grpc or http, default: "grpc")
+# CLI: --otlp-protocol | Env: FERROKINESIS_OTLP_PROTOCOL
+# otlp_protocol = "grpc"
+
+# Trace sample ratio in range 0.0..=1.0 (default: 1.0)
+# CLI: --otel-sample-ratio | Env: FERROKINESIS_OTEL_SAMPLE_RATIO
+# otel_sample_ratio = 1.0
+
+# OpenTelemetry service.name resource value (default: "ferrokinesis")
+# CLI: --otel-service-name | Env: FERROKINESIS_OTEL_SERVICE_NAME
+# otel_service_name = "ferrokinesis"
+
 # Enable per-request access logging (default: false, requires "access-log" feature)
 # CLI: --access-log | Env: FERROKINESIS_ACCESS_LOG
 # access_log = false
