@@ -111,6 +111,7 @@ pub async fn dispatch(
     operation: Operation,
     data: Value,
 ) -> Result<Option<Value>, KinesisErrorResponse> {
+    store.check_available()?;
     match operation {
         Operation::AddTagsToStream => add_tags_to_stream::execute(store, data).await,
         Operation::CreateStream => create_stream::execute(store, data).await,

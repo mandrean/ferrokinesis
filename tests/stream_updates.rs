@@ -470,6 +470,92 @@ async fn update_shard_count_clears_closed_shard_throughput_windows() {
 }
 
 #[tokio::test]
+async fn update_shard_count_scale_up_respects_pending_expansion_reservation() {
+    let server = TestServer::with_options(StoreOptions {
+        create_stream_ms: 200,
+        delete_stream_ms: 0,
+        update_stream_ms: 200,
+        shard_limit: 4,
+        ..Default::default()
+    })
+    .await;
+    let name = "usc-scale-up-pending-cap";
+    server.create_stream(name, 2).await;
+
+    let create = server
+        .request(
+            "CreateStream",
+            &json!({
+                "StreamName": "pending-create-cap",
+                "ShardCount": 2,
+            }),
+        )
+        .await;
+    assert_eq!(create.status(), 200);
+
+    let res = server
+        .request(
+            "UpdateShardCount",
+            &json!({
+                "StreamName": name,
+                "TargetShardCount": 3,
+                "ScalingType": "UNIFORM_SCALING",
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["__type"], "LimitExceededException");
+}
+
+#[tokio::test]
+async fn update_shard_count_scale_down_ignores_pending_expansion_reservation() {
+    let server = TestServer::with_options(StoreOptions {
+        create_stream_ms: 200,
+        delete_stream_ms: 0,
+        update_stream_ms: 200,
+        shard_limit: 4,
+        ..Default::default()
+    })
+    .await;
+    let name = "usc-scale-down-pending-cap";
+    server.create_stream(name, 2).await;
+
+    let create = server
+        .request(
+            "CreateStream",
+            &json!({
+                "StreamName": "pending-create-allows-scale-down",
+                "ShardCount": 2,
+            }),
+        )
+        .await;
+    assert_eq!(create.status(), 200);
+
+    let res = server
+        .request(
+            "UpdateShardCount",
+            &json!({
+                "StreamName": name,
+                "TargetShardCount": 1,
+                "ScalingType": "UNIFORM_SCALING",
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
+
+    let desc = server.describe_stream(name).await;
+    let shards = desc["StreamDescription"]["Shards"].as_array().unwrap();
+    let open_count = shards
+        .iter()
+        .filter(|s| s["SequenceNumberRange"]["EndingSequenceNumber"].is_null())
+        .count();
+    assert_eq!(open_count, 1);
+}
+
+#[tokio::test]
 async fn update_shard_count_same_count_is_error() {
     let server = TestServer::new().await;
     let name = "usc-same";

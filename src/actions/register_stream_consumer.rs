@@ -1,6 +1,6 @@
 use crate::constants;
 use crate::error::KinesisErrorResponse;
-use crate::store::Store;
+use crate::store::{PendingTransition, Store, TransitionMutation};
 use crate::types::{Consumer, ConsumerStatus, EpochSeconds};
 use crate::util::current_time_ms;
 use serde_json::{Value, json};
@@ -50,23 +50,24 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         consumer_creation_timestamp: creation_ts,
     };
 
-    store.put_consumer(&consumer_arn, consumer.clone()).await;
+    let transition = PendingTransition::RegisterConsumer {
+        consumer_arn: consumer_arn.clone(),
+        ready_at_ms: now.saturating_add(500),
+    };
+
+    store
+        .put_consumer_with_transition(
+            &consumer_arn,
+            consumer.clone(),
+            TransitionMutation::Upsert(transition.clone()),
+        )
+        .await?;
     tracing::info!(
         stream = stream_arn,
         consumer = consumer_name,
         "consumer registered"
     );
-
-    // Transition to ACTIVE after a short delay
-    let store_clone = store.clone();
-    let arn = consumer_arn.clone();
-    crate::runtime::spawn_background(async move {
-        crate::runtime::sleep_ms(500).await;
-        if let Some(mut c) = store_clone.get_consumer(&arn).await {
-            c.consumer_status = ConsumerStatus::Active;
-            store_clone.put_consumer(&arn, c).await;
-        }
-    });
+    store.schedule_transition(transition);
 
     Ok(Some(json!({
         "Consumer": consumer,

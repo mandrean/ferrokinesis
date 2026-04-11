@@ -3,6 +3,7 @@
 //! [`FileConfig`] mirrors the TOML configuration file structure. Use [`load_config`]
 //! to parse a config file path into a validated [`FileConfig`].
 
+use crate::store::validate_durable_settings;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -73,6 +74,12 @@ pub struct FileConfig {
     pub retention_check_interval_secs: Option<u64>,
     /// Enable AWS-like shard write throughput throttling.
     pub enforce_limits: Option<bool>,
+    /// Directory used to persist runtime state with WAL + snapshots.
+    pub state_dir: Option<PathBuf>,
+    /// Snapshot interval in seconds when durable mode is enabled.
+    pub snapshot_interval_secs: Option<u64>,
+    /// Hard cap on retained serialized record bytes.
+    pub max_retained_bytes: Option<u64>,
     /// Maximum request body size in megabytes. Defaults to `5`.
     pub max_request_body_mb: Option<u64>,
     /// Log level (`off`, `error`, `warn`, `info`, `debug`, `trace`). Defaults to `"info"`.
@@ -146,6 +153,14 @@ pub fn load_config(path: &Path) -> Result<FileConfig, ConfigError> {
             message: format!("retention_check_interval_secs must be between 0 and 86400, got {v}"),
         });
     }
+    if let Err(err) =
+        validate_durable_settings(config.snapshot_interval_secs, config.max_retained_bytes)
+    {
+        return Err(ConfigError::Validation {
+            path: path.display().to_string(),
+            message: err.to_string(),
+        });
+    }
     if let Some(ref level) = config.log_level
         && !["off", "error", "warn", "info", "debug", "trace"].contains(&level.as_str())
     {
@@ -200,4 +215,42 @@ pub fn load_config(path: &Path) -> Result<FileConfig, ConfigError> {
         _ => {}
     }
     Ok(config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn load_config_rejects_zero_max_retained_bytes() {
+        let file = NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "max_retained_bytes = 0\n").unwrap();
+
+        let err = match load_config(file.path()) {
+            Ok(_) => panic!("expected config validation error"),
+            Err(err) => err,
+        };
+        assert!(matches!(err, ConfigError::Validation { .. }));
+        assert!(
+            err.to_string()
+                .contains("max_retained_bytes must be greater than 0")
+        );
+    }
+
+    #[test]
+    fn load_config_rejects_out_of_range_snapshot_interval() {
+        let file = NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "snapshot_interval_secs = 86401\n").unwrap();
+
+        let err = match load_config(file.path()) {
+            Ok(_) => panic!("expected config validation error"),
+            Err(err) => err,
+        };
+        assert!(matches!(err, ConfigError::Validation { .. }));
+        assert!(
+            err.to_string()
+                .contains("snapshot_interval_secs must be between 0 and 86400")
+        );
+    }
 }

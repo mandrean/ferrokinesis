@@ -7,6 +7,7 @@
 
 use axum::extract::State;
 use axum::http::StatusCode;
+use axum::http::header;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
@@ -49,4 +50,17 @@ pub async fn ready(State(store): State<Store>) -> (StatusCode, &'static str) {
         Ok(()) => (StatusCode::OK, "OK"),
         Err(_) => (StatusCode::SERVICE_UNAVAILABLE, "Service Unavailable"),
     }
+}
+
+/// `GET /metrics` - Prometheus text-format metrics.
+pub async fn metrics(State(store): State<Store>) -> Response {
+    (
+        StatusCode::OK,
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        store.render_metrics().await,
+    )
+        .into_response()
 }

@@ -47,7 +47,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     for key in &tag_keys {
         existing.remove(key);
     }
-    store.put_resource_tags(resource_arn, &existing).await;
+    store.put_resource_tags(resource_arn, &existing).await?;
 
     tracing::trace!(resource_arn, tags = tag_keys.len(), "resource untagged");
     Ok(None)

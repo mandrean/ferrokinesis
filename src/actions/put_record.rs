@@ -13,6 +13,7 @@ use std::borrow::Cow;
 
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_name = store.resolve_stream_name(&data)?;
+    store.check_writable()?;
 
     let partition_key = data[constants::PARTITION_KEY].as_str().unwrap_or("");
     let record_data = data[constants::DATA].as_str().unwrap_or("");
@@ -74,13 +75,17 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         }
     } as u64;
 
-    store
+    let reservation = store
         .try_reserve_shard_throughput(&stream_name, &alloc.shard_id, decoded_len, alloc.now)
         .await?;
 
-    store
+    if let Err(err) = store
         .put_record(&stream_name, &alloc.stream_key, &record)
-        .await?;
+        .await
+    {
+        store.refund_shard_throughput(reservation).await;
+        return Err(err);
+    }
 
     #[cfg(feature = "server")]
     if let Some(ref writer) = store.capture_writer {

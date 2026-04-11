@@ -1,7 +1,8 @@
 use crate::constants;
 use crate::error::KinesisErrorResponse;
-use crate::store::Store;
+use crate::store::{PendingTransition, Store, TransitionMutation};
 use crate::types::{EncryptionType, StreamStatus};
+use crate::util::current_time_ms;
 use serde_json::Value;
 
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
@@ -15,48 +16,44 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         ));
     }
 
+    let delay = store.options.update_stream_ms;
+    let transition = PendingTransition::StopStreamEncryption {
+        stream_name: stream_name.to_string(),
+        ready_at_ms: current_time_ms().saturating_add(delay),
+    };
+
     store
-        .update_stream(stream_name, |stream| {
-            if stream.stream_status != StreamStatus::Active {
-                return Err(KinesisErrorResponse::client_error(
-                    constants::RESOURCE_IN_USE,
-                    Some(&format!(
-                        "Stream {} under account {} not ACTIVE, instead in state {}",
-                        stream_name, store.aws_account_id, stream.stream_status
-                    )),
-                ));
-            }
+        .update_stream_with_transition(
+            stream_name,
+            TransitionMutation::Upsert(transition.clone()),
+            |stream| {
+                if stream.stream_status != StreamStatus::Active {
+                    return Err(KinesisErrorResponse::client_error(
+                        constants::RESOURCE_IN_USE,
+                        Some(&format!(
+                            "Stream {} under account {} not ACTIVE, instead in state {}",
+                            stream_name, store.aws_account_id, stream.stream_status
+                        )),
+                    ));
+                }
 
-            if stream.encryption_type != EncryptionType::Kms {
-                return Err(KinesisErrorResponse::client_error(
-                    constants::INVALID_ARGUMENT,
-                    Some(&format!(
-                        "Stream {} under account {} is not encrypted with KMS.",
-                        stream_name, store.aws_account_id
-                    )),
-                ));
-            }
+                if stream.encryption_type != EncryptionType::Kms {
+                    return Err(KinesisErrorResponse::client_error(
+                        constants::INVALID_ARGUMENT,
+                        Some(&format!(
+                            "Stream {} under account {} is not encrypted with KMS.",
+                            stream_name, store.aws_account_id
+                        )),
+                    ));
+                }
 
-            stream.stream_status = StreamStatus::Updating;
-            Ok(())
-        })
+                stream.stream_status = StreamStatus::Updating;
+                Ok(())
+            },
+        )
         .await?;
     tracing::info!(stream = stream_name, "encryption stopped");
-
-    let store_clone = store.clone();
-    let name = stream_name.to_string();
-    let delay = store.options.update_stream_ms;
-    crate::runtime::spawn_background(async move {
-        crate::runtime::sleep_ms(delay).await;
-        let _ = store_clone
-            .update_stream(&name, |stream| {
-                stream.stream_status = StreamStatus::Active;
-                stream.encryption_type = EncryptionType::None;
-                stream.key_id = None;
-                Ok(())
-            })
-            .await;
-    });
+    store.schedule_transition(transition);
 
     Ok(None)
 }

@@ -22,7 +22,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         ));
     }
 
-    store.put_policy(resource_arn, policy).await;
+    store.put_policy(resource_arn, policy).await?;
     tracing::trace!(resource_arn, "resource policy put");
     Ok(None)
 }

@@ -4,6 +4,21 @@ use common::*;
 use ferrokinesis::store::StoreOptions;
 use serde_json::{Value, json};
 
+fn shard_midpoint(desc: &Value, shard_index: usize) -> String {
+    let shard = &desc["StreamDescription"]["Shards"][shard_index];
+    let start: u128 = shard["HashKeyRange"]["StartingHashKey"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let end: u128 = shard["HashKeyRange"]["EndingHashKey"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    ((start + end) / 2).to_string()
+}
+
 // -- SplitShard --
 
 #[tokio::test]
@@ -187,6 +202,87 @@ async fn split_shard_limit_exceeded() {
     assert_eq!(res.status(), 400);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["__type"], "LimitExceededException");
+}
+
+#[tokio::test]
+async fn pending_split_reservation_blocks_create_stream() {
+    let server = TestServer::with_options(StoreOptions {
+        create_stream_ms: 200,
+        delete_stream_ms: 0,
+        update_stream_ms: 200,
+        shard_limit: 2,
+        ..Default::default()
+    })
+    .await;
+
+    let name = "split-pending-blocks-create";
+    server.create_stream(name, 1).await;
+
+    let desc = server.describe_stream(name).await;
+    let mid = shard_midpoint(&desc, 0);
+
+    let split = server
+        .request(
+            "SplitShard",
+            &json!({
+                "StreamName": name,
+                "ShardToSplit": "shardId-000000000000",
+                "NewStartingHashKey": mid,
+            }),
+        )
+        .await;
+    assert_eq!(split.status(), 200);
+
+    let create = server
+        .request(
+            "CreateStream",
+            &json!({
+                "StreamName": "blocked-by-pending-split",
+                "ShardCount": 1,
+            }),
+        )
+        .await;
+    assert_eq!(create.status(), 400);
+    let body: Value = create.json().await.unwrap();
+    assert_eq!(body["__type"], "LimitExceededException");
+}
+
+#[tokio::test]
+async fn concurrent_split_and_create_do_not_oversubscribe_shard_limit() {
+    let server = TestServer::with_options(StoreOptions {
+        create_stream_ms: 200,
+        delete_stream_ms: 0,
+        update_stream_ms: 200,
+        shard_limit: 2,
+        ..Default::default()
+    })
+    .await;
+
+    let name = "split-create-concurrent-limit";
+    server.create_stream(name, 1).await;
+
+    let desc = server.describe_stream(name).await;
+    let mid = shard_midpoint(&desc, 0);
+    let split_body = json!({
+        "StreamName": name,
+        "ShardToSplit": "shardId-000000000000",
+        "NewStartingHashKey": mid,
+    });
+    let create_body = json!({
+        "StreamName": "concurrent-created-stream",
+        "ShardCount": 1,
+    });
+
+    let (split_res, create_res) = tokio::join!(
+        server.request("SplitShard", &split_body),
+        server.request("CreateStream", &create_body),
+    );
+
+    let codes = [split_res.status().as_u16(), create_res.status().as_u16()];
+    let success = codes.iter().filter(|&&code| code == 200).count();
+    let limit = codes.iter().filter(|&&code| code == 400).count();
+    assert_eq!(success, 1, "expected exactly one success: {codes:?}");
+    assert_eq!(limit, 1, "expected exactly one limit failure: {codes:?}");
 }
 
 // -- MergeShards --

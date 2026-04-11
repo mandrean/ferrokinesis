@@ -50,9 +50,14 @@ pub mod error;
 #[doc(hidden)]
 pub mod event_stream;
 pub mod health;
+#[doc(hidden)]
+pub mod metrics;
 #[cfg(feature = "mirror")]
 #[doc(hidden)]
 pub mod mirror;
+#[cfg(not(target_arch = "wasm32"))]
+#[doc(hidden)]
+pub mod persistence;
 #[cfg(any(
     not(target_arch = "wasm32"),
     all(target_arch = "wasm32", feature = "wasm"),
@@ -170,6 +175,7 @@ pub fn create_router(store: Store) -> Router {
         .route("/_health", get(health::health))
         .route("/_health/live", get(health::live))
         .route("/_health/ready", get(health::ready))
+        .route("/metrics", get(health::metrics))
         .fallback(any(server::handler))
         .with_state(store)
         .layer(middleware::from_fn(server::kinesis_413_middleware));
@@ -314,7 +320,16 @@ mod tests {
             .unwrap();
         assert_eq!(stream.stream_status, StreamStatus::Creating);
 
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        for _ in 0..50 {
+            let stream = store
+                .get_stream("native-no-default-features")
+                .await
+                .unwrap();
+            if stream.stream_status == StreamStatus::Active {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
 
         let stream = store
             .get_stream("native-no-default-features")

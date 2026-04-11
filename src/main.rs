@@ -1,7 +1,10 @@
 use axum::extract::DefaultBodyLimit;
 use clap::{Args, Parser, Subcommand};
 use ferrokinesis::config::{FileConfig, load_config};
-use ferrokinesis::store::StoreOptions;
+use ferrokinesis::store::{
+    DEFAULT_DURABLE_SNAPSHOT_INTERVAL_SECS, DurableStateOptions, StoreOptions,
+    validate_durable_settings,
+};
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
@@ -92,6 +95,17 @@ struct ServeArgs {
     #[arg(long, env = "FERROKINESIS_ENFORCE_LIMITS",
           default_missing_value = "true", num_args = 0..=1)]
     enforce_limits: Option<bool>,
+    /// Directory used to persist state with WAL + snapshots
+    #[arg(long, env = "FERROKINESIS_STATE_DIR")]
+    state_dir: Option<PathBuf>,
+
+    /// Snapshot interval in seconds when durable mode is enabled (0 = disabled)
+    #[arg(long, env = "FERROKINESIS_SNAPSHOT_INTERVAL_SECS", value_parser = clap::value_parser!(u64).range(0..=86400))]
+    snapshot_interval_secs: Option<u64>,
+
+    /// Hard cap on retained serialized record bytes
+    #[arg(long, env = "FERROKINESIS_MAX_RETAINED_BYTES", value_parser = clap::value_parser!(u64).range(1..))]
+    max_retained_bytes: Option<u64>,
 
     /// Log level (off, error, warn, info, debug, trace)
     #[arg(long, env = "FERROKINESIS_LOG_LEVEL",
@@ -166,8 +180,42 @@ fn resolve_store_options(
     args: &ServeArgs,
     file_cfg: &FileConfig,
     defaults: &StoreOptions,
-) -> StoreOptions {
-    StoreOptions {
+) -> Result<StoreOptions, String> {
+    let max_retained_bytes = args
+        .max_retained_bytes
+        .or(file_cfg.max_retained_bytes)
+        .or(defaults.max_retained_bytes);
+    let snapshot_interval_secs = resolve(
+        args.snapshot_interval_secs,
+        file_cfg.snapshot_interval_secs,
+        || {
+            defaults
+                .durable
+                .as_ref()
+                .map_or(DEFAULT_DURABLE_SNAPSHOT_INTERVAL_SECS, |durable| {
+                    durable.snapshot_interval_secs
+                })
+        },
+    );
+    validate_durable_settings(Some(snapshot_interval_secs), max_retained_bytes)
+        .map_err(|err| err.to_string())?;
+    let durable = args
+        .state_dir
+        .clone()
+        .or(file_cfg.state_dir.clone())
+        .or_else(|| {
+            defaults
+                .durable
+                .as_ref()
+                .map(|durable| durable.state_dir.clone())
+        })
+        .map(|state_dir| DurableStateOptions {
+            state_dir,
+            snapshot_interval_secs,
+            max_retained_bytes,
+        });
+
+    Ok(StoreOptions {
         create_stream_ms: resolve(args.create_stream_ms, file_cfg.create_stream_ms, || {
             defaults.create_stream_ms
         }),
@@ -193,6 +241,8 @@ fn resolve_store_options(
         enforce_limits: resolve(args.enforce_limits, file_cfg.enforce_limits, || {
             defaults.enforce_limits
         }),
+        durable,
+        max_retained_bytes,
         aws_account_id: resolve(args.account_id.clone(), file_cfg.account_id.clone(), || {
             defaults.aws_account_id.clone()
         }),
@@ -201,7 +251,7 @@ fn resolve_store_options(
             file_cfg.region.clone(),
             || defaults.aws_region.clone(),
         ),
-    }
+    })
 }
 
 #[derive(Args, Debug)]
@@ -685,7 +735,10 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
         .unwrap_or_default();
 
     let defaults = StoreOptions::default();
-    let options = resolve_store_options(&args, &file_cfg, &defaults);
+    let options = resolve_store_options(&args, &file_cfg, &defaults).unwrap_or_else(|err| {
+        eprintln!("{err}");
+        process::exit(1);
+    });
     let port = resolve(args.port, file_cfg.port, || 4567);
     let max_request_body_mb = resolve(args.max_request_body_mb, file_cfg.max_request_body_mb, || 7);
     let log_level: String = resolve(args.log_level, file_cfg.log_level, || "info".into());
@@ -880,6 +933,9 @@ mod tests {
             max_request_body_mb: None,
             retention_check_interval_secs: None,
             enforce_limits: None,
+            state_dir: None,
+            snapshot_interval_secs: None,
+            max_retained_bytes: None,
             log_level: None,
             #[cfg(feature = "access-log")]
             access_log: None,
@@ -911,7 +967,7 @@ mod tests {
             enforce_limits: Some(true),
             ..Default::default()
         };
-        let options = resolve_store_options(&args, &file_cfg, &StoreOptions::default());
+        let options = resolve_store_options(&args, &file_cfg, &StoreOptions::default()).unwrap();
         let store = Store::new(options);
 
         let first = store
@@ -933,12 +989,28 @@ mod tests {
             enforce_limits: Some(true),
             ..Default::default()
         };
-        let options = resolve_store_options(&args, &file_cfg, &StoreOptions::default());
+        let options = resolve_store_options(&args, &file_cfg, &StoreOptions::default()).unwrap();
         let store = Store::new(options);
 
         let result = store
             .try_reserve_shard_throughput("stream", "shardId-000000000000", 2 * 1024 * 1024, 1_000)
             .await;
         assert!(result.is_ok(), "CLI flag should disable throttling");
+    }
+
+    #[test]
+    fn resolve_store_options_maps_flat_durable_inputs_into_nested_settings() {
+        let mut args = serve_args();
+        args.state_dir = Some(PathBuf::from("/tmp/ferrokinesis-state"));
+        args.snapshot_interval_secs = Some(17);
+        args.max_retained_bytes = Some(2048);
+
+        let options =
+            resolve_store_options(&args, &FileConfig::default(), &StoreOptions::default()).unwrap();
+        let durable = options.durable.expect("durable settings");
+        assert_eq!(durable.state_dir, PathBuf::from("/tmp/ferrokinesis-state"));
+        assert_eq!(durable.snapshot_interval_secs, 17);
+        assert_eq!(durable.max_retained_bytes, Some(2048));
+        assert_eq!(options.max_retained_bytes, Some(2048));
     }
 }

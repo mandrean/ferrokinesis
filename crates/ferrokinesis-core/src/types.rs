@@ -401,7 +401,7 @@ pub struct EnhancedMonitoring {
 }
 
 /// Describes a single shard within a Kinesis data stream.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct Shard {
     /// Unique identifier for this shard (e.g. `"shardId-000000000000"`).
@@ -437,6 +437,15 @@ pub struct HashKeyRange {
     #[serde(skip)]
     end_cached: std::sync::OnceLock<u128>,
 }
+
+impl PartialEq for HashKeyRange {
+    fn eq(&self, other: &Self) -> bool {
+        self.starting_hash_key == other.starting_hash_key
+            && self.ending_hash_key == other.ending_hash_key
+    }
+}
+
+impl Eq for HashKeyRange {}
 
 impl HashKeyRange {
     /// Creates a new hash key range from decimal string bounds.
@@ -487,7 +496,7 @@ impl HashKeyRange {
 }
 
 /// The range of sequence numbers assigned to a shard.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct SequenceNumberRange {
     /// The sequence number of the first record written to the shard.

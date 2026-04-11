@@ -1,7 +1,7 @@
 use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::sequence;
-use crate::store::Store;
+use crate::store::{PendingTransition, Store};
 use crate::types::*;
 use crate::util::current_time_ms;
 use num_bigint::BigUint;
@@ -17,35 +17,6 @@ const SEQ_ADJUST_MS: u64 = 2000;
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
     let stream_name = data[constants::STREAM_NAME].as_str().unwrap_or("");
     let shard_count = data[constants::SHARD_COUNT].as_i64().unwrap_or(0) as u32;
-
-    // Check if stream already exists
-    if store.contains_stream(stream_name).await {
-        return Err(KinesisErrorResponse::stream_in_use(
-            stream_name,
-            &store.aws_account_id,
-        ));
-    }
-
-    // Check shard limit
-    let shard_sum = store.sum_open_shards().await;
-    if shard_sum + shard_count > store.options.shard_limit {
-        return Err(KinesisErrorResponse::client_error(
-            constants::LIMIT_EXCEEDED,
-            Some(&format!(
-                "This request would exceed the shard limit for the account {} in {}. \
-                 Current shard count for the account: {}. Limit: {}. \
-                 Number of additional shards that would have resulted from this request: {}. \
-                 Refer to the AWS Service Limits page \
-                 (http://docs.aws.amazon.com/general/latest/gr/aws_service_limits.html) \
-                 for current limits and how to request higher limits.",
-                store.aws_account_id,
-                store.aws_region,
-                shard_sum,
-                store.options.shard_limit,
-                shard_count
-            )),
-        ));
-    }
 
     let pow_128 = BigUint::one() << 128;
     let shard_hash = &pow_128 / BigUint::from(shard_count);
@@ -80,6 +51,13 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         });
     }
 
+    let delay = store.options.create_stream_ms;
+    let transition = PendingTransition::CreateStream {
+        stream_name: stream_name.to_string(),
+        ready_at_ms: current_time_ms().saturating_add(delay),
+        shards: shards.clone(),
+    };
+
     let stream = StreamBuilder::new(
         stream_name.to_string(),
         format!(
@@ -92,23 +70,11 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     )
     .build();
 
-    store.put_stream(stream_name, stream).await;
+    store
+        .create_stream_with_reservation(stream_name, shard_count, stream, transition.clone())
+        .await?;
     tracing::info!(stream = stream_name, shards = shard_count, "stream created");
-
-    // Transition to ACTIVE after delay
-    let store_clone = store.clone();
-    let name = stream_name.to_string();
-    let delay = store.options.create_stream_ms;
-    crate::runtime::spawn_background(async move {
-        crate::runtime::sleep_ms(delay).await;
-        let _ = store_clone
-            .update_stream(&name, |stream| {
-                stream.stream_status = StreamStatus::Active;
-                stream.shards = shards;
-                Ok(())
-            })
-            .await;
-    });
+    store.schedule_transition(transition);
 
     Ok(None) // Empty 200 response
 }
