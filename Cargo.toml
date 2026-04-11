@@ -38,8 +38,12 @@ server = [
     "dep:clap",
     "dep:hyper",
     "dep:hyper-util",
+    "dep:opentelemetry",
+    "dep:opentelemetry-otlp",
+    "dep:opentelemetry_sdk",
     "dep:toml",
     "dep:tracing-subscriber",
+    "dep:tracing-opentelemetry",
     "dep:tower",
     "axum/http1",
     "axum/http2",
@@ -112,7 +116,11 @@ toml = { version = "0.8", optional = true }
 tower = { version = "0.5", features = ["util"], optional = true }
 tower-http = { version = "0.6", features = ["trace"], optional = true }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+tracing-opentelemetry = { version = "0.32", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"], optional = true }
+opentelemetry = { version = "0.31", features = ["trace"], optional = true }
+opentelemetry-otlp = { version = "0.31", features = ["trace", "grpc-tonic", "http-proto"], optional = true }
+opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"], optional = true }
 url = { version = "2", optional = true }
 uuid = { version = "1", features = ["v4"] }
 wasm-bindgen = { version = "0.2", optional = true }
