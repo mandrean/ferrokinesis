@@ -454,6 +454,7 @@ pub struct Store {
     pub aws_account_id: String,
     /// The simulated AWS region.
     pub aws_region: String,
+    checkpoint: crate::checkpoint::CheckpointStore,
     inner: Arc<StoreInner>,
     metrics: Arc<AppMetrics>,
     health: Arc<StoreHealthState>,
@@ -549,6 +550,10 @@ impl Store {
 
         let store = Self {
             options,
+            checkpoint: crate::checkpoint::CheckpointStore::new(
+                aws_account_id.clone(),
+                aws_region.clone(),
+            ),
             aws_account_id,
             aws_region,
             inner,
@@ -592,6 +597,10 @@ impl Store {
     /// Returns the shared application metrics registry.
     pub fn metrics(&self) -> Arc<AppMetrics> {
         Arc::clone(&self.metrics)
+    }
+
+    pub(crate) fn checkpoint(&self) -> &crate::checkpoint::CheckpointStore {
+        &self.checkpoint
     }
 
     #[cfg(not(target_arch = "wasm32"))]

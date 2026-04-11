@@ -10,6 +10,7 @@
 //! layer and rewraps them as Kinesis-shaped `SerializationException` errors.
 
 use crate::actions::{self, Operation};
+use crate::checkpoint;
 use crate::constants;
 use crate::error::KinesisErrorResponse;
 use crate::metrics::PreOperationFailureReason;
@@ -149,6 +150,17 @@ pub async fn handler(
     let parts: Vec<&str> = target.splitn(2, '.').collect();
     let service = parts.first().copied().unwrap_or("");
     let operation_str = if parts.len() > 1 { parts[1] } else { "" };
+
+    if service == checkpoint::DYNAMODB_API {
+        return checkpoint::handle_request(
+            &uri,
+            &headers,
+            &response_headers,
+            store.checkpoint(),
+            operation_str,
+            &body,
+        );
+    }
 
     let service_valid = service == constants::KINESIS_API;
     let operation = operation_str.parse::<Operation>().ok();
