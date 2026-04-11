@@ -70,7 +70,7 @@ struct PersistenceState {
 }
 
 /// Internal durable-transition ledger for async state changes.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum PendingTransition {
     CreateStream {
         stream_name: String,
@@ -265,6 +265,13 @@ struct AppliedRecordChange {
     key: String,
     previous: Option<Vec<u8>>,
     new_bytes_len: u64,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct AppliedDeleteChange {
+    records_arc: Arc<RwLock<BTreeMap<String, Vec<u8>>>>,
+    key: String,
+    deleted_bytes: Vec<u8>,
 }
 
 /// Shared inner state behind an [`Arc`] for cheap [`Store`] clones.
@@ -777,13 +784,6 @@ impl Store {
         Ok(())
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn persist_current_state(&self) {
-        if let Err(err) = self.persist_current_state_result().await {
-            tracing::warn!("{err}");
-        }
-    }
-
     #[cfg(target_arch = "wasm32")]
     async fn persist_current_state(&self) {}
 
@@ -956,6 +956,43 @@ impl Store {
         }
     }
 
+    fn transition_requires_write_lock(transition: &TransitionMutation) -> bool {
+        !matches!(transition, TransitionMutation::None)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn lock_transition_mutation<'a>(
+        &'a self,
+        transition: &TransitionMutation,
+        skip_write_lock: bool,
+    ) -> Result<Option<tokio::sync::MutexGuard<'a, ()>>, KinesisErrorResponse> {
+        if self.persistence.is_some() {
+            self.check_persistent_mutation_allowed()?;
+        }
+
+        let needs_lock = !skip_write_lock
+            && (self.persistence.is_some() || Self::transition_requires_write_lock(transition));
+        if needs_lock {
+            Ok(Some(self.inner.write_lock.lock().await))
+        } else {
+            Ok(None)
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    async fn lock_transition_mutation<'a>(
+        &'a self,
+        transition: &TransitionMutation,
+        skip_write_lock: bool,
+    ) -> Result<Option<tokio::sync::MutexGuard<'a, ()>>, KinesisErrorResponse> {
+        let needs_lock = !skip_write_lock && Self::transition_requires_write_lock(transition);
+        if needs_lock {
+            Ok(Some(self.inner.write_lock.lock().await))
+        } else {
+            Ok(None)
+        }
+    }
+
     async fn apply_transition_mutation(&self, update: TransitionMutation) {
         let mut transitions = self.inner.pending_transitions.write().await;
         match update {
@@ -1009,16 +1046,9 @@ impl Store {
         transition: TransitionMutation,
         skip_write_lock: bool,
     ) -> Result<(), KinesisErrorResponse> {
-        #[cfg(not(target_arch = "wasm32"))]
-        let _write_guard = if self.persistence.is_some() && !skip_write_lock {
-            self.check_persistent_mutation_allowed()?;
-            Some(self.inner.write_lock.lock().await)
-        } else {
-            if self.persistence.is_some() {
-                self.check_persistent_mutation_allowed()?;
-            }
-            None
-        };
+        let _write_guard = self
+            .lock_transition_mutation(&transition, skip_write_lock)
+            .await?;
 
         #[cfg(not(target_arch = "wasm32"))]
         let transition_snapshot = self.capture_transition_state(&transition).await;
@@ -1306,14 +1336,19 @@ impl Store {
         name: &str,
         transition: TransitionMutation,
     ) -> Result<(), KinesisErrorResponse> {
-        #[cfg(not(target_arch = "wasm32"))]
-        let _write_guard = if self.persistence.is_some() {
-            self.check_persistent_mutation_allowed()?;
-            Some(self.inner.write_lock.lock().await)
-        } else {
-            None
-        };
+        self.delete_stream_with_transition_internal(name, transition, false)
+            .await
+    }
 
+    async fn delete_stream_with_transition_internal(
+        &self,
+        name: &str,
+        transition: TransitionMutation,
+        skip_write_lock: bool,
+    ) -> Result<(), KinesisErrorResponse> {
+        let _write_guard = self
+            .lock_transition_mutation(&transition, skip_write_lock)
+            .await?;
         #[cfg(not(target_arch = "wasm32"))]
         let transition_snapshot = self.capture_transition_state(&transition).await;
         let removed_stream = self.inner.streams.remove(name).map(|(_, entry)| entry);
@@ -1427,16 +1462,9 @@ impl Store {
     where
         F: FnOnce(&mut Stream) -> Result<R, KinesisErrorResponse>,
     {
-        #[cfg(not(target_arch = "wasm32"))]
-        let _write_guard = if self.persistence.is_some() && !skip_write_lock {
-            self.check_persistent_mutation_allowed()?;
-            Some(self.inner.write_lock.lock().await)
-        } else {
-            if self.persistence.is_some() {
-                self.check_persistent_mutation_allowed()?;
-            }
-            None
-        };
+        let _write_guard = self
+            .lock_transition_mutation(&transition, skip_write_lock)
+            .await?;
 
         let entry = self
             .inner
@@ -1684,8 +1712,7 @@ impl Store {
         }; // DashMap Ref dropped here.
 
         // Phase 2: scan and delete under per-shard locks only.
-        let mut total_deleted = 0;
-        let mut bytes_deleted = 0u64;
+        let mut applied = Vec::new();
         for records_arc in shard_arcs {
             let keys_to_delete: Vec<String> = {
                 let records = records_arc.read().await;
@@ -1705,23 +1732,45 @@ impl Store {
 
             if !keys_to_delete.is_empty() {
                 let mut records = records_arc.write().await;
-                let mut removed = 0usize;
                 for key in &keys_to_delete {
                     if let Some(bytes) = records.remove(key) {
-                        bytes_deleted += bytes.len() as u64;
-                        removed += 1;
+                        #[cfg(not(target_arch = "wasm32"))]
+                        applied.push(AppliedDeleteChange {
+                            records_arc: Arc::clone(&records_arc),
+                            key: key.clone(),
+                            deleted_bytes: bytes,
+                        });
+                        #[cfg(target_arch = "wasm32")]
+                        applied.push((bytes.len() as u64, 1usize));
                     }
                 }
-                total_deleted += removed;
             }
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
+        let (bytes_deleted, total_deleted) = applied.iter().fold((0u64, 0u64), |acc, change| {
+            (
+                acc.0 + change.deleted_bytes.len() as u64,
+                acc.1.saturating_add(1),
+            )
+        });
+        #[cfg(target_arch = "wasm32")]
+        let (bytes_deleted, total_deleted) = applied.iter().fold((0u64, 0u64), |acc, change| {
+            (acc.0 + change.0, acc.1.saturating_add(change.1 as u64))
+        });
+
         if total_deleted > 0 {
-            self.metrics
-                .remove_retained(bytes_deleted, total_deleted as u64);
+            self.metrics.remove_retained(bytes_deleted, total_deleted);
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Err(err) = self.persist_current_state_result().await {
+                self.rollback_delete_changes(&applied).await;
+                tracing::warn!("{err}");
+                return 0;
+            }
+            #[cfg(target_arch = "wasm32")]
             self.persist_current_state().await;
         }
-        total_deleted
+        total_deleted as usize
     }
 
     /// Deletes records by their shard keys within a stream.
@@ -1750,17 +1799,45 @@ impl Store {
         }; // DashMap Ref dropped here.
 
         // Phase 2: delete under per-shard write locks only.
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut applied = Vec::new();
+        #[cfg(target_arch = "wasm32")]
         let mut removed_count = 0u64;
+        #[cfg(target_arch = "wasm32")]
         let mut bytes_deleted = 0u64;
         for (records_arc, key) in pending {
             let mut records = records_arc.write().await;
             if let Some(bytes) = records.remove(&key) {
-                bytes_deleted += bytes.len() as u64;
-                removed_count += 1;
+                #[cfg(not(target_arch = "wasm32"))]
+                applied.push(AppliedDeleteChange {
+                    records_arc: Arc::clone(&records_arc),
+                    key,
+                    deleted_bytes: bytes,
+                });
+                #[cfg(target_arch = "wasm32")]
+                {
+                    bytes_deleted += bytes.len() as u64;
+                    removed_count += 1;
+                }
             }
         }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let (bytes_deleted, removed_count) = applied.iter().fold((0u64, 0u64), |acc, change| {
+            (
+                acc.0 + change.deleted_bytes.len() as u64,
+                acc.1.saturating_add(1),
+            )
+        });
         if removed_count > 0 {
             self.metrics.remove_retained(bytes_deleted, removed_count);
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Err(err) = self.persist_current_state_result().await {
+                self.rollback_delete_changes(&applied).await;
+                tracing::warn!("{err}");
+                return;
+            }
+            #[cfg(target_arch = "wasm32")]
             self.persist_current_state().await;
         }
     }
@@ -1865,13 +1942,20 @@ impl Store {
         consumer: Consumer,
         transition: TransitionMutation,
     ) -> Result<(), KinesisErrorResponse> {
-        #[cfg(not(target_arch = "wasm32"))]
-        let _write_guard = if self.persistence.is_some() {
-            self.check_persistent_mutation_allowed()?;
-            Some(self.inner.write_lock.lock().await)
-        } else {
-            None
-        };
+        self.put_consumer_with_transition_internal(consumer_arn, consumer, transition, false)
+            .await
+    }
+
+    async fn put_consumer_with_transition_internal(
+        &self,
+        consumer_arn: &str,
+        consumer: Consumer,
+        transition: TransitionMutation,
+        skip_write_lock: bool,
+    ) -> Result<(), KinesisErrorResponse> {
+        let _write_guard = self
+            .lock_transition_mutation(&transition, skip_write_lock)
+            .await?;
         let bytes = serde_json::to_vec(&consumer).unwrap();
         let previous = self.inner.consumers.insert(consumer_arn.to_string(), bytes);
         #[cfg(not(target_arch = "wasm32"))]
@@ -1916,13 +2000,19 @@ impl Store {
         consumer_arn: &str,
         transition: TransitionMutation,
     ) -> Result<(), KinesisErrorResponse> {
-        #[cfg(not(target_arch = "wasm32"))]
-        let _write_guard = if self.persistence.is_some() {
-            self.check_persistent_mutation_allowed()?;
-            Some(self.inner.write_lock.lock().await)
-        } else {
-            None
-        };
+        self.delete_consumer_with_transition_internal(consumer_arn, transition, false)
+            .await
+    }
+
+    async fn delete_consumer_with_transition_internal(
+        &self,
+        consumer_arn: &str,
+        transition: TransitionMutation,
+        skip_write_lock: bool,
+    ) -> Result<(), KinesisErrorResponse> {
+        let _write_guard = self
+            .lock_transition_mutation(&transition, skip_write_lock)
+            .await?;
         let previous = self
             .inner
             .consumers
@@ -2363,6 +2453,16 @@ impl Store {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn rollback_delete_changes(&self, changes: &[AppliedDeleteChange]) {
+        for change in changes.iter().rev() {
+            let mut records = change.records_arc.write().await;
+            records.insert(change.key.clone(), change.deleted_bytes.clone());
+            self.metrics
+                .add_retained(change.deleted_bytes.len() as u64, 1);
+        }
+    }
+
     pub(crate) fn schedule_transition(&self, transition: PendingTransition) {
         let store = self.clone();
         crate::runtime::spawn_background(async move {
@@ -2380,13 +2480,15 @@ impl Store {
 
     async fn finish_transition(&self, transition: PendingTransition) -> Result<(), String> {
         let key = transition.key();
-        let has_transition = self
+        let _write_guard = self.inner.write_lock.lock().await;
+        let current_transition = self
             .inner
             .pending_transitions
             .read()
             .await
-            .contains_key(&key);
-        if !has_transition {
+            .get(&key)
+            .cloned();
+        if current_transition.as_ref() != Some(&transition) {
             return Ok(());
         }
 
@@ -2396,9 +2498,10 @@ impl Store {
                 shards,
                 ..
             } => self
-                .update_stream_with_transition(
+                .update_stream_with_transition_internal(
                     &stream_name,
                     TransitionMutation::Remove(key),
+                    true,
                     move |stream| {
                         if stream.stream_status != StreamStatus::Creating {
                             return Err(KinesisErrorResponse::server_error(
@@ -2424,9 +2527,13 @@ impl Store {
                         stream_name, stream.stream_status
                     ));
                 }
-                self.delete_stream_with_transition(&stream_name, TransitionMutation::Remove(key))
-                    .await
-                    .map_err(|err| err.to_string())?;
+                self.delete_stream_with_transition_internal(
+                    &stream_name,
+                    TransitionMutation::Remove(key),
+                    true,
+                )
+                .await
+                .map_err(|err| err.to_string())?;
                 Ok(())
             }
             PendingTransition::RegisterConsumer { consumer_arn, .. } => {
@@ -2445,10 +2552,11 @@ impl Store {
                     ));
                 }
                 consumer.consumer_status = ConsumerStatus::Active;
-                self.put_consumer_with_transition(
+                self.put_consumer_with_transition_internal(
                     &consumer_arn,
                     consumer,
                     TransitionMutation::Remove(key),
+                    true,
                 )
                 .await
                 .map_err(|err| err.to_string())?;
@@ -2469,9 +2577,10 @@ impl Store {
                         consumer_arn, consumer.consumer_status
                     ));
                 }
-                self.delete_consumer_with_transition(
+                self.delete_consumer_with_transition_internal(
                     &consumer_arn,
                     TransitionMutation::Remove(key),
+                    true,
                 )
                 .await
                 .map_err(|err| err.to_string())?;
@@ -2483,9 +2592,10 @@ impl Store {
                 ..
             } => {
                 let closed_shard_ids = self
-                    .update_stream_with_transition(
+                    .update_stream_with_transition_internal(
                         &stream_name,
                         TransitionMutation::Remove(key),
+                        true,
                         move |stream| {
                             if stream.stream_status != StreamStatus::Updating {
                                 return Err(KinesisErrorResponse::server_error(
@@ -2581,9 +2691,10 @@ impl Store {
                 ..
             } => {
                 let cleared_shard_id = self
-                    .update_stream_with_transition(
+                    .update_stream_with_transition_internal(
                         &stream_name,
                         TransitionMutation::Remove(key),
+                        true,
                         move |stream| {
                             if stream.stream_status != StreamStatus::Updating {
                                 return Err(KinesisErrorResponse::server_error(
@@ -2705,9 +2816,10 @@ impl Store {
                 ..
             } => {
                 let cleared_shard_ids = self
-                    .update_stream_with_transition(
+                    .update_stream_with_transition_internal(
                         &stream_name,
                         TransitionMutation::Remove(key),
+                        true,
                         move |stream| {
                             if stream.stream_status != StreamStatus::Updating {
                                 return Err(KinesisErrorResponse::server_error(
@@ -2794,9 +2906,10 @@ impl Store {
                 Ok(())
             }
             PendingTransition::StartStreamEncryption { stream_name, .. } => self
-                .update_stream_with_transition(
+                .update_stream_with_transition_internal(
                     &stream_name,
                     TransitionMutation::Remove(key),
+                    true,
                     |stream| {
                         if stream.stream_status != StreamStatus::Updating {
                             return Err(KinesisErrorResponse::server_error(
@@ -2812,9 +2925,10 @@ impl Store {
                 .await
                 .map_err(|err| err.to_string()),
             PendingTransition::StopStreamEncryption { stream_name, .. } => self
-                .update_stream_with_transition(
+                .update_stream_with_transition_internal(
                     &stream_name,
                     TransitionMutation::Remove(key),
+                    true,
                     |stream| {
                         if stream.stream_status != StreamStatus::Updating {
                             return Err(KinesisErrorResponse::server_error(

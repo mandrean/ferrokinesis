@@ -1,7 +1,9 @@
 use ferrokinesis::actions::{Operation, dispatch};
 use ferrokinesis::persistence::{Persistence, WalEntry};
+use ferrokinesis::sequence;
 use ferrokinesis::store::{Store, StoreOptions};
-use ferrokinesis::types::{ConsumerStatus, EncryptionType, StreamStatus};
+use ferrokinesis::types::{ConsumerStatus, EncryptionType, StoredRecord, StreamStatus};
+use ferrokinesis::util::current_time_ms;
 use serde_json::{Value, json};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -213,6 +215,37 @@ fn break_wal(state_dir: &Path) {
     let wal_path = state_dir.join("wal.log");
     let _ = fs::remove_file(&wal_path);
     fs::create_dir(&wal_path).unwrap();
+}
+
+async fn insert_backdated_record(store: &Store, stream_name: &str, seq_ix: u64, seq_time: u64) {
+    let stream = store.get_stream(stream_name).await.unwrap();
+    let shard = &stream.shards[0];
+    let shard_create_time =
+        sequence::parse_sequence(&shard.sequence_number_range.starting_sequence_number)
+            .unwrap()
+            .shard_create_time;
+    let seq = sequence::stringify_sequence(&sequence::SeqObj {
+        shard_create_time,
+        seq_ix: Some(seq_ix),
+        seq_time: Some(seq_time),
+        shard_ix: 0,
+        byte1: None,
+        seq_rand: None,
+        version: 2,
+    });
+    let key = format!("{}/{}", sequence::shard_ix_to_hex(0), seq);
+    store
+        .put_record(
+            stream_name,
+            &key,
+            &StoredRecord {
+                partition_key: format!("pk-{seq_ix}"),
+                data: "AAAA".to_string(),
+                approximate_arrival_timestamp: (seq_time / 1000) as f64,
+            },
+        )
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -488,6 +521,65 @@ async fn durable_store_resumes_stop_encryption_transition_after_restart() {
 }
 
 #[tokio::test]
+async fn superseded_create_stream_transition_does_not_poison_store() {
+    let dir = tempdir().unwrap();
+    let mut options = durable_options(dir.path(), 0);
+    options.create_stream_ms = 100;
+    options.delete_stream_ms = 100;
+    let store = Store::new(options);
+
+    create_active_stream(&store, "steady-stream").await;
+
+    dispatch(
+        &store,
+        Operation::CreateStream,
+        json!({
+            "StreamName": "race-delete",
+            "ShardCount": 1,
+        }),
+    )
+    .await
+    .unwrap();
+    dispatch(
+        &store,
+        Operation::DeleteStream,
+        json!({
+            "StreamName": "race-delete",
+        }),
+    )
+    .await
+    .unwrap();
+
+    wait_for_stream_deleted(&store, "race-delete").await;
+    assert!(store.check_ready().is_ok());
+    put_record(&store, "steady-stream", "AAAA", "pk")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn superseded_register_consumer_transition_does_not_poison_store() {
+    let dir = tempdir().unwrap();
+    let options = durable_options(dir.path(), 0);
+    let store = Store::new(options);
+    let stream_arn = create_active_stream(&store, "consumer-race").await;
+
+    let consumer_arn = register_consumer(&store, &stream_arn, "consumer-a").await;
+    dispatch(
+        &store,
+        Operation::DeregisterStreamConsumer,
+        json!({
+            "ConsumerARN": consumer_arn,
+        }),
+    )
+    .await
+    .unwrap();
+
+    wait_for_consumer_deleted(&store, &consumer_arn).await;
+    assert!(store.check_ready().is_ok());
+}
+
+#[tokio::test]
 async fn legacy_snapshot_recovers_consumer_creating_without_transition_metadata() {
     let dir = tempdir().unwrap();
     let options = durable_options(dir.path(), 0);
@@ -753,6 +845,64 @@ async fn durable_store_rolls_back_account_settings_when_persistence_fails() {
     .unwrap_err();
     assert_eq!(err.status_code, 500);
     assert_eq!(store.get_account_settings().await, json!({}));
+}
+
+#[tokio::test]
+async fn durable_store_rolls_back_delete_record_keys_when_persistence_fails() {
+    let dir = tempdir().unwrap();
+    let options = durable_options(dir.path(), 0);
+    let store = Store::new(options);
+    store
+        .put_record(
+            "delete-keys-rollback",
+            "aabbccdd/seq001",
+            &StoredRecord {
+                partition_key: "pk".to_string(),
+                data: "AAAA".to_string(),
+                approximate_arrival_timestamp: 1.0,
+            },
+        )
+        .await
+        .unwrap();
+
+    let expected_bytes = store.metrics().retained_bytes();
+    let expected_records = store.metrics().retained_records();
+    break_wal(dir.path());
+
+    store
+        .delete_record_keys("delete-keys-rollback", &["aabbccdd/seq001".to_string()])
+        .await;
+
+    assert_eq!(
+        store.get_record_store("delete-keys-rollback").await.len(),
+        1
+    );
+    assert_eq!(store.metrics().retained_bytes(), expected_bytes);
+    assert_eq!(store.metrics().retained_records(), expected_records);
+    assert!(store.check_ready().is_err());
+}
+
+#[tokio::test]
+async fn durable_store_rolls_back_delete_expired_records_when_persistence_fails() {
+    let dir = tempdir().unwrap();
+    let options = durable_options(dir.path(), 0);
+    let store = Store::new(options);
+    create_active_stream(&store, "expired-rollback").await;
+
+    let expired_time = current_time_ms() - 25 * 60 * 60 * 1000;
+    insert_backdated_record(&store, "expired-rollback", 1, expired_time).await;
+
+    let expected_bytes = store.metrics().retained_bytes();
+    let expected_records = store.metrics().retained_records();
+    break_wal(dir.path());
+
+    let deleted = store.delete_expired_records("expired-rollback", 24).await;
+
+    assert_eq!(deleted, 0);
+    assert_eq!(store.get_record_store("expired-rollback").await.len(), 1);
+    assert_eq!(store.metrics().retained_bytes(), expected_bytes);
+    assert_eq!(store.metrics().retained_records(), expected_records);
+    assert!(store.check_ready().is_err());
 }
 
 #[tokio::test]
