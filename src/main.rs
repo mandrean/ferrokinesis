@@ -160,6 +160,11 @@ struct ServeArgs {
           value_parser = clap::value_parser!(u64).range(1..))]
     mirror_max_backoff_ms: Option<u64>,
 
+    /// Path to write mirror dead-letter records (NDJSON)
+    #[cfg(feature = "mirror")]
+    #[arg(long, env = "FERROKINESIS_MIRROR_DEAD_LETTER", requires = "mirror_to")]
+    mirror_dead_letter: Option<PathBuf>,
+
     /// Path to TLS certificate PEM file (enables HTTPS)
     #[cfg(feature = "tls")]
     #[arg(long, env = "FERROKINESIS_TLS_CERT", requires = "tls_key")]
@@ -821,13 +826,34 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
             mirror_cfg.max_backoff_ms,
             || ferrokinesis::mirror::RetryConfig::DEFAULT_MAX_BACKOFF_MS,
         );
+        let mirror_dead_letter = args.mirror_dead_letter.or(mirror_cfg.dead_letter);
         let retry_config = ferrokinesis::mirror::RetryConfig {
             max_retries: mirror_max_retries,
             initial_backoff: Duration::from_millis(mirror_initial_backoff_ms),
             max_backoff: Duration::from_millis(mirror_max_backoff_ms),
         };
         if let Some(endpoint) = mirror_to {
-            let m = ferrokinesis::mirror::Mirror::new(
+            let dead_letter_writer = match mirror_dead_letter {
+                Some(ref path) => match ferrokinesis::mirror::MirrorDeadLetterWriter::new(path) {
+                    Ok(w) => {
+                        tracing::info!(
+                            path = %path.display(),
+                            "mirror dead-letter enabled",
+                        );
+                        Some(w)
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            path = %path.display(),
+                            "failed to open mirror dead-letter file: {e}"
+                        );
+                        return ExitCode::FAILURE;
+                    }
+                },
+                None => None,
+            };
+
+            let mut m = ferrokinesis::mirror::Mirror::new(
                 &endpoint,
                 mirror_diff,
                 &aws_region,
@@ -835,6 +861,7 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
                 retry_config,
             )
             .await;
+            m.set_dead_letter_writer(dead_letter_writer);
             tracing::info!(
                 endpoint = %endpoint,
                 concurrency = mirror_concurrency,
