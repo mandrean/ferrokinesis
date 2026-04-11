@@ -1,0 +1,23 @@
+{
+  "operation": "PutRecords",
+  "scenario": "happy_path",
+  "http_status": 200,
+  "required_headers": [
+    "x-amzn-RequestId",
+    "x-amz-id-2",
+    "Content-Type"
+  ],
+  "body": {
+    "EncryptionType": "NONE",
+    "FailedRecordCount": 0,
+    "Records": [
+      {
+        "SequenceNumber": "49590338271490256608559692540925702759221480471064903682",
+        "ShardId": "shardId-000000000000"
+      }
+    ]
+  },
+  "expected_headers": {
+    "Content-Type": "application/x-amz-json-1.1"
+  }
+}

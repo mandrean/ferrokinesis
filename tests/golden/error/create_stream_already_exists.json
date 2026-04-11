@@ -1,0 +1,18 @@
+{
+  "operation": "CreateStream",
+  "scenario": "already_exists",
+  "http_status": 400,
+  "required_headers": [
+    "x-amzn-RequestId",
+    "x-amz-id-2",
+    "Content-Type"
+  ],
+  "body": {
+    "__type": "ResourceInUseException",
+    "message": "Stream test-stream under account 000000000000 already exists."
+  },
+  "expected_headers": {
+    "Content-Type": "application/x-amz-json-1.1",
+    "x-amzn-ErrorType": "ResourceInUseException"
+  }
+}

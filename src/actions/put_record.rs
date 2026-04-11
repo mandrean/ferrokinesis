@@ -56,6 +56,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         }
     }
 
+    let encryption_type = store.get_stream(&stream_name).await?.encryption_type;
     let alloc = store.allocate_sequence(&stream_name, &hash_key).await?;
 
     let record = StoredRecordRef {
@@ -85,6 +86,7 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
 
     tracing::trace!(stream = %stream_name, shard = %alloc.shard_id, partition_key, "record put");
     Ok(Some(json!({
+        "EncryptionType": encryption_type,
         "ShardId": alloc.shard_id,
         "SequenceNumber": alloc.seq_num,
     })))

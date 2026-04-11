@@ -1,0 +1,30 @@
+{
+  "operation": "ListStreams",
+  "scenario": "happy_path",
+  "http_status": 200,
+  "required_headers": [
+    "x-amzn-RequestId",
+    "x-amz-id-2",
+    "Content-Type"
+  ],
+  "body": {
+    "HasMoreStreams": false,
+    "StreamNames": [
+      "test-stream"
+    ],
+    "StreamSummaries": [
+      {
+        "StreamARN": "arn:aws:kinesis:us-east-1:000000000000:stream/test-stream",
+        "StreamCreationTimestamp": 1700000000.0,
+        "StreamModeDetails": {
+          "StreamMode": "PROVISIONED"
+        },
+        "StreamName": "test-stream",
+        "StreamStatus": "ACTIVE"
+      }
+    ]
+  },
+  "expected_headers": {
+    "Content-Type": "application/x-amz-json-1.1"
+  }
+}
