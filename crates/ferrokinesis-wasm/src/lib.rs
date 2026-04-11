@@ -4,9 +4,7 @@ use axum::body::{Body, to_bytes};
 use axum::extract::DefaultBodyLimit;
 use axum::http::Request;
 use ferrokinesis::constants;
-use ferrokinesis::store::{
-    DurableStateOptions, Store, StoreOptions, validate_durable_settings,
-};
+use ferrokinesis::store::{DurableStateOptions, Store, StoreOptions, validate_durable_settings};
 use js_sys::Reflect;
 use serde::{Serialize, de::DeserializeOwned};
 use tower::util::ServiceExt;
