@@ -7,13 +7,20 @@
 //! response divergences for differential validation.
 
 use crate::actions::Operation;
+use crate::capture::{CaptureOp, CaptureRecord};
 use crate::constants;
+use crate::util::current_time_ms;
 use aws_credential_types::Credentials;
 use aws_credential_types::provider::SharedCredentialsProvider;
 use aws_credential_types::provider::error::CredentialsError;
 use bytes::Bytes;
+use serde::Serialize;
 use serde_json::Value;
+use std::fs::{File, OpenOptions};
+use std::io::{self, BufWriter, Write};
+use std::path::Path;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 use tokio::sync::Semaphore;
 
@@ -22,6 +29,102 @@ use tokio::sync::Semaphore;
 /// `None` means no body (empty 200), `Some(value)` means a JSON response body.
 /// Only successful local dispatches are mirrored — failed dispatches are skipped.
 pub type MirrorableResponse = Option<Value>;
+
+/// Why a mirrored request was dead-lettered.
+#[derive(Debug, Clone, Copy)]
+enum DeadLetterReason {
+    Backpressure,
+}
+
+impl DeadLetterReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Backpressure => "backpressure",
+        }
+    }
+}
+
+/// One dead-letter output row. This intentionally embeds the capture schema
+/// so existing replay tooling can read the same file.
+#[derive(Serialize)]
+struct DeadLetterRecordRef<'a> {
+    #[serde(flatten)]
+    capture: &'a CaptureRecord,
+    mirror_reason: &'a str,
+    mirror_target: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mirror_error: Option<&'a str>,
+    mirror_attempts: usize,
+    dead_lettered_at_ms: u64,
+}
+
+/// Thread-safe NDJSON writer for mirror dead-letter records.
+#[derive(Clone)]
+pub struct MirrorDeadLetterWriter {
+    inner: Arc<Mutex<BufWriter<File>>>,
+}
+
+impl MirrorDeadLetterWriter {
+    /// Opens (or creates) a dead-letter file in append mode.
+    pub fn new(path: &Path) -> io::Result<Self> {
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
+        Ok(Self {
+            inner: Arc::new(Mutex::new(BufWriter::new(file))),
+        })
+    }
+
+    fn write_records(
+        &self,
+        records: &[CaptureRecord],
+        reason: DeadLetterReason,
+        mirror_target: &str,
+        error: Option<&str>,
+        attempts: usize,
+    ) {
+        if records.is_empty() {
+            return;
+        }
+
+        let now_ms = current_time_ms();
+        let mut lines = Vec::with_capacity(records.len());
+        for capture in records {
+            let line = DeadLetterRecordRef {
+                capture,
+                mirror_reason: reason.as_str(),
+                mirror_target,
+                mirror_error: error,
+                mirror_attempts: attempts,
+                dead_lettered_at_ms: now_ms,
+            };
+            match serde_json::to_vec(&line) {
+                Ok(mut buf) => {
+                    buf.push(b'\n');
+                    lines.push(buf);
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "mirror dead-letter: failed to serialize record");
+                }
+            }
+        }
+
+        if lines.is_empty() {
+            return;
+        }
+        let Ok(mut writer) = self.inner.lock() else {
+            tracing::error!("mirror dead-letter: failed to acquire lock");
+            return;
+        };
+        for line in lines {
+            if let Err(e) = writer.write_all(&line) {
+                tracing::error!(error = %e, "mirror dead-letter: write error");
+                return;
+            }
+        }
+        if let Err(e) = writer.flush() {
+            tracing::error!(error = %e, "mirror dead-letter: flush error");
+        }
+    }
+}
 
 /// Retry configuration for mirror forwarding.
 #[derive(Debug, Clone)]
@@ -88,6 +191,7 @@ pub struct Mirror {
     region: String,
     semaphore: Arc<Semaphore>,
     retry_config: RetryConfig,
+    dead_letter_writer: Option<MirrorDeadLetterWriter>,
 }
 
 /// Error during SigV4 request signing.
@@ -201,7 +305,13 @@ impl Mirror {
             region: region.to_string(),
             semaphore: Arc::new(Semaphore::new(concurrency)),
             retry_config,
+            dead_letter_writer: None,
         }
+    }
+
+    /// Configure an optional dead-letter writer for failed mirror forwarding.
+    pub fn set_dead_letter_writer(&mut self, writer: Option<MirrorDeadLetterWriter>) {
+        self.dead_letter_writer = writer;
     }
 
     /// Build a credentials provider using the AWS default provider chain.
@@ -249,6 +359,15 @@ impl Mirror {
         let permit = match self.semaphore.clone().try_acquire_owned() {
             Ok(permit) => permit,
             Err(_) => {
+                self.dead_letter_local_write_failure(
+                    &target,
+                    &content_type,
+                    &body,
+                    &local_result,
+                    DeadLetterReason::Backpressure,
+                    Some("mirror semaphore exhausted"),
+                    0,
+                );
                 tracing::warn!("backpressure: dropping mirrored request");
                 return;
             }
@@ -260,6 +379,23 @@ impl Mirror {
                 .await;
             drop(permit);
         });
+    }
+
+    fn dead_letter_local_write_failure(
+        &self,
+        target: &str,
+        content_type: &str,
+        body: &[u8],
+        local_result: &MirrorableResponse,
+        reason: DeadLetterReason,
+        error: Option<&str>,
+        attempts: usize,
+    ) {
+        let Some(ref writer) = self.dead_letter_writer else {
+            return;
+        };
+        let records = build_dead_letter_records(target, content_type, body, local_result);
+        writer.write_records(&records, reason, &self.url, error, attempts);
     }
 
     async fn forward(
@@ -499,6 +635,108 @@ impl Mirror {
     }
 }
 
+fn build_dead_letter_records(
+    target: &str,
+    content_type: &str,
+    body: &[u8],
+    local_result: &MirrorableResponse,
+) -> Vec<CaptureRecord> {
+    let Some(local_result) = local_result else {
+        return Vec::new();
+    };
+    let Some(request) = parse_mirror_request_body(content_type, body) else {
+        return Vec::new();
+    };
+    let Some(operation) = target.split('.').nth(1) else {
+        return Vec::new();
+    };
+
+    match operation {
+        "PutRecord" => {
+            let sequence_number = local_result[constants::SEQUENCE_NUMBER]
+                .as_str()
+                .unwrap_or("");
+            let shard_id = local_result[constants::SHARD_ID].as_str().unwrap_or("");
+            if sequence_number.is_empty() || shard_id.is_empty() {
+                return Vec::new();
+            }
+
+            vec![CaptureRecord {
+                op: CaptureOp::PutRecord,
+                ts: current_time_ms(),
+                stream: request[constants::STREAM_NAME]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string(),
+                partition_key: request[constants::PARTITION_KEY]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string(),
+                data: request[constants::DATA].as_str().unwrap_or("").to_string(),
+                explicit_hash_key: request[constants::EXPLICIT_HASH_KEY]
+                    .as_str()
+                    .map(ToString::to_string),
+                sequence_number: sequence_number.to_string(),
+                shard_id: shard_id.to_string(),
+            }]
+        }
+        "PutRecords" => {
+            let Some(request_records) = request[constants::RECORDS].as_array() else {
+                return Vec::new();
+            };
+            let Some(response_records) = local_result[constants::RECORDS].as_array() else {
+                return Vec::new();
+            };
+
+            request_records
+                .iter()
+                .zip(response_records.iter())
+                .filter_map(|(req, resp)| {
+                    if resp
+                        .get(constants::ERROR_CODE)
+                        .is_some_and(|error_code| !error_code.is_null())
+                    {
+                        return None;
+                    }
+                    let sequence_number = resp[constants::SEQUENCE_NUMBER].as_str().unwrap_or("");
+                    let shard_id = resp[constants::SHARD_ID].as_str().unwrap_or("");
+                    if sequence_number.is_empty() || shard_id.is_empty() {
+                        return None;
+                    }
+                    Some(CaptureRecord {
+                        op: CaptureOp::PutRecords,
+                        ts: current_time_ms(),
+                        stream: request[constants::STREAM_NAME]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_string(),
+                        partition_key: req[constants::PARTITION_KEY]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_string(),
+                        data: req[constants::DATA].as_str().unwrap_or("").to_string(),
+                        explicit_hash_key: req[constants::EXPLICIT_HASH_KEY]
+                            .as_str()
+                            .map(ToString::to_string),
+                        sequence_number: sequence_number.to_string(),
+                        shard_id: shard_id.to_string(),
+                    })
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn parse_mirror_request_body(content_type: &str, body: &[u8]) -> Option<Value> {
+    if content_type == constants::CONTENT_TYPE_CBOR {
+        let cbor = ciborium::from_reader::<ciborium::Value, _>(body).ok()?;
+        Some(crate::server::cbor_to_json(&cbor))
+    } else {
+        serde_json::from_slice(body).ok()
+    }
+}
+
 fn extract_host(url_str: &str) -> String {
     match url::Url::parse(url_str) {
         Ok(parsed) => {
@@ -539,6 +777,9 @@ fn strip_volatile_keys(val: &mut Value, keys: &[&str]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::{CaptureOp, read_capture_file};
+    use serde_json::json;
+    use tempfile::NamedTempFile;
 
     #[test]
     fn should_mirror_put_record() {
@@ -557,6 +798,87 @@ mod tests {
         assert!(!Mirror::should_mirror(&Operation::DeleteStream));
         assert!(!Mirror::should_mirror(&Operation::ListStreams));
         assert!(!Mirror::should_mirror(&Operation::GetRecords));
+    }
+
+    #[test]
+    fn backpressure_drop_writes_replay_compatible_dead_letter() {
+        let dead_letter_file = NamedTempFile::new().unwrap();
+        let mut mirror = Mirror::with_credentials(
+            "http://127.0.0.1:1",
+            false,
+            "us-east-1",
+            None,
+            0,
+            RetryConfig::default(),
+        );
+        mirror.set_dead_letter_writer(Some(
+            MirrorDeadLetterWriter::new(dead_letter_file.path()).unwrap(),
+        ));
+        let mirror = Arc::new(mirror);
+        let request_body = Bytes::from_static(
+            br#"{"StreamName":"mirror-stream","Data":"dGVzdA==","PartitionKey":"pk"}"#,
+        );
+        let local_result = Some(json!({
+            "ShardId": "shardId-000000000000",
+            "SequenceNumber": "123",
+        }));
+
+        mirror.spawn_forward(
+            "Kinesis_20131202.PutRecord".to_string(),
+            constants::CONTENT_TYPE_JSON.to_string(),
+            request_body,
+            local_result,
+        );
+
+        let captured = read_capture_file(dead_letter_file.path()).unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].op, CaptureOp::PutRecord);
+        assert_eq!(captured[0].stream, "mirror-stream");
+        assert_eq!(captured[0].partition_key, "pk");
+        assert_eq!(captured[0].sequence_number, "123");
+
+        let line = std::fs::read_to_string(dead_letter_file.path()).unwrap();
+        let value: Value = serde_json::from_str(line.lines().next().unwrap()).unwrap();
+        assert_eq!(value["mirror_reason"], "backpressure");
+        assert_eq!(value["mirror_error"], "mirror semaphore exhausted");
+        assert_eq!(value["mirror_attempts"], 0);
+        assert_eq!(value["op"], "PutRecord");
+    }
+
+    #[test]
+    fn dead_letter_records_for_put_records_only_include_locally_successful_items() {
+        let request = br#"{
+            "StreamName":"batch-stream",
+            "Records":[
+                {"Data":"YQ==","PartitionKey":"pk-1"},
+                {"Data":"Yg==","PartitionKey":"pk-2"}
+            ]
+        }"#;
+        let local_result = Some(json!({
+            "FailedRecordCount": 1,
+            "Records": [
+                {
+                    "ShardId": "shardId-000000000000",
+                    "SequenceNumber": "seq-1"
+                },
+                {
+                    "ErrorCode": "ProvisionedThroughputExceededException",
+                    "ErrorMessage": "Rate exceeded"
+                }
+            ]
+        }));
+
+        let records = build_dead_letter_records(
+            "Kinesis_20131202.PutRecords",
+            constants::CONTENT_TYPE_JSON,
+            request,
+            &local_result,
+        );
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].op, CaptureOp::PutRecords);
+        assert_eq!(records[0].partition_key, "pk-1");
+        assert_eq!(records[0].sequence_number, "seq-1");
     }
 
     #[test]

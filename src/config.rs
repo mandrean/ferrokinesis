@@ -128,6 +128,8 @@ pub struct MirrorConfig {
     pub initial_backoff_ms: Option<u64>,
     /// Maximum backoff delay between retries in milliseconds (default: 5000).
     pub max_backoff_ms: Option<u64>,
+    /// Path to write mirror dead-letter records (NDJSON).
+    pub dead_letter: Option<PathBuf>,
 }
 
 /// Parse and validate a TOML configuration file.
