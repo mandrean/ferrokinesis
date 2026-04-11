@@ -5,6 +5,14 @@ git_tag_name = "v{{ version }}"
 git_release_name = "v{{ version }}"
 
 [[package]]
+name = "ferrokinesis-cli"
+release = false
+publish = false
+git_release_enable = false
+git_tag_enable = false
+changelog_update = false
+
+[[package]]
 name = "ferrokinesis-core"
 # still published to crates.io at the shared workspace version,
 # but no separate GitHub release or git tag (e.g. ferrokinesis-core-v0.x.x)
