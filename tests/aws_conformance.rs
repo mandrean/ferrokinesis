@@ -31,7 +31,6 @@ const DYNAMIC_FIELDS: &[&str] = &[
     "StartingSequenceNumber",
     "EndingSequenceNumber",
     "StreamARN",
-    "message",
 ];
 
 fn value_type_name(v: &Value) -> &'static str {
@@ -73,8 +72,15 @@ fn assert_shape_matches(golden: &Value, actual: &Value, path: &str) {
             }
         }
         (Value::Array(g), Value::Array(a)) => {
-            if !g.is_empty() && !a.is_empty() {
-                assert_shape_matches(&g[0], &a[0], &format!("{path}[0]"));
+            assert_eq!(
+                g.len(),
+                a.len(),
+                "Array length mismatch at {path}: expected {}, got {}",
+                g.len(),
+                a.len(),
+            );
+            for (index, (golden_item, actual_item)) in g.iter().zip(a.iter()).enumerate() {
+                assert_shape_matches(golden_item, actual_item, &format!("{path}[{index}]"));
             }
         }
         _ => {
@@ -90,11 +96,8 @@ fn assert_shape_matches(golden: &Value, actual: &Value, path: &str) {
                 );
             } else {
                 assert_eq!(
-                    value_type_name(golden),
-                    value_type_name(actual),
-                    "Type mismatch at {path}: expected {}, got {}",
-                    value_type_name(golden),
-                    value_type_name(actual),
+                    golden, actual,
+                    "Value mismatch at {path}: expected {golden:?}, got {actual:?}",
                 );
             }
         }
@@ -135,6 +138,72 @@ fn assert_conformance(
         (_, Value::Null) => panic!("Expected body but got empty response"),
         _ => assert_shape_matches(&golden.body, body, "$"),
     }
+}
+
+#[test]
+fn shape_matches_checks_every_array_element_and_length() {
+    let golden = json!({
+        "Records": [
+            {"SequenceNumber": "dynamic", "PartitionKey": "pk1"},
+            {"SequenceNumber": "dynamic", "PartitionKey": "pk2"}
+        ]
+    });
+    let actual = json!({
+        "Records": [
+            {"SequenceNumber": "other", "PartitionKey": "pk1"},
+            {"SequenceNumber": "other", "PartitionKey": "wrong"}
+        ]
+    });
+
+    let err = std::panic::catch_unwind(|| assert_shape_matches(&golden, &actual, "$"))
+        .expect_err("tail mismatch should fail");
+    let msg = if let Some(msg) = err.downcast_ref::<String>() {
+        msg.clone()
+    } else if let Some(msg) = err.downcast_ref::<&str>() {
+        msg.to_string()
+    } else {
+        String::new()
+    };
+    assert!(msg.contains("$.Records[1].PartitionKey"));
+
+    let truncated = json!({
+        "Records": [
+            {"SequenceNumber": "other", "PartitionKey": "pk1"}
+        ]
+    });
+    let err = std::panic::catch_unwind(|| assert_shape_matches(&golden, &truncated, "$"))
+        .expect_err("truncated array should fail");
+    let msg = if let Some(msg) = err.downcast_ref::<String>() {
+        msg.clone()
+    } else if let Some(msg) = err.downcast_ref::<&str>() {
+        msg.to_string()
+    } else {
+        String::new()
+    };
+    assert!(msg.contains("Array length mismatch"));
+}
+
+#[test]
+fn shape_matches_checks_error_messages_exactly() {
+    let golden = json!({
+        "__type": "ExpiredIteratorException",
+        "message": "Iterator expired."
+    });
+    let actual = json!({
+        "__type": "ExpiredIteratorException",
+        "message": "Iterator expired at some other time."
+    });
+
+    let err = std::panic::catch_unwind(|| assert_shape_matches(&golden, &actual, "$"))
+        .expect_err("message mismatch should fail");
+    let msg = if let Some(msg) = err.downcast_ref::<String>() {
+        msg.clone()
+    } else if let Some(msg) = err.downcast_ref::<&str>() {
+        msg.to_string()
+    } else {
+        String::new()
+    };
+    assert!(msg.contains("$.message"));
 }
 
 // ─── Happy path tests ───────────────────────────────────────────────────────
