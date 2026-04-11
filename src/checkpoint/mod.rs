@@ -25,25 +25,39 @@ impl CheckpointStore {
         }
     }
 
-    fn dispatch(&self, operation: &str, payload: Value) -> Result<Value, DdbError> {
-        match operation {
-            "CreateTable" => {
-                let input: CreateTableRequest = serde_json::from_value(payload)
-                    .map_err(|_| DdbError::serialization("Invalid CreateTable request body"))?;
-                let table = self.create_table(input)?;
-                Ok(json!({ "TableDescription": table }))
-            }
-            "DescribeTable" => {
-                let input: DescribeTableRequest = serde_json::from_value(payload)
-                    .map_err(|_| DdbError::serialization("Invalid DescribeTable request body"))?;
-                let table = self.describe_table(input)?;
-                Ok(json!({ "Table": table }))
-            }
-            _ => Err(DdbError::unknown_operation(operation)),
-        }
+    pub(crate) fn export_snapshot_json(&self) -> Result<Vec<u8>, String> {
+        let tables = self
+            .tables
+            .read()
+            .map_err(|_| "checkpoint table store lock poisoned".to_string())?;
+        let mut snapshot: Vec<TableMeta> = tables.values().cloned().collect();
+        snapshot.sort_by(|left, right| left.table_name.cmp(&right.table_name));
+        serde_json::to_vec(&snapshot)
+            .map_err(|err| format!("failed to encode persisted checkpoint tables: {err}"))
     }
 
-    fn create_table(&self, input: CreateTableRequest) -> Result<TableDescription, DdbError> {
+    pub(crate) fn restore_snapshot_json(&self, bytes: &[u8]) -> Result<(), String> {
+        let restored: Vec<TableMeta> = if bytes.is_empty() {
+            Vec::new()
+        } else {
+            serde_json::from_slice(bytes)
+                .map_err(|err| format!("failed to decode persisted checkpoint tables: {err}"))?
+        };
+        let mut tables = self
+            .tables
+            .write()
+            .map_err(|_| "checkpoint table store lock poisoned".to_string())?;
+        tables.clear();
+        for table in restored {
+            tables.insert(table.table_name.clone(), table);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn create_table(
+        &self,
+        input: CreateTableRequest,
+    ) -> Result<TableDescription, DdbError> {
         if input.table_name.trim().is_empty() {
             return Err(DdbError::validation(
                 "Value null at 'tableName' failed to satisfy constraint: Member must not be null",
@@ -72,6 +86,11 @@ impl CheckpointStore {
             table_name: input.table_name.clone(),
             attribute_definitions: input.attribute_definitions,
             key_schema: input.key_schema,
+            global_secondary_indexes: input
+                .global_secondary_indexes
+                .into_iter()
+                .map(GlobalSecondaryIndexMeta::from_request)
+                .collect(),
             table_id: uuid::Uuid::new_v4().to_string(),
             created_at_seconds,
         };
@@ -80,7 +99,10 @@ impl CheckpointStore {
         Ok(table_description)
     }
 
-    fn describe_table(&self, input: DescribeTableRequest) -> Result<TableDescription, DdbError> {
+    pub(crate) fn describe_table(
+        &self,
+        input: DescribeTableRequest,
+    ) -> Result<TableDescription, DdbError> {
         let tables = self
             .tables
             .read()
@@ -93,13 +115,22 @@ impl CheckpointStore {
         };
         Ok(table_meta.as_description(&self.aws_account_id, &self.aws_region))
     }
+
+    pub(crate) fn remove_table(&self, table_name: &str) -> Result<(), DdbError> {
+        let mut tables = self
+            .tables
+            .write()
+            .map_err(|_| DdbError::internal("table store lock poisoned"))?;
+        tables.remove(table_name);
+        Ok(())
+    }
 }
 
-pub(crate) fn handle_request(
+pub(crate) async fn handle_request(
     uri: &Uri,
     headers: &HeaderMap,
     response_headers: &HeaderMap,
-    checkpoint_store: &CheckpointStore,
+    store: &crate::store::Store,
     operation: &str,
     body: &Bytes,
 ) -> Response {
@@ -140,7 +171,32 @@ pub(crate) fn handle_request(
         }
     };
 
-    match checkpoint_store.dispatch(operation, payload) {
+    let result = match operation {
+        "CreateTable" => {
+            let input = serde_json::from_value(payload)
+                .map_err(|_| DdbError::serialization("Invalid CreateTable request body"));
+            match input {
+                Ok(input) => store
+                    .checkpoint_create_table(input)
+                    .await
+                    .map(|table| json!({ "TableDescription": table })),
+                Err(err) => Err(err),
+            }
+        }
+        "DescribeTable" => {
+            let input = serde_json::from_value(payload)
+                .map_err(|_| DdbError::serialization("Invalid DescribeTable request body"));
+            match input {
+                Ok(input) => store
+                    .checkpoint_describe_table(input)
+                    .map(|table| json!({ "Table": table })),
+                Err(err) => Err(err),
+            }
+        }
+        _ => Err(DdbError::unknown_operation(operation)),
+    };
+
+    match result {
         Ok(result) => send_json_response(response_headers, StatusCode::OK, &result),
         Err(error) => send_error(response_headers, error),
     }
@@ -250,7 +306,7 @@ fn send_json_response(extra_headers: &HeaderMap, status: StatusCode, body: &Valu
 }
 
 #[derive(Debug)]
-struct DdbError {
+pub(crate) struct DdbError {
     status_code: u16,
     error_type: &'static str,
     message: String,
@@ -301,16 +357,18 @@ impl DdbError {
         Self::new(400, "ResourceNotFoundException", message)
     }
 
-    fn internal(message: impl Into<String>) -> Self {
+    pub(crate) fn internal(message: impl Into<String>) -> Self {
         Self::new(500, "InternalServerError", message)
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct TableMeta {
     table_name: String,
     attribute_definitions: Vec<AttributeDefinition>,
     key_schema: Vec<KeySchemaElement>,
+    #[serde(default)]
+    global_secondary_indexes: Vec<GlobalSecondaryIndexMeta>,
     table_id: String,
     created_at_seconds: f64,
 }
@@ -328,24 +386,31 @@ impl TableMeta {
                 self.table_name
             ),
             table_id: self.table_id.clone(),
+            global_secondary_indexes: self
+                .global_secondary_indexes
+                .iter()
+                .map(|index| index.as_description(&self.table_name, aws_account_id, aws_region))
+                .collect(),
         }
     }
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
-struct CreateTableRequest {
-    table_name: String,
+pub(crate) struct CreateTableRequest {
+    pub(crate) table_name: String,
     #[serde(default)]
     attribute_definitions: Vec<AttributeDefinition>,
     #[serde(default)]
     key_schema: Vec<KeySchemaElement>,
+    #[serde(default)]
+    global_secondary_indexes: Vec<GlobalSecondaryIndexRequest>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
-struct DescribeTableRequest {
-    table_name: String,
+pub(crate) struct DescribeTableRequest {
+    pub(crate) table_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -362,9 +427,71 @@ struct KeySchemaElement {
     key_type: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct Projection {
+    projection_type: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    non_key_attributes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct GlobalSecondaryIndexRequest {
+    index_name: String,
+    #[serde(default)]
+    key_schema: Vec<KeySchemaElement>,
+    projection: Projection,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GlobalSecondaryIndexMeta {
+    index_name: String,
+    key_schema: Vec<KeySchemaElement>,
+    projection: Projection,
+}
+
+impl GlobalSecondaryIndexMeta {
+    fn from_request(request: GlobalSecondaryIndexRequest) -> Self {
+        Self {
+            index_name: request.index_name,
+            key_schema: request.key_schema,
+            projection: request.projection,
+        }
+    }
+
+    fn as_description(
+        &self,
+        table_name: &str,
+        aws_account_id: &str,
+        aws_region: &str,
+    ) -> GlobalSecondaryIndexDescription {
+        GlobalSecondaryIndexDescription {
+            index_name: self.index_name.clone(),
+            key_schema: self.key_schema.clone(),
+            projection: self.projection.clone(),
+            index_status: "ACTIVE".to_string(),
+            index_arn: format!(
+                "arn:aws:dynamodb:{aws_region}:{aws_account_id}:table/{table_name}/index/{}",
+                self.index_name
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "PascalCase")]
-struct TableDescription {
+struct GlobalSecondaryIndexDescription {
+    index_name: String,
+    key_schema: Vec<KeySchemaElement>,
+    projection: Projection,
+    index_status: String,
+    index_arn: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct TableDescription {
     attribute_definitions: Vec<AttributeDefinition>,
     key_schema: Vec<KeySchemaElement>,
     table_name: String,
@@ -372,4 +499,6 @@ struct TableDescription {
     creation_date_time: f64,
     table_arn: String,
     table_id: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    global_secondary_indexes: Vec<GlobalSecondaryIndexDescription>,
 }
