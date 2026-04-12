@@ -371,6 +371,7 @@ struct RestoredState {
     policies: Vec<(String, String)>,
     resource_tags: Vec<(String, BTreeMap<String, String>)>,
     account_settings: Value,
+    checkpoint_tables_json: Vec<u8>,
     pending_transitions: BTreeMap<String, PendingTransition>,
     retained_bytes: u64,
     retained_records: u64,
@@ -386,6 +387,7 @@ impl RestoredState {
             policies,
             resource_tags,
             account_settings_json,
+            checkpoint_tables_json,
             pending_transitions,
             retained_bytes,
             retained_records,
@@ -424,6 +426,7 @@ impl RestoredState {
             policies,
             resource_tags,
             account_settings,
+            checkpoint_tables_json,
             pending_transitions: pending_transitions
                 .into_iter()
                 .map(|transition| (transition.key(), transition))
@@ -462,6 +465,7 @@ pub struct Store {
     pub aws_account_id: String,
     /// The simulated AWS region.
     pub aws_region: String,
+    checkpoint: crate::checkpoint::CheckpointStore,
     inner: Arc<StoreInner>,
     metrics: Arc<AppMetrics>,
     health: Arc<StoreHealthState>,
@@ -557,6 +561,10 @@ impl Store {
 
         let store = Self {
             options,
+            checkpoint: crate::checkpoint::CheckpointStore::new(
+                aws_account_id.clone(),
+                aws_region.clone(),
+            ),
             aws_account_id,
             aws_region,
             inner,
@@ -602,6 +610,54 @@ impl Store {
         Arc::clone(&self.metrics)
     }
 
+    pub(crate) async fn checkpoint_create_table(
+        &self,
+        input: crate::checkpoint::CreateTableRequest,
+    ) -> Result<crate::checkpoint::TableDescription, crate::checkpoint::DdbError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let _write_guard = if self.persistence.is_some() {
+            if !self.health.durable_ok.load(Ordering::Relaxed) {
+                let detail = self
+                    .health
+                    .last_error
+                    .read()
+                    .ok()
+                    .and_then(|guard| guard.clone())
+                    .unwrap_or_else(|| "durable state is not ready".to_string());
+                return Err(crate::checkpoint::DdbError::internal(detail));
+            }
+            if !self.health.replay_complete.load(Ordering::Relaxed) {
+                return Err(crate::checkpoint::DdbError::internal(
+                    "durable replay is not complete",
+                ));
+            }
+            Some(self.inner.write_lock.lock().await)
+        } else {
+            None
+        };
+
+        let table_name = input.table_name.clone();
+        let table = self.checkpoint.create_table(input)?;
+
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Err(err) = self.persist_current_state_result().await {
+            let _ = self.checkpoint.remove_table(&table_name);
+            return Err(crate::checkpoint::DdbError::internal(err));
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        self.persist_current_state().await;
+
+        Ok(table)
+    }
+
+    pub(crate) fn checkpoint_describe_table(
+        &self,
+        input: crate::checkpoint::DescribeTableRequest,
+    ) -> Result<crate::checkpoint::TableDescription, crate::checkpoint::DdbError> {
+        self.checkpoint.describe_table(input)
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     fn load_persistent_state(&mut self, persistence: &Arc<PersistenceState>) -> Result<(), String> {
         let Some((snapshot, entries)) =
@@ -620,7 +676,7 @@ impl Store {
 
         let created_at_ms = restored_snapshot.created_at_ms;
         let restored_state = RestoredState::from_snapshot(restored_snapshot)?;
-        self.install_restored_state(restored_state);
+        self.install_restored_state(restored_state)?;
         persistence
             .last_snapshot_ms
             .store(created_at_ms, Ordering::Relaxed);
@@ -641,7 +697,7 @@ impl Store {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn install_restored_state(&self, restored_state: RestoredState) {
+    fn install_restored_state(&self, restored_state: RestoredState) -> Result<(), String> {
         self.inner.streams.clear();
         self.inner.stream_records.clear();
         self.inner.consumers.clear();
@@ -686,12 +742,15 @@ impl Store {
         if let Ok(mut settings) = self.inner.account_settings.try_write() {
             *settings = restored_state.account_settings;
         }
+        self.checkpoint
+            .restore_snapshot_json(&restored_state.checkpoint_tables_json)?;
 
         self.metrics.set_retained(
             restored_state.retained_bytes,
             restored_state.retained_records,
         );
         self.refresh_topology_metrics_sync();
+        Ok(())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -839,6 +898,7 @@ impl Store {
                 serde_json::to_vec(&account_settings)
                     .map_err(|err| format!("failed to encode snapshot account settings: {err}"))?
             },
+            checkpoint_tables_json: self.checkpoint.export_snapshot_json()?,
             pending_transitions: self
                 .inner
                 .pending_transitions

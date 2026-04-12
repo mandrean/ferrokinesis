@@ -26,6 +26,8 @@ pub struct PersistentSnapshot {
     pub resource_tags: Vec<(String, BTreeMap<String, String>)>,
     pub account_settings_json: Vec<u8>,
     #[serde(default)]
+    pub checkpoint_tables_json: Vec<u8>,
+    #[serde(default)]
     pub(crate) pending_transitions: Vec<PendingTransition>,
     pub retained_bytes: u64,
     pub retained_records: u64,
@@ -335,6 +337,7 @@ mod tests {
             policies: vec![],
             resource_tags: vec![],
             account_settings_json: vec![],
+            checkpoint_tables_json: vec![],
             pending_transitions: vec![],
             retained_bytes: 0,
             retained_records: 0,
