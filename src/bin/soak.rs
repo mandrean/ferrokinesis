@@ -217,6 +217,14 @@ struct Summary {
     replay_complete_final: Option<u64>,
 }
 
+struct SampleLoopContext {
+    base_url: String,
+    state_dir: PathBuf,
+    pid: Arc<AtomicU32>,
+    samples: Arc<Mutex<Vec<Sample>>>,
+    start: Instant,
+}
+
 struct ServerProcess {
     child: Option<Child>,
 }
@@ -320,25 +328,17 @@ async fn run_soak(cfg: RunConfig) -> Result<(), Box<dyn Error>> {
     let samples = Arc::new(Mutex::new(Vec::<Sample>::new()));
     let (sampler_stop_tx, sampler_stop_rx) = watch::channel(false);
     let sampler_task = {
-        let samples = Arc::clone(&samples);
-        let pid = Arc::clone(&pid_cell);
-        let base_url = cfg.base_url.clone();
-        let state_dir = cfg.state_dir.clone();
+        let context = SampleLoopContext {
+            base_url: cfg.base_url.clone(),
+            state_dir: cfg.state_dir.clone(),
+            pid: Arc::clone(&pid_cell),
+            samples: Arc::clone(&samples),
+            start,
+        };
         let interval = cfg.profile.sample_interval;
         let client = client.clone();
-        let start = start;
         tokio::spawn(async move {
-            sample_loop(
-                client,
-                base_url,
-                state_dir,
-                pid,
-                sampler_stop_rx,
-                samples,
-                interval,
-                start,
-            )
-            .await;
+            sample_loop(client, sampler_stop_rx, interval, context).await;
         })
     };
 
@@ -716,33 +716,31 @@ async fn run_get_records(
 
 async fn sample_loop(
     client: Client,
-    base_url: String,
-    state_dir: PathBuf,
-    pid: Arc<AtomicU32>,
     mut stop: watch::Receiver<bool>,
-    samples: Arc<Mutex<Vec<Sample>>>,
     interval: Duration,
-    start: Instant,
+    context: SampleLoopContext,
 ) {
-    let mut ticker = tokio::time::interval_at(start + interval, interval);
+    let mut ticker = tokio::time::interval_at(context.start + interval, interval);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     loop {
-        let pid_value = pid.load(Ordering::Relaxed);
-        let ready_status = fetch_ready_status(&client, &base_url).await.unwrap_or(0);
-        let metrics_text = fetch_metrics_text(&client, &base_url)
+        let pid_value = context.pid.load(Ordering::Relaxed);
+        let ready_status = fetch_ready_status(&client, &context.base_url)
+            .await
+            .unwrap_or(0);
+        let metrics_text = fetch_metrics_text(&client, &context.base_url)
             .await
             .unwrap_or_default();
         let metrics = parse_metrics(&metrics_text);
 
         let sample = Sample {
-            elapsed_secs: start.elapsed().as_secs_f64(),
+            elapsed_secs: context.start.elapsed().as_secs_f64(),
             ready_status,
             rss_bytes: sample_rss_bytes(pid_value),
             open_fds: sample_open_fds(pid_value),
-            state_dir_bytes: directory_size_bytes(&state_dir),
-            wal_bytes: file_size(state_dir.join("wal.log")),
-            snapshot_bytes: file_size(state_dir.join("snapshot.bin")),
+            state_dir_bytes: directory_size_bytes(&context.state_dir),
+            wal_bytes: file_size(context.state_dir.join("wal.log")),
+            snapshot_bytes: file_size(context.state_dir.join("snapshot.bin")),
             retained_bytes: metrics.retained_bytes,
             retained_records: metrics.retained_records,
             rejected_writes_total: metrics.rejected_writes_total,
@@ -753,7 +751,7 @@ async fn sample_loop(
             open_shards: metrics.open_shards,
         };
 
-        samples.lock().await.push(sample);
+        context.samples.lock().await.push(sample);
         tokio::select! {
             _ = ticker.tick() => {}
             changed = stop.changed() => {
