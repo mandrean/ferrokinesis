@@ -365,6 +365,8 @@ async fn tail_efo_reads_records_and_missing_consumer_is_helpful() {
             "efo-stream",
             "--consumer",
             "reader",
+            "--from",
+            "trim-horizon",
             "--limit",
             "1",
         ])
@@ -373,7 +375,7 @@ async fn tail_efo_reads_records_and_missing_consumer_is_helpful() {
         .spawn()
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(400)).await;
     server.put_record("efo-stream", "ZWZv", "pk-efo").await;
 
     let output = tokio::time::timeout(
@@ -394,6 +396,61 @@ async fn tail_efo_reads_records_and_missing_consumer_is_helpful() {
 }
 
 #[tokio::test]
+async fn tail_efo_resubscribes_after_session_rollover() {
+    let server = TestServer::with_options(StoreOptions {
+        create_stream_ms: 0,
+        delete_stream_ms: 0,
+        update_stream_ms: 0,
+        subscribe_to_shard_session_ms: 250,
+        ..Default::default()
+    })
+    .await;
+    server.create_stream("efo-rollover", 1).await;
+    server.register_consumer("efo-rollover", "reader").await;
+    server
+        .wait_for_consumer_active("efo-rollover", "reader")
+        .await;
+
+    let child = ferro_command(&server)
+        .args([
+            "--json",
+            "tail",
+            "efo-rollover",
+            "--consumer",
+            "reader",
+            "--from",
+            "trim-horizon",
+            "--limit",
+            "1",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(700)).await;
+    server
+        .put_record("efo-rollover", "cm9sbG92ZXI=", "pk-rollover")
+        .await;
+
+    let output = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        child.wait_with_output(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let body = parse_tail_json(&output.stdout);
+    assert_eq!(body.len(), 1);
+    assert_eq!(body[0]["PartitionKey"], "pk-rollover");
+}
+
+#[tokio::test]
 async fn tail_json_rejects_unbounded_follow() {
     let server = TestServer::new().await;
     server.create_stream("tail-json", 1).await;
@@ -408,6 +465,22 @@ async fn tail_json_rejects_unbounded_follow() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("--ndjson"));
     assert!(stderr.contains("--limit") || stderr.contains("--no-follow"));
+}
+
+#[tokio::test]
+async fn tail_limit_zero_is_rejected_by_clap() {
+    let server = TestServer::new().await;
+    let output = ferro_command(&server)
+        .args(["tail", "tail-zero", "--limit", "0"])
+        .output()
+        .await
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--limit"));
+    assert!(stderr.contains("0"));
+    assert!(stderr.contains("non-zero") || stderr.contains("zero"));
 }
 
 #[tokio::test]

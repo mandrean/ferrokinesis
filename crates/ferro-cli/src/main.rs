@@ -13,6 +13,7 @@ use ferrokinesis_core::operation::Operation;
 use futures_util::StreamExt;
 use serde_json::{Value, json};
 use std::io::Cursor;
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::str::FromStr;
@@ -228,7 +229,7 @@ struct TailArgs {
     shard_ids: Vec<String>,
 
     #[arg(long)]
-    limit: Option<usize>,
+    limit: Option<NonZeroUsize>,
 
     #[arg(long, value_parser = parse_duration, default_value = "500ms")]
     poll_interval: Duration,
@@ -352,6 +353,13 @@ struct PollingTailConfig {
 struct EfoTailConfig {
     tail: TailConfig,
     consumer_arn: String,
+}
+
+#[derive(Debug)]
+struct EfoSessionResult {
+    continuation_sequence_number: Option<String>,
+    emitted_records: bool,
+    terminal_end_of_shard: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -692,6 +700,7 @@ async fn run_put(client: &ApiClient, output_mode: OutputMode, args: PutArgs) -> 
 
 async fn run_tail(client: &ApiClient, output_mode: OutputMode, args: TailArgs) -> Result<()> {
     let stream = args.stream.clone();
+    let limit = args.limit.map(NonZeroUsize::get);
     let iterator_spec = IteratorSpec {
         from: args.from,
         sequence_number: args.sequence_number.clone(),
@@ -706,7 +715,7 @@ async fn run_tail(client: &ApiClient, output_mode: OutputMode, args: TailArgs) -
         (false, false) => true,
         (true, true) => unreachable!("clap enforces conflicting tail follow flags"),
     };
-    validate_tail_output_mode(output_mode, follow, args.limit)?;
+    validate_tail_output_mode(output_mode, follow, limit)?;
     let shard_ids = resolve_shard_ids(client, &stream, &args.shard_ids).await?;
     let tail_config = TailConfig {
         output_mode,
@@ -714,7 +723,7 @@ async fn run_tail(client: &ApiClient, output_mode: OutputMode, args: TailArgs) -
         shard_ids,
         iterator_spec,
         follow,
-        limit: args.limit,
+        limit,
         decode: args.decode,
     };
 
@@ -1156,7 +1165,7 @@ async fn tail_efo(client: &ApiClient, config: EfoTailConfig) -> Result<()> {
         let consumer_arn = consumer_arn.clone();
         let iterator_spec = iterator_spec.clone();
         handles.push(tokio::spawn(async move {
-            if let Err(error) = run_efo_shard(
+            if let Err(error) = run_efo_shard_loop(
                 client,
                 stream,
                 shard_id,
@@ -1202,7 +1211,7 @@ async fn tail_efo(client: &ApiClient, config: EfoTailConfig) -> Result<()> {
     finish_tail_output(output_mode, json_records)
 }
 
-async fn run_efo_shard(
+async fn run_efo_shard_loop(
     client: ApiClient,
     stream: String,
     shard_id: String,
@@ -1211,13 +1220,53 @@ async fn run_efo_shard(
     follow: bool,
     tx: mpsc::UnboundedSender<TailEvent>,
 ) -> Result<()> {
+    let mut starting_position = iterator_spec.starting_position();
+    loop {
+        let result = run_efo_shard_session(
+            client.clone(),
+            stream.clone(),
+            shard_id.clone(),
+            consumer_arn.clone(),
+            starting_position.clone(),
+            follow,
+            tx.clone(),
+        )
+        .await?;
+        if !follow || result.terminal_end_of_shard {
+            return Ok(());
+        }
+        starting_position = result
+            .continuation_sequence_number
+            .map(|sequence_number| {
+                json!({
+                    "Type": constants::SHARD_ITERATOR_AT_SEQUENCE_NUMBER,
+                    "SequenceNumber": sequence_number,
+                })
+            })
+            .unwrap_or_else(|| iterator_spec.starting_position());
+
+        // Keep the compiler honest about the single-session contract without
+        // forcing a branch in the reconnect path.
+        let _ = result.emitted_records;
+    }
+}
+
+async fn run_efo_shard_session(
+    client: ApiClient,
+    stream: String,
+    shard_id: String,
+    consumer_arn: String,
+    starting_position: Value,
+    follow: bool,
+    tx: mpsc::UnboundedSender<TailEvent>,
+) -> Result<EfoSessionResult> {
     let response = client
         .call_response(
             Operation::SubscribeToShard,
             &json!({
                 constants::CONSUMER_ARN: consumer_arn,
                 constants::SHARD_ID: shard_id,
-                constants::STARTING_POSITION: iterator_spec.starting_position(),
+                constants::STARTING_POSITION: starting_position,
             }),
             None,
         )
@@ -1225,7 +1274,9 @@ async fn run_efo_shard(
 
     let mut stream_body = response.bytes_stream();
     let mut buffer = BytesMut::new();
-    let mut saw_event = false;
+    let mut continuation_sequence_number = None;
+    let mut emitted_records = false;
+    let mut terminal_end_of_shard = false;
 
     while let Some(chunk) = stream_body.next().await {
         let chunk = chunk?;
@@ -1244,10 +1295,18 @@ async fn run_efo_shard(
                         )));
                     }
 
-                    saw_event = true;
                     let payload = serde_json::from_slice::<Value>(message.payload())?;
+                    continuation_sequence_number = payload["ContinuationSequenceNumber"]
+                        .as_str()
+                        .map(str::to_string)
+                        .or(continuation_sequence_number);
+                    let child_shards = payload["ChildShards"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default();
                     if let Some(records) = payload["Records"].as_array() {
                         for record in records {
+                            emitted_records = true;
                             let event = TailEvent::Record(TailRecord {
                                 stream: stream.clone(),
                                 shard_id: shard_id.clone(),
@@ -1266,9 +1325,14 @@ async fn run_efo_shard(
                             let _ = tx.send(event);
                         }
                     }
+                    terminal_end_of_shard = !child_shards.is_empty();
 
-                    if !follow {
-                        return Ok(());
+                    if !follow && emitted_records {
+                        return Ok(EfoSessionResult {
+                            continuation_sequence_number,
+                            emitted_records,
+                            terminal_end_of_shard,
+                        });
                     }
                 }
                 Some("exception") => {
@@ -1287,11 +1351,11 @@ async fn run_efo_shard(
         }
     }
 
-    if !follow && !saw_event {
-        return Ok(());
-    }
-
-    Ok(())
+    Ok(EfoSessionResult {
+        continuation_sequence_number,
+        emitted_records,
+        terminal_end_of_shard,
+    })
 }
 
 async fn get_shard_iterator(

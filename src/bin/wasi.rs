@@ -227,6 +227,7 @@ impl WasiConfig {
                     "FERROKINESIS_ITERATOR_TTL_SECONDS",
                 )?
                 .unwrap_or(defaults.iterator_ttl_seconds),
+                subscribe_to_shard_session_ms: defaults.subscribe_to_shard_session_ms,
                 retention_check_interval_secs: read_parsed_env(
                     &mut read,
                     "FERROKINESIS_RETENTION_CHECK_INTERVAL_SECS",
