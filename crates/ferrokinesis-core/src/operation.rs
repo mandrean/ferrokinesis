@@ -6,132 +6,180 @@ use alloc::vec::Vec;
 use core::fmt;
 use core::str::FromStr;
 
-/// All valid Kinesis API operations.
-///
-/// Adding a variant here causes the compiler to flag any exhaustiveness gaps
-/// in `dispatch` and `validation_rules` — never use wildcard `_` arms.
-///
-/// Each variant corresponds to the operation name from the `X-Amz-Target` header
-/// (e.g. `Kinesis_20131202.PutRecord`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Operation {
+macro_rules! define_operations {
+    (
+        $(
+            $(#[$meta:meta])*
+            $variant:ident => $name:literal,
+        )+
+    ) => {
+        /// All valid Kinesis API operations.
+        ///
+        /// Adding a variant here causes the compiler to flag any exhaustiveness gaps
+        /// in `dispatch` and `validation_rules` — never use wildcard `_` arms.
+        ///
+        /// Each variant corresponds to the operation name from the `X-Amz-Target` header
+        /// (e.g. `Kinesis_20131202.PutRecord`).
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum Operation {
+            $(
+                $(#[$meta])*
+                $variant,
+            )+
+        }
+
+        impl Operation {
+            /// Number of supported Kinesis operations.
+            pub const COUNT: usize = define_operations!(@count $($variant),+);
+
+            /// Stable list of every supported Kinesis operation.
+            pub const ALL: [Self; Self::COUNT] = [
+                $(Self::$variant,)+
+            ];
+
+            /// Returns the canonical operation name used in `X-Amz-Target`.
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $name,)+
+                }
+            }
+        }
+
+        impl FromStr for Operation {
+            type Err = ();
+
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                match s {
+                    $($name => Ok(Self::$variant),)+
+                    _ => Err(()),
+                }
+            }
+        }
+    };
+    (@count $($variant:ident),+) => {
+        <[()]>::len(&[$(define_operations!(@replace $variant)),+])
+    };
+    (@replace $_variant:ident) => { () };
+}
+
+define_operations! {
     /// Adds or updates tags on a stream.
     #[doc(alias = "Kinesis_20131202.AddTagsToStream")]
-    AddTagsToStream,
+    AddTagsToStream => "AddTagsToStream",
     /// Creates a new Kinesis data stream.
     #[doc(alias = "Kinesis_20131202.CreateStream")]
-    CreateStream,
+    CreateStream => "CreateStream",
     /// Decreases the stream's data retention period.
     #[doc(alias = "Kinesis_20131202.DecreaseStreamRetentionPeriod")]
-    DecreaseStreamRetentionPeriod,
+    DecreaseStreamRetentionPeriod => "DecreaseStreamRetentionPeriod",
     /// Deletes a resource-based policy from a stream or consumer.
     #[doc(alias = "Kinesis_20131202.DeleteResourcePolicy")]
-    DeleteResourcePolicy,
+    DeleteResourcePolicy => "DeleteResourcePolicy",
     /// Deletes a Kinesis data stream and all its shards and data.
     #[doc(alias = "Kinesis_20131202.DeleteStream")]
-    DeleteStream,
+    DeleteStream => "DeleteStream",
     /// Deregisters an enhanced fan-out consumer from a stream.
     #[doc(alias = "Kinesis_20131202.DeregisterStreamConsumer")]
-    DeregisterStreamConsumer,
+    DeregisterStreamConsumer => "DeregisterStreamConsumer",
     /// Returns the limits for the current account and region.
     #[doc(alias = "Kinesis_20131202.DescribeAccountSettings")]
-    DescribeAccountSettings,
+    DescribeAccountSettings => "DescribeAccountSettings",
     /// Describes the shard limits and usage for the account.
     #[doc(alias = "Kinesis_20131202.DescribeLimits")]
-    DescribeLimits,
+    DescribeLimits => "DescribeLimits",
     /// Returns detailed information about a stream, including its shards.
     #[doc(alias = "Kinesis_20131202.DescribeStream")]
-    DescribeStream,
+    DescribeStream => "DescribeStream",
     /// Returns detailed information about a registered consumer.
     #[doc(alias = "Kinesis_20131202.DescribeStreamConsumer")]
-    DescribeStreamConsumer,
+    DescribeStreamConsumer => "DescribeStreamConsumer",
     /// Returns a summary of the stream without shard-level detail.
     #[doc(alias = "Kinesis_20131202.DescribeStreamSummary")]
-    DescribeStreamSummary,
+    DescribeStreamSummary => "DescribeStreamSummary",
     /// Disables enhanced shard-level CloudWatch metrics for a stream.
     #[doc(alias = "Kinesis_20131202.DisableEnhancedMonitoring")]
-    DisableEnhancedMonitoring,
+    DisableEnhancedMonitoring => "DisableEnhancedMonitoring",
     /// Enables enhanced shard-level CloudWatch metrics for a stream.
     #[doc(alias = "Kinesis_20131202.EnableEnhancedMonitoring")]
-    EnableEnhancedMonitoring,
+    EnableEnhancedMonitoring => "EnableEnhancedMonitoring",
     /// Gets data records from a shard using a shard iterator.
     #[doc(alias = "Kinesis_20131202.GetRecords")]
-    GetRecords,
+    GetRecords => "GetRecords",
     /// Returns the resource-based policy for a stream or consumer.
     #[doc(alias = "Kinesis_20131202.GetResourcePolicy")]
-    GetResourcePolicy,
+    GetResourcePolicy => "GetResourcePolicy",
     /// Returns a shard iterator for reading records from a shard.
     #[doc(alias = "Kinesis_20131202.GetShardIterator")]
-    GetShardIterator,
+    GetShardIterator => "GetShardIterator",
     /// Increases the stream's data retention period.
     #[doc(alias = "Kinesis_20131202.IncreaseStreamRetentionPeriod")]
-    IncreaseStreamRetentionPeriod,
+    IncreaseStreamRetentionPeriod => "IncreaseStreamRetentionPeriod",
     /// Lists the shards in a stream and provides information about each.
     #[doc(alias = "Kinesis_20131202.ListShards")]
-    ListShards,
+    ListShards => "ListShards",
     /// Lists the consumers registered to a stream.
     #[doc(alias = "Kinesis_20131202.ListStreamConsumers")]
-    ListStreamConsumers,
+    ListStreamConsumers => "ListStreamConsumers",
     /// Lists the Kinesis data streams in the current account and region.
     #[doc(alias = "Kinesis_20131202.ListStreams")]
-    ListStreams,
+    ListStreams => "ListStreams",
     /// Lists the tags for a Kinesis resource (stream or consumer).
     #[doc(alias = "Kinesis_20131202.ListTagsForResource")]
-    ListTagsForResource,
+    ListTagsForResource => "ListTagsForResource",
     /// Lists the tags for a stream (legacy operation; prefer `ListTagsForResource`).
     #[doc(alias = "Kinesis_20131202.ListTagsForStream")]
-    ListTagsForStream,
+    ListTagsForStream => "ListTagsForStream",
     /// Merges two adjacent shards in a stream into a single shard.
     #[doc(alias = "Kinesis_20131202.MergeShards")]
-    MergeShards,
+    MergeShards => "MergeShards",
     /// Writes a single data record into a stream.
     #[doc(alias = "Kinesis_20131202.PutRecord")]
-    PutRecord,
+    PutRecord => "PutRecord",
     /// Writes multiple data records into a stream in a single call.
     #[doc(alias = "Kinesis_20131202.PutRecords")]
-    PutRecords,
+    PutRecords => "PutRecords",
     /// Attaches a resource-based policy to a stream or consumer.
     #[doc(alias = "Kinesis_20131202.PutResourcePolicy")]
-    PutResourcePolicy,
+    PutResourcePolicy => "PutResourcePolicy",
     /// Registers an enhanced fan-out consumer with a stream.
     #[doc(alias = "Kinesis_20131202.RegisterStreamConsumer")]
-    RegisterStreamConsumer,
+    RegisterStreamConsumer => "RegisterStreamConsumer",
     /// Removes tags from a stream.
     #[doc(alias = "Kinesis_20131202.RemoveTagsFromStream")]
-    RemoveTagsFromStream,
+    RemoveTagsFromStream => "RemoveTagsFromStream",
     /// Splits a shard into two new shards.
     #[doc(alias = "Kinesis_20131202.SplitShard")]
-    SplitShard,
+    SplitShard => "SplitShard",
     /// Enables server-side encryption using KMS for a stream.
     #[doc(alias = "Kinesis_20131202.StartStreamEncryption")]
-    StartStreamEncryption,
+    StartStreamEncryption => "StartStreamEncryption",
     /// Disables server-side encryption for a stream.
     #[doc(alias = "Kinesis_20131202.StopStreamEncryption")]
-    StopStreamEncryption,
+    StopStreamEncryption => "StopStreamEncryption",
     /// Subscribes to receive data records from a shard via HTTP/2 event stream.
     #[doc(alias = "Kinesis_20131202.SubscribeToShard")]
-    SubscribeToShard,
+    SubscribeToShard => "SubscribeToShard",
     /// Adds or updates tags on a Kinesis resource.
     #[doc(alias = "Kinesis_20131202.TagResource")]
-    TagResource,
+    TagResource => "TagResource",
     /// Removes tags from a Kinesis resource.
     #[doc(alias = "Kinesis_20131202.UntagResource")]
-    UntagResource,
+    UntagResource => "UntagResource",
     /// Updates account-level settings.
     #[doc(alias = "Kinesis_20131202.UpdateAccountSettings")]
-    UpdateAccountSettings,
+    UpdateAccountSettings => "UpdateAccountSettings",
     /// Updates the maximum record size for a stream.
     #[doc(alias = "Kinesis_20131202.UpdateMaxRecordSize")]
-    UpdateMaxRecordSize,
+    UpdateMaxRecordSize => "UpdateMaxRecordSize",
     /// Updates the shard count of a stream.
     #[doc(alias = "Kinesis_20131202.UpdateShardCount")]
-    UpdateShardCount,
+    UpdateShardCount => "UpdateShardCount",
     /// Switches a stream between `PROVISIONED` and `ON_DEMAND` capacity modes.
     #[doc(alias = "Kinesis_20131202.UpdateStreamMode")]
-    UpdateStreamMode,
+    UpdateStreamMode => "UpdateStreamMode",
     /// Updates the warm throughput configuration of a stream.
     #[doc(alias = "Kinesis_20131202.UpdateStreamWarmThroughput")]
-    UpdateStreamWarmThroughput,
+    UpdateStreamWarmThroughput => "UpdateStreamWarmThroughput",
 }
 
 impl fmt::Display for Operation {
@@ -140,101 +188,7 @@ impl fmt::Display for Operation {
     }
 }
 
-impl FromStr for Operation {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "AddTagsToStream" => Ok(Self::AddTagsToStream),
-            "CreateStream" => Ok(Self::CreateStream),
-            "DecreaseStreamRetentionPeriod" => Ok(Self::DecreaseStreamRetentionPeriod),
-            "DeleteResourcePolicy" => Ok(Self::DeleteResourcePolicy),
-            "DeleteStream" => Ok(Self::DeleteStream),
-            "DeregisterStreamConsumer" => Ok(Self::DeregisterStreamConsumer),
-            "DescribeAccountSettings" => Ok(Self::DescribeAccountSettings),
-            "DescribeLimits" => Ok(Self::DescribeLimits),
-            "DescribeStream" => Ok(Self::DescribeStream),
-            "DescribeStreamConsumer" => Ok(Self::DescribeStreamConsumer),
-            "DescribeStreamSummary" => Ok(Self::DescribeStreamSummary),
-            "DisableEnhancedMonitoring" => Ok(Self::DisableEnhancedMonitoring),
-            "EnableEnhancedMonitoring" => Ok(Self::EnableEnhancedMonitoring),
-            "GetRecords" => Ok(Self::GetRecords),
-            "GetResourcePolicy" => Ok(Self::GetResourcePolicy),
-            "GetShardIterator" => Ok(Self::GetShardIterator),
-            "IncreaseStreamRetentionPeriod" => Ok(Self::IncreaseStreamRetentionPeriod),
-            "ListShards" => Ok(Self::ListShards),
-            "ListStreamConsumers" => Ok(Self::ListStreamConsumers),
-            "ListStreams" => Ok(Self::ListStreams),
-            "ListTagsForResource" => Ok(Self::ListTagsForResource),
-            "ListTagsForStream" => Ok(Self::ListTagsForStream),
-            "MergeShards" => Ok(Self::MergeShards),
-            "PutRecord" => Ok(Self::PutRecord),
-            "PutRecords" => Ok(Self::PutRecords),
-            "PutResourcePolicy" => Ok(Self::PutResourcePolicy),
-            "RegisterStreamConsumer" => Ok(Self::RegisterStreamConsumer),
-            "RemoveTagsFromStream" => Ok(Self::RemoveTagsFromStream),
-            "SplitShard" => Ok(Self::SplitShard),
-            "StartStreamEncryption" => Ok(Self::StartStreamEncryption),
-            "StopStreamEncryption" => Ok(Self::StopStreamEncryption),
-            "SubscribeToShard" => Ok(Self::SubscribeToShard),
-            "TagResource" => Ok(Self::TagResource),
-            "UntagResource" => Ok(Self::UntagResource),
-            "UpdateAccountSettings" => Ok(Self::UpdateAccountSettings),
-            "UpdateMaxRecordSize" => Ok(Self::UpdateMaxRecordSize),
-            "UpdateShardCount" => Ok(Self::UpdateShardCount),
-            "UpdateStreamMode" => Ok(Self::UpdateStreamMode),
-            "UpdateStreamWarmThroughput" => Ok(Self::UpdateStreamWarmThroughput),
-            _ => Err(()),
-        }
-    }
-}
-
 impl Operation {
-    /// Returns the canonical operation name used in `X-Amz-Target`.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Operation::AddTagsToStream => "AddTagsToStream",
-            Operation::CreateStream => "CreateStream",
-            Operation::DecreaseStreamRetentionPeriod => "DecreaseStreamRetentionPeriod",
-            Operation::DeleteResourcePolicy => "DeleteResourcePolicy",
-            Operation::DeleteStream => "DeleteStream",
-            Operation::DeregisterStreamConsumer => "DeregisterStreamConsumer",
-            Operation::DescribeAccountSettings => "DescribeAccountSettings",
-            Operation::DescribeLimits => "DescribeLimits",
-            Operation::DescribeStream => "DescribeStream",
-            Operation::DescribeStreamConsumer => "DescribeStreamConsumer",
-            Operation::DescribeStreamSummary => "DescribeStreamSummary",
-            Operation::DisableEnhancedMonitoring => "DisableEnhancedMonitoring",
-            Operation::EnableEnhancedMonitoring => "EnableEnhancedMonitoring",
-            Operation::GetRecords => "GetRecords",
-            Operation::GetResourcePolicy => "GetResourcePolicy",
-            Operation::GetShardIterator => "GetShardIterator",
-            Operation::IncreaseStreamRetentionPeriod => "IncreaseStreamRetentionPeriod",
-            Operation::ListShards => "ListShards",
-            Operation::ListStreamConsumers => "ListStreamConsumers",
-            Operation::ListStreams => "ListStreams",
-            Operation::ListTagsForResource => "ListTagsForResource",
-            Operation::ListTagsForStream => "ListTagsForStream",
-            Operation::MergeShards => "MergeShards",
-            Operation::PutRecord => "PutRecord",
-            Operation::PutRecords => "PutRecords",
-            Operation::PutResourcePolicy => "PutResourcePolicy",
-            Operation::RegisterStreamConsumer => "RegisterStreamConsumer",
-            Operation::RemoveTagsFromStream => "RemoveTagsFromStream",
-            Operation::SplitShard => "SplitShard",
-            Operation::StartStreamEncryption => "StartStreamEncryption",
-            Operation::StopStreamEncryption => "StopStreamEncryption",
-            Operation::SubscribeToShard => "SubscribeToShard",
-            Operation::TagResource => "TagResource",
-            Operation::UntagResource => "UntagResource",
-            Operation::UpdateAccountSettings => "UpdateAccountSettings",
-            Operation::UpdateMaxRecordSize => "UpdateMaxRecordSize",
-            Operation::UpdateShardCount => "UpdateShardCount",
-            Operation::UpdateStreamMode => "UpdateStreamMode",
-            Operation::UpdateStreamWarmThroughput => "UpdateStreamWarmThroughput",
-        }
-    }
-
     /// Returns the validation rules for this operation.
     pub fn validation_rules(&self) -> Vec<(&'static str, FieldDef)> {
         use validation::rules;
@@ -279,5 +233,39 @@ impl Operation {
             Operation::UpdateStreamMode => rules::update_stream_mode(),
             Operation::UpdateStreamWarmThroughput => rules::update_stream_warm_throughput(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Operation;
+    use alloc::vec::Vec;
+    use core::str::FromStr;
+
+    #[test]
+    fn all_operations_round_trip_through_canonical_name() {
+        let mut seen = Vec::new();
+
+        assert_eq!(Operation::ALL.len(), Operation::COUNT);
+
+        for operation in Operation::ALL {
+            let name = operation.as_str();
+
+            assert_eq!(Operation::from_str(name), Ok(operation));
+            assert!(
+                !seen.contains(&name),
+                "duplicate operation name in catalog: {name}"
+            );
+
+            seen.push(name);
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_operation_names() {
+        assert_eq!(
+            Operation::from_str("DefinitelyNotAKinesisOperation"),
+            Err(())
+        );
     }
 }
