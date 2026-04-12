@@ -130,6 +130,19 @@ async fn create_stream(port: u16) {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
+async fn missing_auth_token(port: u16) {
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://127.0.0.1:{port}/"))
+        .header("Content-Type", "application/x-amz-json-1.1")
+        .header("X-Amz-Target", "Kinesis_20131202.CreateStream")
+        .json(&json!({"StreamName": "obs-test", "ShardCount": 1}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
 async fn terminate_server(child: Child) -> std::process::Output {
     let pid = child.id().expect("child pid");
     let status = std::process::Command::new("kill")
@@ -155,6 +168,19 @@ fn parse_json_log_lines(output: &std::process::Output) -> Vec<Value> {
         .lines()
         .filter(|line| !line.trim().is_empty())
         .map(|line| serde_json::from_str::<Value>(line).expect("valid json log line"))
+        .collect()
+}
+
+fn request_completion_logs(output: &std::process::Output) -> Vec<Value> {
+    parse_json_log_lines(output)
+        .into_iter()
+        .filter(|line| {
+            line.get("fields")
+                .and_then(Value::as_object)
+                .is_some_and(|fields| {
+                    fields.get("message") == Some(&Value::String("request completed".into()))
+                })
+        })
         .collect()
 }
 
@@ -207,6 +233,7 @@ async fn json_request_logs_include_operation_and_request_id() {
         &port.to_string(),
         "--log-format",
         "json",
+        "--access-log",
         "--log-level",
         "info",
     ]);
@@ -221,7 +248,7 @@ async fn json_request_logs_include_operation_and_request_id() {
         combined_output(&output)
     );
 
-    let logs = parse_json_log_lines(&output);
+    let logs = request_completion_logs(&output);
     let request_log = logs
         .iter()
         .find(|line| {
@@ -240,6 +267,84 @@ async fn json_request_logs_include_operation_and_request_id() {
     assert!(
         request_log.is_some(),
         "expected JSON logs to include operation and request_id, got {}",
+        combined_output(&output)
+    );
+    assert!(
+        !combined_output(&output).contains("finished processing request"),
+        "expected custom completion log to replace tower_http access logs, got {}",
+        combined_output(&output)
+    );
+}
+
+#[tokio::test]
+async fn json_request_logs_are_disabled_without_access_log() {
+    let port = allocate_port();
+    let child = spawn_server(&[
+        "--port",
+        &port.to_string(),
+        "--log-format",
+        "json",
+        "--log-level",
+        "info",
+    ]);
+
+    wait_for_ready(port).await;
+    create_stream(port).await;
+
+    let output = terminate_server(child).await;
+    assert!(
+        output.status.success(),
+        "server shutdown failed: {}",
+        combined_output(&output)
+    );
+
+    assert!(
+        request_completion_logs(&output).is_empty(),
+        "did not expect request completion logs without --access-log, got {}",
+        combined_output(&output)
+    );
+}
+
+#[tokio::test]
+async fn json_request_logs_include_early_auth_failures() {
+    let port = allocate_port();
+    let child = spawn_server(&[
+        "--port",
+        &port.to_string(),
+        "--log-format",
+        "json",
+        "--access-log",
+        "--log-level",
+        "info",
+    ]);
+
+    wait_for_ready(port).await;
+    missing_auth_token(port).await;
+
+    let output = terminate_server(child).await;
+    assert!(
+        output.status.success(),
+        "server shutdown failed: {}",
+        combined_output(&output)
+    );
+
+    let request_log = request_completion_logs(&output).into_iter().find(|line| {
+        line.get("fields")
+            .and_then(Value::as_object)
+            .is_some_and(|fields| {
+                fields.get("error_type")
+                    == Some(&Value::String("MissingAuthenticationTokenException".into()))
+                    && fields.get("status_code") == Some(&Value::Number(400.into()))
+                    && fields.get("operation") == Some(&Value::String("CreateStream".into()))
+                    && fields
+                        .get("request_id")
+                        .and_then(Value::as_str)
+                        .is_some_and(|request_id| !request_id.is_empty())
+            })
+    });
+    assert!(
+        request_log.is_some(),
+        "expected early auth failure to emit a request completion log, got {}",
         combined_output(&output)
     );
 }

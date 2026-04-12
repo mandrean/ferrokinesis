@@ -148,7 +148,7 @@ struct ServeArgs {
     #[arg(long, env = "FERROKINESIS_OTEL_SERVICE_NAME")]
     otel_service_name: Option<String>,
 
-    /// Enable per-request access logging (controls tower-http traces independently of RUST_LOG)
+    /// Enable structured per-request completion logs
     #[cfg(feature = "access-log")]
     #[arg(long, env = "FERROKINESIS_ACCESS_LOG",
           default_missing_value = "true", num_args = 0..=1)]
@@ -267,7 +267,6 @@ impl OtlpProtocol {
 fn init_tracing_subscriber(
     log_level: &str,
     log_format: LogFormat,
-    #[cfg(feature = "access-log")] access_log: bool,
     otlp_endpoint: Option<&str>,
     otlp_protocol: OtlpProtocol,
     otel_sample_ratio: f64,
@@ -280,11 +279,7 @@ fn init_tracing_subscriber(
     };
     #[cfg(feature = "access-log")]
     {
-        if access_log {
-            env_filter = env_filter.add_directive("tower_http::trace=info".parse().unwrap());
-        } else {
-            env_filter = env_filter.add_directive("tower_http::trace=off".parse().unwrap());
-        }
+        env_filter = env_filter.add_directive("tower_http::trace=off".parse().unwrap());
     }
 
     let mut bootstrap = TracingBootstrap::default();
@@ -1020,8 +1015,6 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
     let tracing_bootstrap = match init_tracing_subscriber(
         &log_level,
         log_format,
-        #[cfg(feature = "access-log")]
-        access_log,
         otlp_endpoint.as_deref(),
         otlp_protocol,
         otel_sample_ratio,
@@ -1062,6 +1055,12 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
 
     let (app, _store) = ferrokinesis::create_app_with_capture(options, capture_writer);
     let app = app.layer(DefaultBodyLimit::max(max_bytes));
+    #[cfg(feature = "access-log")]
+    let app = if access_log {
+        app.layer(axum::Extension(ferrokinesis::server::RequestLogging))
+    } else {
+        app
+    };
     #[cfg(feature = "mirror")]
     let app = {
         let mirror_cfg = file_cfg.mirror.unwrap_or_default();

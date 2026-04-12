@@ -71,7 +71,7 @@
 # CLI: --otel-service-name | Env: FERROKINESIS_OTEL_SERVICE_NAME
 # otel_service_name = "ferrokinesis"
 
-# Enable per-request access logging (default: false, requires "access-log" feature)
+# Enable structured per-request completion logs (default: false, requires "access-log" feature)
 # CLI: --access-log | Env: FERROKINESIS_ACCESS_LOG
 # access_log = false
 

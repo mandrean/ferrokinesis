@@ -94,7 +94,7 @@ pub struct FileConfig {
     pub otel_sample_ratio: Option<f64>,
     /// Optional OpenTelemetry `service.name` resource value. Defaults to `"ferrokinesis"`.
     pub otel_service_name: Option<String>,
-    /// Enable per-request access logging. Defaults to `false`.
+    /// Enable structured per-request completion logs. Defaults to `false`.
     #[cfg(feature = "access-log")]
     pub access_log: Option<bool>,
     /// Path to write captured PutRecord/PutRecords data (NDJSON).
