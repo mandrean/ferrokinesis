@@ -76,7 +76,8 @@ async fn get_records_serializes_whole_second_timestamps_as_integers_and_omits_en
                 approximate_arrival_timestamp: timestamp_secs,
             },
         )
-        .await;
+        .await
+        .unwrap();
 
     let iter = server
         .get_shard_iterator(name, "shardId-000000000000", "TRIM_HORIZON")
