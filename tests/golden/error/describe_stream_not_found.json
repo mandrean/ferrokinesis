@@ -1,0 +1,18 @@
+{
+  "operation": "DescribeStream",
+  "scenario": "stream_not_found",
+  "http_status": 400,
+  "required_headers": [
+    "x-amzn-RequestId",
+    "x-amz-id-2",
+    "Content-Type"
+  ],
+  "body": {
+    "__type": "ResourceNotFoundException",
+    "message": "Stream nonexistent under account 000000000000 not found."
+  },
+  "expected_headers": {
+    "Content-Type": "application/x-amz-json-1.1",
+    "x-amzn-ErrorType": "ResourceNotFoundException"
+  }
+}

@@ -4,6 +4,7 @@ use aes::cipher::{BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use common::*;
 use ferrokinesis::shard_iterator::create_shard_iterator;
+use ferrokinesis::types::StoredRecordRef;
 use ferrokinesis::util::current_time_ms;
 use serde_json::{Value, json};
 
@@ -54,6 +55,44 @@ async fn get_records_after_put() {
         assert!(ts > 1_000_000_000.0);
         assert!(ts < 10_000_000_000.0);
     }
+}
+
+#[tokio::test]
+async fn get_records_serializes_whole_second_timestamps_as_integers_and_omits_encryption_type() {
+    let server = TestServer::new().await;
+    let name = "test-get-whole-second-timestamp";
+    server.create_stream(name, 1).await;
+
+    let alloc = server.store.allocate_sequence(name, &0).await.unwrap();
+    let timestamp_secs = (current_time_ms() / 1000) as f64;
+    server
+        .store
+        .put_record(
+            name,
+            &alloc.stream_key,
+            &StoredRecordRef {
+                partition_key: "key1",
+                data: "AAAA",
+                approximate_arrival_timestamp: timestamp_secs,
+            },
+        )
+        .await
+        .unwrap();
+
+    let iter = server
+        .get_shard_iterator(name, "shardId-000000000000", "TRIM_HORIZON")
+        .await;
+    let result = server.get_records(&iter).await;
+    let record = &result["Records"][0];
+
+    assert_eq!(
+        record["ApproximateArrivalTimestamp"].as_i64(),
+        Some(timestamp_secs as i64)
+    );
+    assert!(
+        record.get("EncryptionType").is_none(),
+        "GetRecords should not synthesize per-record encryption metadata from stream state"
+    );
 }
 
 #[tokio::test]

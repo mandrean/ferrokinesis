@@ -36,6 +36,24 @@ async fn list_streams_with_streams() {
 }
 
 #[tokio::test]
+async fn list_streams_names_and_summaries_stay_aligned() {
+    let server = TestServer::new().await;
+    server.create_stream("aligned-a", 1).await;
+    server.create_stream("aligned-b", 1).await;
+
+    let res = server.request("ListStreams", &json!({})).await;
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    let names = body["StreamNames"].as_array().unwrap();
+    let summaries = body["StreamSummaries"].as_array().unwrap();
+
+    assert_eq!(names.len(), summaries.len());
+    for (name, summary) in names.iter().zip(summaries.iter()) {
+        assert_eq!(summary["StreamName"], *name);
+    }
+}
+
+#[tokio::test]
 async fn list_streams_with_limit() {
     let server = TestServer::new().await;
     server.create_stream("list-a", 1).await;
