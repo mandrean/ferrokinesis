@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/mandrean/ferrokinesis/compare/v0.6.0...v0.7.0) - 2026-04-12
+
+### Added
+
+- add ferro companion CLI ([#153](https://github.com/mandrean/ferrokinesis/pull/153)) ([#226](https://github.com/mandrean/ferrokinesis/pull/226))
+- *(observability)* bootstrap JSON logs and optional OTLP trace export ([#212](https://github.com/mandrean/ferrokinesis/pull/212))
+- add durable single-node state mode ([#203](https://github.com/mandrean/ferrokinesis/pull/203))
+- add PutRecords partial failure responses ([#200](https://github.com/mandrean/ferrokinesis/pull/200))
+- add optional shard write throttling ([#199](https://github.com/mandrean/ferrokinesis/pull/199))
+- add h2c support for plain listeners ([#197](https://github.com/mandrean/ferrokinesis/pull/197))
+
+### Other
+
+- parallelize check workflow ([#225](https://github.com/mandrean/ferrokinesis/pull/225))
+- clarify mirror credential feature flags ([#214](https://github.com/mandrean/ferrokinesis/pull/214))
+- update rand for security audit ([#202](https://github.com/mandrean/ferrokinesis/pull/202))
+- run workflows for stacked pull requests ([#205](https://github.com/mandrean/ferrokinesis/pull/205))
+
 ## [0.6.0](https://github.com/mandrean/ferrokinesis/compare/v0.5.0...v0.6.0) - 2026-03-24
 
 ### Added
