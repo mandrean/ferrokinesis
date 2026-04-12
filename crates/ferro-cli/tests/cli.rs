@@ -451,6 +451,107 @@ async fn tail_efo_resubscribes_after_session_rollover() {
 }
 
 #[tokio::test]
+async fn tail_efo_no_follow_returns_prompt_empty_snapshot() {
+    let server = TestServer::with_options(StoreOptions {
+        create_stream_ms: 0,
+        delete_stream_ms: 0,
+        update_stream_ms: 0,
+        subscribe_to_shard_session_ms: 5_000,
+        ..Default::default()
+    })
+    .await;
+    server.create_stream("efo-empty", 1).await;
+    server.register_consumer("efo-empty", "reader").await;
+    server.wait_for_consumer_active("efo-empty", "reader").await;
+
+    let child = ferro_command(&server)
+        .args([
+            "--json",
+            "tail",
+            "efo-empty",
+            "--consumer",
+            "reader",
+            "--from",
+            "trim-horizon",
+            "--no-follow",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let output = tokio::time::timeout(
+        tokio::time::Duration::from_secs(1),
+        child.wait_with_output(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let body = parse_tail_json(&output.stdout);
+    assert!(body.is_empty());
+}
+
+#[tokio::test]
+async fn tail_efo_no_follow_drains_backlog_across_multiple_event_frames() {
+    let server = TestServer::with_options(StoreOptions {
+        create_stream_ms: 0,
+        delete_stream_ms: 0,
+        update_stream_ms: 0,
+        subscribe_to_shard_event_record_limit: 1,
+        subscribe_to_shard_session_ms: 5_000,
+        ..Default::default()
+    })
+    .await;
+    server.create_stream("efo-backlog", 1).await;
+    server.register_consumer("efo-backlog", "reader").await;
+    server
+        .wait_for_consumer_active("efo-backlog", "reader")
+        .await;
+    server.put_record("efo-backlog", "b25l", "pk-1").await;
+    server.put_record("efo-backlog", "dHdv", "pk-2").await;
+    server.put_record("efo-backlog", "dGhyZWU=", "pk-3").await;
+
+    let child = ferro_command(&server)
+        .args([
+            "--json",
+            "tail",
+            "efo-backlog",
+            "--consumer",
+            "reader",
+            "--from",
+            "trim-horizon",
+            "--no-follow",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let output = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        child.wait_with_output(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let body = parse_tail_json(&output.stdout);
+    assert_eq!(body.len(), 3);
+    assert_eq!(body[0]["PartitionKey"], "pk-1");
+    assert_eq!(body[1]["PartitionKey"], "pk-2");
+    assert_eq!(body[2]["PartitionKey"], "pk-3");
+}
+
+#[tokio::test]
 async fn tail_json_rejects_unbounded_follow() {
     let server = TestServer::new().await;
     server.create_stream("tail-json", 1).await;

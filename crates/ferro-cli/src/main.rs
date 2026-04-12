@@ -358,7 +358,6 @@ struct EfoTailConfig {
 #[derive(Debug)]
 struct EfoSessionResult {
     continuation_sequence_number: Option<String>,
-    emitted_records: bool,
     terminal_end_of_shard: bool,
 }
 
@@ -1244,10 +1243,6 @@ async fn run_efo_shard_loop(
                 })
             })
             .unwrap_or_else(|| iterator_spec.starting_position());
-
-        // Keep the compiler honest about the single-session contract without
-        // forcing a branch in the reconnect path.
-        let _ = result.emitted_records;
     }
 }
 
@@ -1275,7 +1270,6 @@ async fn run_efo_shard_session(
     let mut stream_body = response.bytes_stream();
     let mut buffer = BytesMut::new();
     let mut continuation_sequence_number = None;
-    let mut emitted_records = false;
     let mut terminal_end_of_shard = false;
 
     while let Some(chunk) = stream_body.next().await {
@@ -1304,9 +1298,10 @@ async fn run_efo_shard_session(
                         .as_array()
                         .cloned()
                         .unwrap_or_default();
-                    if let Some(records) = payload["Records"].as_array() {
+                    let records = payload["Records"].as_array();
+                    let saw_records = records.is_some_and(|records| !records.is_empty());
+                    if let Some(records) = records {
                         for record in records {
-                            emitted_records = true;
                             let event = TailEvent::Record(TailRecord {
                                 stream: stream.clone(),
                                 shard_id: shard_id.clone(),
@@ -1327,10 +1322,9 @@ async fn run_efo_shard_session(
                     }
                     terminal_end_of_shard = !child_shards.is_empty();
 
-                    if !follow && emitted_records {
+                    if !follow && !saw_records {
                         return Ok(EfoSessionResult {
                             continuation_sequence_number,
-                            emitted_records,
                             terminal_end_of_shard,
                         });
                     }
@@ -1353,7 +1347,6 @@ async fn run_efo_shard_session(
 
     Ok(EfoSessionResult {
         continuation_sequence_number,
-        emitted_records,
         terminal_end_of_shard,
     })
 }

@@ -469,6 +469,7 @@ fn resolve_store_options(
             file_cfg.iterator_ttl_seconds,
             || defaults.iterator_ttl_seconds,
         ),
+        subscribe_to_shard_event_record_limit: defaults.subscribe_to_shard_event_record_limit,
         subscribe_to_shard_session_ms: defaults.subscribe_to_shard_session_ms,
         retention_check_interval_secs: resolve(
             args.retention_check_interval_secs,
