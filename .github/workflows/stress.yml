@@ -44,3 +44,33 @@ jobs:
         # --test-threads=1: run tests sequentially for isolation (each test starts its own server)
         run: cargo test -- --ignored --nocapture --test-threads=1
         timeout-minutes: 25
+
+  memory-soak:
+    name: Memory Soak (report-only)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 95
+    env:
+      RUST_BACKTRACE: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust-toolchain
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: check
+          save-if: false
+      - name: Run memory soak harness
+        run: |
+          scripts/ci/memory-harness.sh \
+            --repo-root "$PWD" \
+            --profile soak \
+            --duration-secs 3600 \
+            --sample-interval-secs 5 \
+            --output-dir artifacts/memory-soak
+      - name: Upload memory soak artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: memory-soak-results
+          path: artifacts/memory-soak/
+          retention-days: 30
