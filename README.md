@@ -32,6 +32,7 @@ npm --prefix demo run dev
 - Health check endpoints (`/_health`, `/_health/ready`, `/_health/live`) for Docker/K8s
 - TOML configuration file support (`--config`)
 - Configurable AWS account ID, region, shard iterator TTL, and request body size limit
+- Structured JSON logging (`--log-format json`) and optional OTLP trace export
 - Retention period enforcement with configurable TTL-based record trimming
 - Graceful shutdown
 - TLS support with built-in certificate generation
@@ -204,6 +205,28 @@ The built-in `health-check` subcommand can be used for Docker `HEALTHCHECK`:
 ```dockerfile
 HEALTHCHECK CMD ["ferrokinesis", "health-check"]
 ```
+
+## Observability
+
+Use JSON logs for machine-readable output:
+
+```sh
+ferrokinesis --log-format json
+```
+
+Enable OTLP trace export (traces only in this iteration; `/metrics` remains the canonical metrics endpoint):
+
+```sh
+ferrokinesis \
+  --log-format json \
+  --otlp-endpoint http://localhost:4317 \
+  --otlp-protocol grpc \
+  --otel-service-name ferrokinesis \
+  --otel-sample-ratio 1.0
+```
+
+If `--otlp-endpoint` is omitted, no OTLP exporter is started.
+When `--otlp-protocol http` is used with a base collector URL such as `http://localhost:4318`, ferrokinesis appends the standard `/v1/traces` path automatically.
 
 ## API & Test Coverage
 

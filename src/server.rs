@@ -18,7 +18,7 @@ use crate::mirror::Mirror;
 use crate::store::Store;
 use crate::validation;
 use axum::body::Bytes;
-#[cfg(feature = "mirror")]
+#[cfg(any(feature = "access-log", feature = "mirror"))]
 use axum::extract::Extension;
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
@@ -35,6 +35,16 @@ use tracing::Instrument;
 type MirrorExt = Option<Extension<Arc<Mirror>>>;
 #[cfg(not(feature = "mirror"))]
 type MirrorExt = ();
+#[cfg(feature = "access-log")]
+type RequestLoggingExt = Option<Extension<RequestLogging>>;
+#[cfg(not(feature = "access-log"))]
+type RequestLoggingExt = ();
+
+/// Marker extension layered by the binary to enable structured request completion logs.
+#[cfg(feature = "access-log")]
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug)]
+pub struct RequestLogging;
 
 /// Axum fallback handler implementing the Kinesis wire protocol.
 ///
@@ -57,526 +67,587 @@ pub async fn handler(
     uri: Uri,
     headers: HeaderMap,
     State(store): State<Store>,
+    request_logging: RequestLoggingExt,
     mirror: MirrorExt,
     body: Bytes,
 ) -> Response {
     let request_id = uuid::Uuid::new_v4().to_string();
     let request_started_ms = crate::util::current_time_ms();
+    let span = tracing::info_span!(
+        "kinesis",
+        request_id = %request_id,
+        operation = tracing::field::Empty,
+        status_code = tracing::field::Empty,
+        error_type = tracing::field::Empty,
+    );
+    let request_span = span.clone();
 
-    let mut response_headers = HeaderMap::new();
-    response_headers.insert("x-amzn-RequestId", request_id.parse().unwrap());
-
-    let has_origin = headers.get("origin").is_some();
-
-    if method != Method::OPTIONS || !has_origin {
-        let id2 = base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            rand::random::<[u8; 72]>(),
-        );
-        response_headers.insert("x-amz-id-2", id2.parse().unwrap());
-    }
-
-    // CORS handling
-    if has_origin {
-        response_headers.insert("Access-Control-Allow-Origin", "*".parse().unwrap());
-
-        if method == Method::OPTIONS {
-            if let Some(req_headers) = headers.get("access-control-request-headers") {
-                response_headers.insert("Access-Control-Allow-Headers", req_headers.clone());
-            }
-            if let Some(req_method) = headers.get("access-control-request-method") {
-                response_headers.insert("Access-Control-Allow-Methods", req_method.clone());
-            }
-            response_headers.insert("Access-Control-Max-Age", "172800".parse().unwrap());
-            response_headers.insert("Content-Length", "0".parse().unwrap());
-            return finalize_response(
+    async move {
+        let mut response_headers = HeaderMap::new();
+        response_headers.insert("x-amzn-RequestId", request_id.parse().unwrap());
+        let complete = |operation: Option<Operation>,
+                        pre_operation_failure: Option<PreOperationFailureReason>,
+                        response: Response,
+                        error_type: Option<&str>| {
+            complete_response(
                 &store,
-                None,
-                None,
-                request_started_ms,
-                (StatusCode::OK, response_headers, "").into_response(),
+                RequestCompletion {
+                    span: &request_span,
+                    request_id: &request_id,
+                    request_logging: &request_logging,
+                    operation,
+                    pre_operation_failure,
+                    request_started_ms,
+                    error_type,
+                },
+                response,
+            )
+        };
+
+        let has_origin = headers.get("origin").is_some();
+
+        if method != Method::OPTIONS || !has_origin {
+            let id2 = base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                rand::random::<[u8; 72]>(),
+            );
+            response_headers.insert("x-amz-id-2", id2.parse().unwrap());
+        }
+
+        // CORS handling
+        if has_origin {
+            response_headers.insert("Access-Control-Allow-Origin", "*".parse().unwrap());
+
+            if method == Method::OPTIONS {
+                if let Some(req_headers) = headers.get("access-control-request-headers") {
+                    response_headers.insert("Access-Control-Allow-Headers", req_headers.clone());
+                }
+                if let Some(req_method) = headers.get("access-control-request-method") {
+                    response_headers.insert("Access-Control-Allow-Methods", req_method.clone());
+                }
+                response_headers.insert("Access-Control-Max-Age", "172800".parse().unwrap());
+                response_headers.insert("Content-Length", "0".parse().unwrap());
+                return complete(
+                    None,
+                    None,
+                    (StatusCode::OK, response_headers, "").into_response(),
+                    None,
+                );
+            }
+
+            response_headers.insert(
+                "Access-Control-Expose-Headers",
+                "x-amzn-RequestId,x-amzn-ErrorType,x-amz-request-id,x-amz-id-2,x-amzn-ErrorMessage,Date".parse().unwrap(),
             );
         }
 
-        response_headers.insert(
-            "Access-Control-Expose-Headers",
-            "x-amzn-RequestId,x-amzn-ErrorType,x-amz-request-id,x-amz-id-2,x-amzn-ErrorMessage,Date".parse().unwrap(),
-        );
-    }
-
-    // Non-POST methods
-    if method != Method::POST {
-        let mut h = response_headers.clone();
-        h.insert(
-            "x-amzn-ErrorType",
-            constants::ACCESS_DENIED.parse().unwrap(),
-        );
-        return finalize_response(
-            &store,
-            None,
-            Some(PreOperationFailureReason::AccessDenied),
-            request_started_ms,
-            send_xml_error(
-                h,
-                constants::ACCESS_DENIED,
-                "Unable to determine service/operation name to be authorized",
-                403,
-            ),
-        );
-    }
-
-    // Parse content type
-    let content_type = headers
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .split(';')
-        .next()
-        .unwrap_or("")
-        .trim();
-
-    let content_valid = matches!(
-        content_type,
-        "application/x-amz-json-1.1" | "application/x-amz-cbor-1.1" | "application/json"
-    );
-
-    // Parse target
-    let target = headers
-        .get("x-amz-target")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-
-    let parts: Vec<&str> = target.splitn(2, '.').collect();
-    let service = parts.first().copied().unwrap_or("");
-    let operation_str = if parts.len() > 1 { parts[1] } else { "" };
-
-    let service_valid = service == constants::KINESIS_API;
-    let operation = operation_str.parse::<Operation>().ok();
-    let operation_valid = operation.is_some();
-
-    let response_content_type = if content_type == constants::CONTENT_TYPE_JSON {
-        constants::CONTENT_TYPE_JSON
-    } else {
-        constants::CONTENT_TYPE_CBOR
-    };
-
-    // Check body
-    if body.is_empty() {
-        let error_type = if service_valid && operation_valid {
-            constants::SERIALIZATION_EXCEPTION
-        } else {
-            constants::UNKNOWN_OPERATION
-        };
-        let err = KinesisErrorResponse::client_error(error_type, None);
-        return finalize_response(
-            &store,
-            operation,
-            operation
-                .is_none()
-                .then_some(PreOperationFailureReason::UnknownOperation),
-            request_started_ms,
-            send_kinesis_error(&response_headers, response_content_type, &err),
-        );
-    }
-
-    if !content_valid {
-        if service.is_empty() || operation_str.is_empty() {
+        // Non-POST methods
+        if method != Method::POST {
             let mut h = response_headers.clone();
             h.insert(
                 "x-amzn-ErrorType",
                 constants::ACCESS_DENIED.parse().unwrap(),
             );
-            return finalize_response(
-                &store,
-                operation,
-                operation
-                    .is_none()
-                    .then_some(PreOperationFailureReason::AccessDenied),
-                request_started_ms,
+            return complete(
+                None,
+                Some(PreOperationFailureReason::AccessDenied),
                 send_xml_error(
                     h,
                     constants::ACCESS_DENIED,
                     "Unable to determine service/operation name to be authorized",
                     403,
                 ),
+                Some(constants::ACCESS_DENIED),
             );
         }
-        let mut h = response_headers.clone();
-        h.insert(
-            "x-amzn-ErrorType",
-            constants::UNKNOWN_OPERATION.parse().unwrap(),
-        );
-        return finalize_response(
-            &store,
-            operation,
-            operation
-                .is_none()
-                .then_some(PreOperationFailureReason::UnknownOperation),
-            request_started_ms,
-            send_xml_error_code(h, constants::UNKNOWN_OPERATION, 404),
-        );
-    }
 
-    // Parse body
-    let data: Option<Value> = if content_type == constants::CONTENT_TYPE_CBOR {
-        // Parse via ciborium::Value to handle CBOR byte strings (major type 2),
-        // which SDK v2 clients send for Blob fields like Data.
-        ciborium::from_reader::<ciborium::Value, _>(&body[..])
-            .ok()
-            .map(|v| cbor_to_json(&v))
-    } else {
-        serde_json::from_slice(&body).ok()
-    };
+        // Parse content type
+        let content_type = headers
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim();
 
-    let data = match data {
-        Some(Value::Object(map)) => Value::Object(map),
-        Some(_) | None => {
-            if content_type == "application/json" {
-                return finalize_response(
-                    &store,
+        let content_valid = matches!(
+            content_type,
+            "application/x-amz-json-1.1" | "application/x-amz-cbor-1.1" | "application/json"
+        );
+
+        // Parse target
+        let target = headers
+            .get("x-amz-target")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+
+        let parts: Vec<&str> = target.splitn(2, '.').collect();
+        let service = parts.first().copied().unwrap_or("");
+        let operation_str = if parts.len() > 1 { parts[1] } else { "" };
+
+        let service_valid = service == constants::KINESIS_API;
+        let operation = operation_str.parse::<Operation>().ok();
+        let operation_valid = operation.is_some();
+        record_operation(&request_span, operation);
+
+        let response_content_type = if content_type == constants::CONTENT_TYPE_JSON {
+            constants::CONTENT_TYPE_JSON
+        } else {
+            constants::CONTENT_TYPE_CBOR
+        };
+
+        // Check body
+        if body.is_empty() {
+            let error_type = if service_valid && operation_valid {
+                constants::SERIALIZATION_EXCEPTION
+            } else {
+                constants::UNKNOWN_OPERATION
+            };
+            let err = KinesisErrorResponse::client_error(error_type, None);
+            return complete(
+                operation,
+                operation
+                    .is_none()
+                    .then_some(PreOperationFailureReason::UnknownOperation),
+                send_kinesis_error(&response_headers, response_content_type, &err),
+                Some(error_type),
+            );
+        }
+
+        if !content_valid {
+            if service.is_empty() || operation_str.is_empty() {
+                let mut h = response_headers.clone();
+                h.insert(
+                    "x-amzn-ErrorType",
+                    constants::ACCESS_DENIED.parse().unwrap(),
+                );
+                return complete(
+                    operation,
+                    operation
+                        .is_none()
+                        .then_some(PreOperationFailureReason::AccessDenied),
+                    send_xml_error(
+                        h,
+                        constants::ACCESS_DENIED,
+                        "Unable to determine service/operation name to be authorized",
+                        403,
+                    ),
+                    Some(constants::ACCESS_DENIED),
+                );
+            }
+            let mut h = response_headers.clone();
+            h.insert(
+                "x-amzn-ErrorType",
+                constants::UNKNOWN_OPERATION.parse().unwrap(),
+            );
+            return complete(
+                operation,
+                operation
+                    .is_none()
+                    .then_some(PreOperationFailureReason::UnknownOperation),
+                send_xml_error_code(h, constants::UNKNOWN_OPERATION, 404),
+                Some(constants::UNKNOWN_OPERATION),
+            );
+        }
+
+        // Parse body
+        let data: Option<Value> = if content_type == constants::CONTENT_TYPE_CBOR {
+            // Parse via ciborium::Value to handle CBOR byte strings (major type 2),
+            // which SDK v2 clients send for Blob fields like Data.
+            ciborium::from_reader::<ciborium::Value, _>(&body[..])
+                .ok()
+                .map(|v| cbor_to_json(&v))
+        } else {
+            serde_json::from_slice(&body).ok()
+        };
+
+        let data = match data {
+            Some(Value::Object(map)) => Value::Object(map),
+            Some(_) | None => {
+                if content_type == "application/json" {
+                    return complete(
+                        operation,
+                        operation
+                            .is_none()
+                            .then_some(PreOperationFailureReason::SerializationException),
+                        send_json_response(
+                            response_headers.clone(),
+                            "application/json",
+                            &json!({
+                                "Output": {"__type": "com.amazon.coral.service#SerializationException"},
+                                "Version": "1.0",
+                            }),
+                            400,
+                        ),
+                        Some(constants::SERIALIZATION_EXCEPTION),
+                    );
+                }
+                let err =
+                    KinesisErrorResponse::client_error(constants::SERIALIZATION_EXCEPTION, None);
+                return complete(
                     operation,
                     operation
                         .is_none()
                         .then_some(PreOperationFailureReason::SerializationException),
-                    request_started_ms,
-                    send_json_response(
-                        response_headers.clone(),
-                        "application/json",
-                        &json!({
-                            "Output": {"__type": "com.amazon.coral.service#SerializationException"},
-                            "Version": "1.0",
-                        }),
-                        400,
-                    ),
+                    send_kinesis_error(&response_headers, response_content_type, &err),
+                    Some(constants::SERIALIZATION_EXCEPTION),
                 );
             }
-            let err = KinesisErrorResponse::client_error(constants::SERIALIZATION_EXCEPTION, None);
-            return finalize_response(
-                &store,
+        };
+
+        // After this point, application/json doesn't progress further
+        if content_type == "application/json" {
+            return complete(
                 operation,
                 operation
                     .is_none()
-                    .then_some(PreOperationFailureReason::SerializationException),
-                request_started_ms,
+                    .then_some(PreOperationFailureReason::UnknownOperation),
+                send_json_response(
+                    response_headers.clone(),
+                    "application/json",
+                    &json!({
+                        "Output": {"__type": "com.amazon.coral.service#UnknownOperationException"},
+                        "Version": "1.0",
+                    }),
+                    404,
+                ),
+                Some(constants::UNKNOWN_OPERATION),
+            );
+        }
+
+        let Some(operation) = operation else {
+            let err = KinesisErrorResponse::client_error(constants::UNKNOWN_OPERATION, None);
+            return complete(
+                None,
+                Some(PreOperationFailureReason::UnknownOperation),
                 send_kinesis_error(&response_headers, response_content_type, &err),
+                Some(constants::UNKNOWN_OPERATION),
             );
-        }
-    };
+        };
+        record_operation(&request_span, Some(operation));
 
-    // After this point, application/json doesn't progress further
-    if content_type == "application/json" {
-        return finalize_response(
-            &store,
-            operation,
-            operation
-                .is_none()
-                .then_some(PreOperationFailureReason::UnknownOperation),
-            request_started_ms,
-            send_json_response(
-                response_headers.clone(),
-                "application/json",
-                &json!({
-                    "Output": {"__type": "com.amazon.coral.service#UnknownOperationException"},
-                    "Version": "1.0",
-                }),
-                404,
-            ),
-        );
-    }
-
-    let Some(operation) = operation else {
-        let err = KinesisErrorResponse::client_error(constants::UNKNOWN_OPERATION, None);
-        return finalize_response(
-            &store,
-            None,
-            Some(PreOperationFailureReason::UnknownOperation),
-            request_started_ms,
-            send_kinesis_error(&response_headers, response_content_type, &err),
-        );
-    };
-
-    if let Err(err) = store.check_available() {
-        return finalize_response(
-            &store,
-            Some(operation),
-            None,
-            request_started_ms,
-            send_kinesis_error(&response_headers, response_content_type, &err),
-        );
-    }
-
-    if !service_valid {
-        let err = KinesisErrorResponse::client_error(constants::UNKNOWN_OPERATION, None);
-        return finalize_response(
-            &store,
-            Some(operation),
-            None,
-            request_started_ms,
-            send_kinesis_error(&response_headers, response_content_type, &err),
-        );
-    }
-
-    // Auth checking
-    let auth_header = headers.get("authorization").and_then(|v| v.to_str().ok());
-    let query_string = uri.query().unwrap_or("");
-    let auth_query = query_string.contains("X-Amz-Algorithm");
-
-    if auth_header.is_some() && auth_query {
-        return finalize_response(
-            &store,
-            Some(operation),
-            Some(PreOperationFailureReason::InvalidSignature),
-            request_started_ms,
-            send_error_response(
-                &response_headers,
-                content_valid,
-                response_content_type,
-                constants::INVALID_SIGNATURE,
-                "Found both 'X-Amz-Algorithm' as a query-string param and 'Authorization' as HTTP header.",
-                400,
-            ),
-        );
-    }
-
-    if auth_header.is_none() && !auth_query {
-        return finalize_response(
-            &store,
-            Some(operation),
-            Some(PreOperationFailureReason::MissingAuthToken),
-            request_started_ms,
-            send_error_response(
-                &response_headers,
-                content_valid,
-                response_content_type,
-                constants::MISSING_AUTH_TOKEN,
-                "Missing Authentication Token",
-                400,
-            ),
-        );
-    }
-
-    if let Some(auth) = auth_header {
-        let mut msg = String::new();
-        let auth_params: std::collections::HashMap<String, String> = auth
-            .split([',', ' '])
-            .skip(1)
-            .filter(|s| !s.is_empty())
-            .filter_map(|s| {
-                let kv: Vec<&str> = s.trim().splitn(2, '=').collect();
-                if kv.len() == 2 {
-                    Some((kv[0].to_string(), kv[1].to_string()))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        for param in ["Credential", "Signature", "SignedHeaders"] {
-            if !auth_params.contains_key(param) {
-                msg += &format!("Authorization header requires '{param}' parameter. ");
-            }
-        }
-        if !headers.contains_key("x-amz-date") && !headers.contains_key("date") {
-            msg += "Authorization header requires existence of either a 'X-Amz-Date' or a 'Date' header. ";
-        }
-        if !msg.is_empty() {
-            msg += &format!("Authorization={auth}");
-            return finalize_response(
-                &store,
-                Some(operation),
-                Some(PreOperationFailureReason::IncompleteSignature),
-                request_started_ms,
-                send_error_response(
-                    &response_headers,
-                    content_valid,
-                    response_content_type,
-                    constants::INCOMPLETE_SIGNATURE,
-                    &msg,
-                    403,
-                ),
-            );
-        }
-    } else {
-        // Query auth
-        let query_params: std::collections::HashMap<String, String> = uri
-            .query()
-            .unwrap_or("")
-            .split('&')
-            .filter_map(|s| {
-                let kv: Vec<&str> = s.splitn(2, '=').collect();
-                if kv.len() == 2 {
-                    Some((kv[0].to_string(), kv[1].to_string()))
-                } else if !kv[0].is_empty() {
-                    Some((kv[0].to_string(), String::new()))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        let mut msg = String::new();
-        for param in [
-            "X-Amz-Algorithm",
-            "X-Amz-Credential",
-            "X-Amz-Signature",
-            "X-Amz-SignedHeaders",
-            "X-Amz-Date",
-        ] {
-            if !query_params.contains_key(param) || query_params[param].is_empty() {
-                msg += &format!("AWS query-string parameters must include '{param}'. ");
-            }
-        }
-        if !msg.is_empty() {
-            msg += "Re-examine the query-string parameters.";
-            return finalize_response(
-                &store,
-                Some(operation),
-                Some(PreOperationFailureReason::IncompleteSignature),
-                request_started_ms,
-                send_error_response(
-                    &response_headers,
-                    content_valid,
-                    response_content_type,
-                    constants::INCOMPLETE_SIGNATURE,
-                    &msg,
-                    403,
-                ),
-            );
-        }
-    }
-
-    // Validate request data
-    let validation_rules = operation.validation_rules();
-    let field_refs: Vec<(&str, &validation::FieldDef)> =
-        validation_rules.iter().map(|(k, v)| (*k, v)).collect();
-
-    let data = match validation::check_types(&data, &field_refs) {
-        Ok(d) => d,
-        Err(err) => {
-            return finalize_response(
-                &store,
+        if let Err(err) = store.check_available() {
+            let error_type = err.body.error_type.clone();
+            return complete(
                 Some(operation),
                 None,
-                request_started_ms,
                 send_kinesis_error(&response_headers, response_content_type, &err),
+                Some(error_type.as_str()),
             );
         }
-    };
 
-    if let Err(err) = validation::check_validations(&data, &field_refs, None) {
-        return finalize_response(
-            &store,
-            Some(operation),
-            None,
-            request_started_ms,
-            send_kinesis_error(&response_headers, response_content_type, &err),
-        );
-    }
+        if !service_valid {
+            let err = KinesisErrorResponse::client_error(constants::UNKNOWN_OPERATION, None);
+            return complete(
+                Some(operation),
+                None,
+                send_kinesis_error(&response_headers, response_content_type, &err),
+                Some(constants::UNKNOWN_OPERATION),
+            );
+        }
 
-    let span = tracing::info_span!("kinesis", %operation, %request_id);
+        // Auth checking
+        let auth_header = headers.get("authorization").and_then(|v| v.to_str().ok());
+        let query_string = uri.query().unwrap_or("");
+        let auth_query = query_string.contains("X-Amz-Algorithm");
 
-    // Handle SubscribeToShard separately (streaming response)
-    if operation == Operation::SubscribeToShard {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let response = match store.check_available() {
-                Ok(()) => match actions::subscribe_to_shard::execute_streaming(
-                    &store,
-                    data,
+        if auth_header.is_some() && auth_query {
+            return complete(
+                Some(operation),
+                Some(PreOperationFailureReason::InvalidSignature),
+                send_error_response(
+                    &response_headers,
+                    content_valid,
                     response_content_type,
-                )
-                .instrument(span.clone())
-                .await
-                {
-                    Ok(body) => {
-                        tracing::debug!(parent: &span, "ok");
-                        response_headers.insert(
-                            "Content-Type",
-                            "application/vnd.amazon.eventstream".parse().unwrap(),
-                        );
-                        (StatusCode::OK, response_headers, body).into_response()
-                    }
-                    Err(ref err) => {
-                        log_and_send_error(&span, &response_headers, response_content_type, err)
-                    }
-                },
-                Err(err) => {
-                    log_and_send_error(&span, &response_headers, response_content_type, &err)
-                }
-            };
-            return finalize_response(&store, Some(operation), None, request_started_ms, response);
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        {
-            let err = KinesisErrorResponse::client_error(
-                constants::INVALID_ARGUMENT,
-                Some("SubscribeToShard is not supported in this build."),
+                    constants::INVALID_SIGNATURE,
+                    "Found both 'X-Amz-Algorithm' as a query-string param and 'Authorization' as HTTP header.",
+                    400,
+                ),
+                Some(constants::INVALID_SIGNATURE),
             );
-            let response =
-                log_and_send_error(&span, &response_headers, response_content_type, &err);
-            return finalize_response(&store, Some(operation), None, request_started_ms, response);
         }
-    }
 
-    // Execute action
-    let dispatch_result = actions::dispatch(&store, operation, data)
-        .instrument(span.clone())
-        .await;
+        if auth_header.is_none() && !auth_query {
+            return complete(
+                Some(operation),
+                Some(PreOperationFailureReason::MissingAuthToken),
+                send_error_response(
+                    &response_headers,
+                    content_valid,
+                    response_content_type,
+                    constants::MISSING_AUTH_TOKEN,
+                    "Missing Authentication Token",
+                    400,
+                ),
+                Some(constants::MISSING_AUTH_TOKEN),
+            );
+        }
 
-    // Build response first (borrows result), then move result into the mirror
-    let (response, mirrorable_result) = match dispatch_result {
-        Ok(opt_result) => {
-            tracing::debug!(parent: &span, "ok");
-            let response = match &opt_result {
-                Some(result) => {
-                    send_value_response(response_headers, response_content_type, result, 200)
+        if let Some(auth) = auth_header {
+            let mut msg = String::new();
+            let auth_params: std::collections::HashMap<String, String> = auth
+                .split([',', ' '])
+                .skip(1)
+                .filter(|s| !s.is_empty())
+                .filter_map(|s| {
+                    let kv: Vec<&str> = s.trim().splitn(2, '=').collect();
+                    if kv.len() == 2 {
+                        Some((kv[0].to_string(), kv[1].to_string()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            for param in ["Credential", "Signature", "SignedHeaders"] {
+                if !auth_params.contains_key(param) {
+                    msg += &format!("Authorization header requires '{param}' parameter. ");
                 }
-                None => {
-                    response_headers.insert("Content-Type", response_content_type.parse().unwrap());
-                    response_headers.insert("Content-Length", "0".parse().unwrap());
-                    (StatusCode::OK, response_headers, "").into_response()
-                }
-            };
-            (response, Ok(opt_result))
-        }
-        Err(err) => {
-            let response =
-                log_and_send_error(&span, &response_headers, response_content_type, &err);
-            (response, Err(err))
-        }
-    };
-
-    // Mirror write operations (fire-and-forget) — result moved, not cloned
-    #[cfg(feature = "mirror")]
-    if let Some(Extension(ref mirror)) = mirror
-        && Mirror::should_mirror(&operation)
-    {
-        match mirrorable_result {
-            Ok(result) => {
-                mirror.spawn_forward(target.to_string(), content_type.to_string(), body, result);
             }
-            Err(e) => {
-                tracing::debug!(
-                    parent: &span,
-                    error_type = %e.body.error_type,
-                    "skipping mirror: local dispatch failed"
+            if !headers.contains_key("x-amz-date") && !headers.contains_key("date") {
+                msg += "Authorization header requires existence of either a 'X-Amz-Date' or a 'Date' header. ";
+            }
+            if !msg.is_empty() {
+                msg += &format!("Authorization={auth}");
+                return complete(
+                    Some(operation),
+                    Some(PreOperationFailureReason::IncompleteSignature),
+                    send_error_response(
+                        &response_headers,
+                        content_valid,
+                        response_content_type,
+                        constants::INCOMPLETE_SIGNATURE,
+                        &msg,
+                        403,
+                    ),
+                    Some(constants::INCOMPLETE_SIGNATURE),
+                );
+            }
+        } else {
+            // Query auth
+            let query_params: std::collections::HashMap<String, String> = uri
+                .query()
+                .unwrap_or("")
+                .split('&')
+                .filter_map(|s| {
+                    let kv: Vec<&str> = s.splitn(2, '=').collect();
+                    if kv.len() == 2 {
+                        Some((kv[0].to_string(), kv[1].to_string()))
+                    } else if !kv[0].is_empty() {
+                        Some((kv[0].to_string(), String::new()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            let mut msg = String::new();
+            for param in [
+                "X-Amz-Algorithm",
+                "X-Amz-Credential",
+                "X-Amz-Signature",
+                "X-Amz-SignedHeaders",
+                "X-Amz-Date",
+            ] {
+                if !query_params.contains_key(param) || query_params[param].is_empty() {
+                    msg += &format!("AWS query-string parameters must include '{param}'. ");
+                }
+            }
+            if !msg.is_empty() {
+                msg += "Re-examine the query-string parameters.";
+                return complete(
+                    Some(operation),
+                    Some(PreOperationFailureReason::IncompleteSignature),
+                    send_error_response(
+                        &response_headers,
+                        content_valid,
+                        response_content_type,
+                        constants::INCOMPLETE_SIGNATURE,
+                        &msg,
+                        403,
+                    ),
+                    Some(constants::INCOMPLETE_SIGNATURE),
                 );
             }
         }
-    }
-    #[cfg(not(feature = "mirror"))]
-    {
-        let _ = (mirror, mirrorable_result);
-    }
 
-    finalize_response(&store, Some(operation), None, request_started_ms, response)
+        // Validate request data
+        let validation_rules = operation.validation_rules();
+        let field_refs: Vec<(&str, &validation::FieldDef)> =
+            validation_rules.iter().map(|(k, v)| (*k, v)).collect();
+
+        let data = match validation::check_types(&data, &field_refs) {
+            Ok(d) => d,
+            Err(err) => {
+                let error_type = err.body.error_type.clone();
+                return complete(
+                    Some(operation),
+                    None,
+                    send_kinesis_error(&response_headers, response_content_type, &err),
+                    Some(error_type.as_str()),
+                );
+            }
+        };
+
+        if let Err(err) = validation::check_validations(&data, &field_refs, None) {
+            let error_type = err.body.error_type.clone();
+            return complete(
+                Some(operation),
+                None,
+                send_kinesis_error(&response_headers, response_content_type, &err),
+                Some(error_type.as_str()),
+            );
+        }
+
+        // Handle SubscribeToShard separately (streaming response)
+        if operation == Operation::SubscribeToShard {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let response = match store.check_available() {
+                    Ok(()) => match actions::subscribe_to_shard::execute_streaming(
+                        &store,
+                        data,
+                        response_content_type,
+                    )
+                    .instrument(request_span.clone())
+                    .await
+                    {
+                        Ok(body) => {
+                            tracing::debug!(parent: &request_span, "ok");
+                            response_headers.insert(
+                                "Content-Type",
+                                "application/vnd.amazon.eventstream".parse().unwrap(),
+                            );
+                            (StatusCode::OK, response_headers, body).into_response()
+                        }
+                        Err(ref err) => {
+                            log_and_send_error(
+                                &request_span,
+                                &response_headers,
+                                response_content_type,
+                                err,
+                            )
+                        }
+                    },
+                    Err(err) => {
+                        log_and_send_error(
+                            &request_span,
+                            &response_headers,
+                            response_content_type,
+                            &err,
+                        )
+                    }
+                };
+                let error_type = response
+                    .headers()
+                    .get("x-amzn-ErrorType")
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_owned);
+                return complete(
+                    Some(operation),
+                    None,
+                    response,
+                    error_type.as_deref(),
+                );
+            }
+
+            #[cfg(target_arch = "wasm32")]
+            {
+                let err = KinesisErrorResponse::client_error(
+                    constants::INVALID_ARGUMENT,
+                    Some("SubscribeToShard is not supported in this build."),
+                );
+                let response =
+                    log_and_send_error(&request_span, &response_headers, response_content_type, &err);
+                let error_type = err.body.error_type.clone();
+                return complete(
+                    Some(operation),
+                    None,
+                    response,
+                    Some(error_type.as_str()),
+                );
+            }
+        }
+
+        // Execute action
+        let dispatch_result = actions::dispatch(&store, operation, data)
+            .instrument(request_span.clone())
+            .await;
+
+        // Build response first (borrows result), then move result into the mirror
+        let (response, error_type, mirrorable_result) = match dispatch_result {
+            Ok(opt_result) => {
+                tracing::debug!(parent: &request_span, "ok");
+                let response = match &opt_result {
+                    Some(result) => {
+                        send_value_response(response_headers, response_content_type, result, 200)
+                    }
+                    None => {
+                        response_headers
+                            .insert("Content-Type", response_content_type.parse().unwrap());
+                        response_headers.insert("Content-Length", "0".parse().unwrap());
+                        (StatusCode::OK, response_headers, "").into_response()
+                    }
+                };
+                (response, None, Ok(opt_result))
+            }
+            Err(err) => {
+                let response =
+                    log_and_send_error(&request_span, &response_headers, response_content_type, &err);
+                let error_type = err.body.error_type.clone();
+                (response, Some(error_type), Err(err))
+            }
+        };
+
+        // Mirror write operations (fire-and-forget) — result moved, not cloned
+        #[cfg(feature = "mirror")]
+        if let Some(Extension(ref mirror)) = mirror
+            && Mirror::should_mirror(&operation)
+        {
+            match mirrorable_result {
+                Ok(result) => {
+                    mirror.spawn_forward(target.to_string(), content_type.to_string(), body, result);
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        parent: &request_span,
+                        error_type = %e.body.error_type,
+                        "skipping mirror: local dispatch failed"
+                    );
+                }
+            }
+        }
+        #[cfg(not(feature = "mirror"))]
+        {
+            let _ = (mirror, mirrorable_result);
+        }
+
+        complete(
+            Some(operation),
+            None,
+            response,
+            error_type.as_deref(),
+        )
+    }
+    .instrument(span)
+    .await
 }
 
 fn elapsed_request_micros(request_started_ms: u64) -> u64 {
     crate::util::current_time_ms()
         .saturating_sub(request_started_ms)
         .saturating_mul(1000)
+}
+
+struct RequestCompletion<'a> {
+    span: &'a tracing::Span,
+    request_id: &'a str,
+    request_logging: &'a RequestLoggingExt,
+    operation: Option<Operation>,
+    pre_operation_failure: Option<PreOperationFailureReason>,
+    request_started_ms: u64,
+    error_type: Option<&'a str>,
 }
 
 fn finalize_response(
@@ -600,6 +671,58 @@ fn finalize_response(
     response
 }
 
+fn complete_response(
+    store: &Store,
+    completion: RequestCompletion<'_>,
+    response: Response,
+) -> Response {
+    let response = finalize_response(
+        store,
+        completion.operation,
+        completion.pre_operation_failure,
+        completion.request_started_ms,
+        response,
+    );
+    let latency_us = elapsed_request_micros(completion.request_started_ms);
+    completion
+        .span
+        .record("status_code", response.status().as_u16());
+    if let Some(error_type) = completion.error_type {
+        completion
+            .span
+            .record("error_type", tracing::field::display(error_type));
+    }
+    if request_logging_enabled(completion.request_logging) {
+        log_request_completion(
+            completion.span,
+            completion.operation,
+            completion.request_id,
+            response.status(),
+            latency_us,
+            completion.error_type,
+        );
+    }
+    response
+}
+
+fn record_operation(span: &tracing::Span, operation: Option<Operation>) {
+    if let Some(operation) = operation {
+        span.record("operation", tracing::field::display(operation));
+    }
+}
+
+fn request_logging_enabled(request_logging: &RequestLoggingExt) -> bool {
+    #[cfg(feature = "access-log")]
+    {
+        request_logging.is_some()
+    }
+    #[cfg(not(feature = "access-log"))]
+    {
+        let _ = request_logging;
+        false
+    }
+}
+
 fn send_kinesis_error(
     extra_headers: &HeaderMap,
     content_type: &str,
@@ -614,6 +737,55 @@ fn send_kinesis_error(
             .expect("error_type must be valid ASCII"),
     );
     send_json_response(headers, content_type, &err.body, err.status_code)
+}
+
+fn log_request_completion(
+    span: &tracing::Span,
+    operation: Option<Operation>,
+    request_id: &str,
+    status: StatusCode,
+    latency_us: u64,
+    error_type: Option<&str>,
+) {
+    if let Some(error_type) = error_type
+        && let Some(operation) = operation
+    {
+        tracing::info!(
+            parent: span,
+            %operation,
+            request_id,
+            status_code = status.as_u16(),
+            latency_us,
+            error_type,
+            "request completed"
+        );
+    } else if let Some(operation) = operation {
+        tracing::info!(
+            parent: span,
+            %operation,
+            request_id,
+            status_code = status.as_u16(),
+            latency_us,
+            "request completed"
+        );
+    } else if let Some(error_type) = error_type {
+        tracing::info!(
+            parent: span,
+            request_id,
+            status_code = status.as_u16(),
+            latency_us,
+            error_type,
+            "request completed"
+        );
+    } else {
+        tracing::info!(
+            parent: span,
+            request_id,
+            status_code = status.as_u16(),
+            latency_us,
+            "request completed"
+        );
+    }
 }
 
 fn log_and_send_error(
