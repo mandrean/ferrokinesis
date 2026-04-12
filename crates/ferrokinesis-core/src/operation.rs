@@ -190,6 +190,51 @@ impl FromStr for Operation {
 }
 
 impl Operation {
+    /// Returns the canonical operation name used in `X-Amz-Target`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Operation::AddTagsToStream => "AddTagsToStream",
+            Operation::CreateStream => "CreateStream",
+            Operation::DecreaseStreamRetentionPeriod => "DecreaseStreamRetentionPeriod",
+            Operation::DeleteResourcePolicy => "DeleteResourcePolicy",
+            Operation::DeleteStream => "DeleteStream",
+            Operation::DeregisterStreamConsumer => "DeregisterStreamConsumer",
+            Operation::DescribeAccountSettings => "DescribeAccountSettings",
+            Operation::DescribeLimits => "DescribeLimits",
+            Operation::DescribeStream => "DescribeStream",
+            Operation::DescribeStreamConsumer => "DescribeStreamConsumer",
+            Operation::DescribeStreamSummary => "DescribeStreamSummary",
+            Operation::DisableEnhancedMonitoring => "DisableEnhancedMonitoring",
+            Operation::EnableEnhancedMonitoring => "EnableEnhancedMonitoring",
+            Operation::GetRecords => "GetRecords",
+            Operation::GetResourcePolicy => "GetResourcePolicy",
+            Operation::GetShardIterator => "GetShardIterator",
+            Operation::IncreaseStreamRetentionPeriod => "IncreaseStreamRetentionPeriod",
+            Operation::ListShards => "ListShards",
+            Operation::ListStreamConsumers => "ListStreamConsumers",
+            Operation::ListStreams => "ListStreams",
+            Operation::ListTagsForResource => "ListTagsForResource",
+            Operation::ListTagsForStream => "ListTagsForStream",
+            Operation::MergeShards => "MergeShards",
+            Operation::PutRecord => "PutRecord",
+            Operation::PutRecords => "PutRecords",
+            Operation::PutResourcePolicy => "PutResourcePolicy",
+            Operation::RegisterStreamConsumer => "RegisterStreamConsumer",
+            Operation::RemoveTagsFromStream => "RemoveTagsFromStream",
+            Operation::SplitShard => "SplitShard",
+            Operation::StartStreamEncryption => "StartStreamEncryption",
+            Operation::StopStreamEncryption => "StopStreamEncryption",
+            Operation::SubscribeToShard => "SubscribeToShard",
+            Operation::TagResource => "TagResource",
+            Operation::UntagResource => "UntagResource",
+            Operation::UpdateAccountSettings => "UpdateAccountSettings",
+            Operation::UpdateMaxRecordSize => "UpdateMaxRecordSize",
+            Operation::UpdateShardCount => "UpdateShardCount",
+            Operation::UpdateStreamMode => "UpdateStreamMode",
+            Operation::UpdateStreamWarmThroughput => "UpdateStreamWarmThroughput",
+        }
+    }
+
     /// Returns the validation rules for this operation.
     pub fn validation_rules(&self) -> Vec<(&'static str, FieldDef)> {
         use validation::rules;

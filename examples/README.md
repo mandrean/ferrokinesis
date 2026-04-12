@@ -2,6 +2,8 @@
 
 Runnable examples showing how to use ferrokinesis with various AWS SDKs.
 
+If you want a lighter local workflow, the release assets also ship the `ferro` companion CLI for creating streams, putting records, tailing traffic, and replaying captures against the same local server.
+
 ## Prerequisites
 
 1. A running ferrokinesis instance:

@@ -23,9 +23,9 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
       - name: Lint
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Test
-        run: cargo test
+        run: cargo test --workspace
 
   build:
     name: Build (${{ matrix.name }})
@@ -70,17 +70,24 @@ jobs:
         run: pip3 install cargo-zigbuild ziglang
       - name: Build (zigbuild)
         if: runner.os == 'Linux'
-        run: cargo zigbuild --release --target ${{ matrix.target }}
+        run: cargo zigbuild --release --target ${{ matrix.target }} -p ferrokinesis --bin ferrokinesis -p ferrokinesis-cli --bin ferro
       - name: Build (native)
         if: runner.os != 'Linux'
-        run: cargo build --release --target ${{ matrix.target }}
-      - name: Rename binary
-        run: cp target/${{ matrix.target }}/release/ferrokinesis${{ matrix.ext }} ferrokinesis-${{ matrix.name }}${{ matrix.ext }}
-      - name: Upload binary
+        run: cargo build --release --target ${{ matrix.target }} -p ferrokinesis --bin ferrokinesis -p ferrokinesis-cli --bin ferro
+      - name: Rename binaries
+        run: |
+          cp target/${{ matrix.target }}/release/ferrokinesis${{ matrix.ext }} ferrokinesis-${{ matrix.name }}${{ matrix.ext }}
+          cp target/${{ matrix.target }}/release/ferro${{ matrix.ext }} ferro-${{ matrix.name }}${{ matrix.ext }}
+      - name: Upload ferrokinesis binary
         uses: actions/upload-artifact@v4
         with:
           name: ferrokinesis-${{ matrix.name }}
           path: ferrokinesis-${{ matrix.name }}${{ matrix.ext }}
+      - name: Upload ferro binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ferro-${{ matrix.name }}
+          path: ferro-${{ matrix.name }}${{ matrix.ext }}
 
   upload-assets:
     name: Upload Assets
@@ -94,7 +101,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          pattern: ferrokinesis-*
+          merge-multiple: true
       - name: Generate checksums
         run: |
           cd artifacts
@@ -135,16 +142,28 @@ jobs:
         with:
           name: ferrokinesis-linux-amd64
           path: docker-context/amd64
+      - name: Download ferro linux-amd64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: ferro-linux-amd64
+          path: docker-context/amd64
       - name: Download linux-arm64 binary
         uses: actions/download-artifact@v4
         with:
           name: ferrokinesis-linux-arm64
           path: docker-context/arm64
+      - name: Download ferro linux-arm64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: ferro-linux-arm64
+          path: docker-context/arm64
       - name: Prepare binaries
         run: |
           mv docker-context/amd64/ferrokinesis-linux-amd64 docker-context/amd64/ferrokinesis
+          mv docker-context/amd64/ferro-linux-amd64 docker-context/amd64/ferro
           mv docker-context/arm64/ferrokinesis-linux-arm64 docker-context/arm64/ferrokinesis
-          chmod +x docker-context/*/ferrokinesis
+          mv docker-context/arm64/ferro-linux-arm64 docker-context/arm64/ferro
+          chmod +x docker-context/*/ferrokinesis docker-context/*/ferro
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
@@ -208,6 +227,12 @@ jobs:
             -d '{}')
           echo "ListStreams response: $RESPONSE"
           echo "$RESPONSE" | grep -q "smoke-test"
+
+          # Companion CLI is present in the image and can talk to the server
+          FERRO_OUTPUT=$(docker exec ferrokinesis-smoke /ferro --endpoint http://127.0.0.1:4567 streams list)
+          echo "ferro streams list output:"
+          echo "$FERRO_OUTPUT"
+          echo "$FERRO_OUTPUT" | grep -q "smoke-test"
 
           # Cleanup
           docker stop ferrokinesis-smoke && docker rm ferrokinesis-smoke

@@ -9,12 +9,8 @@ use axum::body::Body;
 use bytes::Bytes;
 use serde_json::{Value, json};
 
-/// Maximum subscription duration (5 minutes)
-const MAX_SUBSCRIPTION_MS: u64 = 300_000;
 /// Poll interval for new records
 const POLL_INTERVAL_MS: u64 = 200;
-/// Maximum number of records per SubscribeToShard event
-const SUBSCRIBE_EVENT_RECORD_LIMIT: usize = 10_000;
 
 /// Execute SubscribeToShard. Returns a streaming Body instead of JSON.
 /// `content_type` determines whether event payloads are JSON or CBOR-encoded.
@@ -183,6 +179,8 @@ pub async fn execute_streaming(
     let stream_name = stream_name.to_string();
     let shard_id = shard_id.to_string();
     let is_cbor = content_type == constants::CONTENT_TYPE_CBOR;
+    let event_record_limit = store.options.subscribe_to_shard_event_record_limit;
+    let max_subscription_ms = store.options.subscribe_to_shard_session_ms;
 
     let stream = async_stream::stream! {
         let mut current_seq = start_seq;
@@ -193,8 +191,7 @@ pub async fn execute_streaming(
         loop {
             let now = current_time_ms();
 
-            // Check 5-minute timeout
-            if now - start_time >= MAX_SUBSCRIPTION_MS {
+            if now - start_time >= max_subscription_ms {
                 break;
             }
 
@@ -209,7 +206,7 @@ pub async fn execute_streaming(
             let range_start = format!("{}/{}", sequence::shard_ix_to_hex(shard_ix), current_seq);
             let range_end = sequence::shard_ix_to_hex(shard_ix + 1);
             let range_records = store
-                .get_records_range_limited(&stream_name, &range_start, &range_end, SUBSCRIBE_EVENT_RECORD_LIMIT)
+                .get_records_range_limited(&stream_name, &range_start, &range_end, event_record_limit)
                 .await;
 
             let mut records: Vec<ResponseRecord<'_>> = Vec::with_capacity(range_records.len());

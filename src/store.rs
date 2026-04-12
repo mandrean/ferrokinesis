@@ -237,6 +237,12 @@ pub struct StoreOptions {
     pub shard_limit: u32,
     /// Shard iterator TTL in seconds. Iterators older than this are expired. Defaults to `300`.
     pub iterator_ttl_seconds: u64,
+    /// Maximum number of records emitted in a single `SubscribeToShard` event.
+    /// Defaults to `10_000`.
+    pub subscribe_to_shard_event_record_limit: usize,
+    /// Maximum lifetime of a single `SubscribeToShard` session in milliseconds.
+    /// Defaults to `300_000` (5 minutes).
+    pub subscribe_to_shard_session_ms: u64,
     /// Background retention-reaper check interval in seconds.
     /// Set to `0` (default) to disable the reaper.
     pub retention_check_interval_secs: u64,
@@ -260,6 +266,8 @@ impl Default for StoreOptions {
             update_stream_ms: 500,
             shard_limit: 10,
             iterator_ttl_seconds: 300,
+            subscribe_to_shard_event_record_limit: 10_000,
+            subscribe_to_shard_session_ms: 300_000,
             retention_check_interval_secs: 0,
             enforce_limits: false,
             durable: None,

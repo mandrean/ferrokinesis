@@ -177,6 +177,8 @@ fn build_store_options(
         iterator_ttl_seconds: options
             .iterator_ttl_seconds
             .unwrap_or(defaults.iterator_ttl_seconds),
+        subscribe_to_shard_event_record_limit: defaults.subscribe_to_shard_event_record_limit,
+        subscribe_to_shard_session_ms: defaults.subscribe_to_shard_session_ms,
         retention_check_interval_secs: options
             .retention_check_interval_secs
             .unwrap_or(defaults.retention_check_interval_secs),
