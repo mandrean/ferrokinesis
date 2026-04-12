@@ -208,45 +208,42 @@ impl WasiConfig {
         validate_durable_settings(Some(snapshot_interval_secs), max_retained_bytes)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
 
+        let mut store_options = defaults.clone();
+        store_options.create_stream_ms =
+            read_parsed_env(&mut read, "FERROKINESIS_CREATE_STREAM_MS")?
+                .unwrap_or(defaults.create_stream_ms);
+        store_options.delete_stream_ms =
+            read_parsed_env(&mut read, "FERROKINESIS_DELETE_STREAM_MS")?
+                .unwrap_or(defaults.delete_stream_ms);
+        store_options.update_stream_ms =
+            read_parsed_env(&mut read, "FERROKINESIS_UPDATE_STREAM_MS")?
+                .unwrap_or(defaults.update_stream_ms);
+        store_options.shard_limit =
+            read_parsed_env(&mut read, "FERROKINESIS_SHARD_LIMIT")?.unwrap_or(defaults.shard_limit);
+        store_options.iterator_ttl_seconds =
+            read_parsed_env(&mut read, "FERROKINESIS_ITERATOR_TTL_SECONDS")?
+                .unwrap_or(defaults.iterator_ttl_seconds);
+        store_options.retention_check_interval_secs =
+            read_parsed_env(&mut read, "FERROKINESIS_RETENTION_CHECK_INTERVAL_SECS")?
+                .unwrap_or(defaults.retention_check_interval_secs);
+        store_options.enforce_limits = read_parsed_env(&mut read, "FERROKINESIS_ENFORCE_LIMITS")?
+            .unwrap_or(defaults.enforce_limits);
+        store_options.durable = state_dir.map(|state_dir| DurableStateOptions {
+            state_dir,
+            snapshot_interval_secs,
+            max_retained_bytes,
+        });
+        store_options.max_retained_bytes = max_retained_bytes;
+        store_options.aws_account_id =
+            read("AWS_ACCOUNT_ID")?.unwrap_or_else(|| defaults.aws_account_id.clone());
+        store_options.aws_region = aws_region;
+
         Ok(Self {
             port,
             max_request_body_mb,
             log_level: read("FERROKINESIS_LOG_LEVEL")?
                 .unwrap_or_else(|| DEFAULT_LOG_LEVEL.to_string()),
-            store_options: StoreOptions {
-                create_stream_ms: read_parsed_env(&mut read, "FERROKINESIS_CREATE_STREAM_MS")?
-                    .unwrap_or(defaults.create_stream_ms),
-                delete_stream_ms: read_parsed_env(&mut read, "FERROKINESIS_DELETE_STREAM_MS")?
-                    .unwrap_or(defaults.delete_stream_ms),
-                update_stream_ms: read_parsed_env(&mut read, "FERROKINESIS_UPDATE_STREAM_MS")?
-                    .unwrap_or(defaults.update_stream_ms),
-                shard_limit: read_parsed_env(&mut read, "FERROKINESIS_SHARD_LIMIT")?
-                    .unwrap_or(defaults.shard_limit),
-                iterator_ttl_seconds: read_parsed_env(
-                    &mut read,
-                    "FERROKINESIS_ITERATOR_TTL_SECONDS",
-                )?
-                .unwrap_or(defaults.iterator_ttl_seconds),
-                subscribe_to_shard_event_record_limit: defaults
-                    .subscribe_to_shard_event_record_limit,
-                subscribe_to_shard_session_ms: defaults.subscribe_to_shard_session_ms,
-                retention_check_interval_secs: read_parsed_env(
-                    &mut read,
-                    "FERROKINESIS_RETENTION_CHECK_INTERVAL_SECS",
-                )?
-                .unwrap_or(defaults.retention_check_interval_secs),
-                enforce_limits: read_parsed_env(&mut read, "FERROKINESIS_ENFORCE_LIMITS")?
-                    .unwrap_or(defaults.enforce_limits),
-                durable: state_dir.map(|state_dir| DurableStateOptions {
-                    state_dir,
-                    snapshot_interval_secs,
-                    max_retained_bytes,
-                }),
-                max_retained_bytes,
-                aws_account_id: read("AWS_ACCOUNT_ID")?
-                    .unwrap_or_else(|| defaults.aws_account_id.clone()),
-                aws_region,
-            },
+            store_options,
         })
     }
 
