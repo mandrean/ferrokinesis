@@ -85,6 +85,24 @@ pub async fn handler(
     async move {
         let mut response_headers = HeaderMap::new();
         response_headers.insert("x-amzn-RequestId", request_id.parse().unwrap());
+        let complete = |operation: Option<Operation>,
+                        pre_operation_failure: Option<PreOperationFailureReason>,
+                        response: Response,
+                        error_type: Option<&str>| {
+            complete_response(
+                &store,
+                RequestCompletion {
+                    span: &request_span,
+                    request_id: &request_id,
+                    request_logging: &request_logging,
+                    operation,
+                    pre_operation_failure,
+                    request_started_ms,
+                    error_type,
+                },
+                response,
+            )
+        };
 
         let has_origin = headers.get("origin").is_some();
 
@@ -109,14 +127,9 @@ pub async fn handler(
                 }
                 response_headers.insert("Access-Control-Max-Age", "172800".parse().unwrap());
                 response_headers.insert("Content-Length", "0".parse().unwrap());
-                return complete_response(
-                    &store,
-                    &request_span,
-                    &request_id,
-                    &request_logging,
+                return complete(
                     None,
                     None,
-                    request_started_ms,
                     (StatusCode::OK, response_headers, "").into_response(),
                     None,
                 );
@@ -135,14 +148,9 @@ pub async fn handler(
                 "x-amzn-ErrorType",
                 constants::ACCESS_DENIED.parse().unwrap(),
             );
-            return complete_response(
-                &store,
-                &request_span,
-                &request_id,
-                &request_logging,
+            return complete(
                 None,
                 Some(PreOperationFailureReason::AccessDenied),
-                request_started_ms,
                 send_xml_error(
                     h,
                     constants::ACCESS_DENIED,
@@ -197,16 +205,11 @@ pub async fn handler(
                 constants::UNKNOWN_OPERATION
             };
             let err = KinesisErrorResponse::client_error(error_type, None);
-            return complete_response(
-                &store,
-                &request_span,
-                &request_id,
-                &request_logging,
+            return complete(
                 operation,
                 operation
                     .is_none()
                     .then_some(PreOperationFailureReason::UnknownOperation),
-                request_started_ms,
                 send_kinesis_error(&response_headers, response_content_type, &err),
                 Some(error_type),
             );
@@ -219,16 +222,11 @@ pub async fn handler(
                     "x-amzn-ErrorType",
                     constants::ACCESS_DENIED.parse().unwrap(),
                 );
-                return complete_response(
-                    &store,
-                    &request_span,
-                    &request_id,
-                    &request_logging,
+                return complete(
                     operation,
                     operation
                         .is_none()
                         .then_some(PreOperationFailureReason::AccessDenied),
-                    request_started_ms,
                     send_xml_error(
                         h,
                         constants::ACCESS_DENIED,
@@ -243,16 +241,11 @@ pub async fn handler(
                 "x-amzn-ErrorType",
                 constants::UNKNOWN_OPERATION.parse().unwrap(),
             );
-            return complete_response(
-                &store,
-                &request_span,
-                &request_id,
-                &request_logging,
+            return complete(
                 operation,
                 operation
                     .is_none()
                     .then_some(PreOperationFailureReason::UnknownOperation),
-                request_started_ms,
                 send_xml_error_code(h, constants::UNKNOWN_OPERATION, 404),
                 Some(constants::UNKNOWN_OPERATION),
             );
@@ -273,16 +266,11 @@ pub async fn handler(
             Some(Value::Object(map)) => Value::Object(map),
             Some(_) | None => {
                 if content_type == "application/json" {
-                    return complete_response(
-                        &store,
-                        &request_span,
-                        &request_id,
-                        &request_logging,
+                    return complete(
                         operation,
                         operation
                             .is_none()
                             .then_some(PreOperationFailureReason::SerializationException),
-                        request_started_ms,
                         send_json_response(
                             response_headers.clone(),
                             "application/json",
@@ -297,16 +285,11 @@ pub async fn handler(
                 }
                 let err =
                     KinesisErrorResponse::client_error(constants::SERIALIZATION_EXCEPTION, None);
-                return complete_response(
-                    &store,
-                    &request_span,
-                    &request_id,
-                    &request_logging,
+                return complete(
                     operation,
                     operation
                         .is_none()
                         .then_some(PreOperationFailureReason::SerializationException),
-                    request_started_ms,
                     send_kinesis_error(&response_headers, response_content_type, &err),
                     Some(constants::SERIALIZATION_EXCEPTION),
                 );
@@ -315,16 +298,11 @@ pub async fn handler(
 
         // After this point, application/json doesn't progress further
         if content_type == "application/json" {
-            return complete_response(
-                &store,
-                &request_span,
-                &request_id,
-                &request_logging,
+            return complete(
                 operation,
                 operation
                     .is_none()
                     .then_some(PreOperationFailureReason::UnknownOperation),
-                request_started_ms,
                 send_json_response(
                     response_headers.clone(),
                     "application/json",
@@ -340,14 +318,9 @@ pub async fn handler(
 
         let Some(operation) = operation else {
             let err = KinesisErrorResponse::client_error(constants::UNKNOWN_OPERATION, None);
-            return complete_response(
-                &store,
-                &request_span,
-                &request_id,
-                &request_logging,
+            return complete(
                 None,
                 Some(PreOperationFailureReason::UnknownOperation),
-                request_started_ms,
                 send_kinesis_error(&response_headers, response_content_type, &err),
                 Some(constants::UNKNOWN_OPERATION),
             );
@@ -356,14 +329,9 @@ pub async fn handler(
 
         if let Err(err) = store.check_available() {
             let error_type = err.body.error_type.clone();
-            return complete_response(
-                &store,
-                &request_span,
-                &request_id,
-                &request_logging,
+            return complete(
                 Some(operation),
                 None,
-                request_started_ms,
                 send_kinesis_error(&response_headers, response_content_type, &err),
                 Some(error_type.as_str()),
             );
@@ -371,14 +339,9 @@ pub async fn handler(
 
         if !service_valid {
             let err = KinesisErrorResponse::client_error(constants::UNKNOWN_OPERATION, None);
-            return complete_response(
-                &store,
-                &request_span,
-                &request_id,
-                &request_logging,
+            return complete(
                 Some(operation),
                 None,
-                request_started_ms,
                 send_kinesis_error(&response_headers, response_content_type, &err),
                 Some(constants::UNKNOWN_OPERATION),
             );
@@ -390,14 +353,9 @@ pub async fn handler(
         let auth_query = query_string.contains("X-Amz-Algorithm");
 
         if auth_header.is_some() && auth_query {
-            return complete_response(
-                &store,
-                &request_span,
-                &request_id,
-                &request_logging,
+            return complete(
                 Some(operation),
                 Some(PreOperationFailureReason::InvalidSignature),
-                request_started_ms,
                 send_error_response(
                     &response_headers,
                     content_valid,
@@ -411,14 +369,9 @@ pub async fn handler(
         }
 
         if auth_header.is_none() && !auth_query {
-            return complete_response(
-                &store,
-                &request_span,
-                &request_id,
-                &request_logging,
+            return complete(
                 Some(operation),
                 Some(PreOperationFailureReason::MissingAuthToken),
-                request_started_ms,
                 send_error_response(
                     &response_headers,
                     content_valid,
@@ -457,14 +410,9 @@ pub async fn handler(
             }
             if !msg.is_empty() {
                 msg += &format!("Authorization={auth}");
-                return complete_response(
-                    &store,
-                    &request_span,
-                    &request_id,
-                    &request_logging,
+                return complete(
                     Some(operation),
                     Some(PreOperationFailureReason::IncompleteSignature),
-                    request_started_ms,
                     send_error_response(
                         &response_headers,
                         content_valid,
@@ -508,14 +456,9 @@ pub async fn handler(
             }
             if !msg.is_empty() {
                 msg += "Re-examine the query-string parameters.";
-                return complete_response(
-                    &store,
-                    &request_span,
-                    &request_id,
-                    &request_logging,
+                return complete(
                     Some(operation),
                     Some(PreOperationFailureReason::IncompleteSignature),
-                    request_started_ms,
                     send_error_response(
                         &response_headers,
                         content_valid,
@@ -538,14 +481,9 @@ pub async fn handler(
             Ok(d) => d,
             Err(err) => {
                 let error_type = err.body.error_type.clone();
-                return complete_response(
-                    &store,
-                    &request_span,
-                    &request_id,
-                    &request_logging,
+                return complete(
                     Some(operation),
                     None,
-                    request_started_ms,
                     send_kinesis_error(&response_headers, response_content_type, &err),
                     Some(error_type.as_str()),
                 );
@@ -554,14 +492,9 @@ pub async fn handler(
 
         if let Err(err) = validation::check_validations(&data, &field_refs, None) {
             let error_type = err.body.error_type.clone();
-            return complete_response(
-                &store,
-                &request_span,
-                &request_id,
-                &request_logging,
+            return complete(
                 Some(operation),
                 None,
-                request_started_ms,
                 send_kinesis_error(&response_headers, response_content_type, &err),
                 Some(error_type.as_str()),
             );
@@ -611,14 +544,9 @@ pub async fn handler(
                     .get("x-amzn-ErrorType")
                     .and_then(|value| value.to_str().ok())
                     .map(str::to_owned);
-                return complete_response(
-                    &store,
-                    &request_span,
-                    &request_id,
-                    &request_logging,
+                return complete(
                     Some(operation),
                     None,
-                    request_started_ms,
                     response,
                     error_type.as_deref(),
                 );
@@ -633,14 +561,9 @@ pub async fn handler(
                 let response =
                     log_and_send_error(&request_span, &response_headers, response_content_type, &err);
                 let error_type = err.body.error_type.clone();
-                return complete_response(
-                    &store,
-                    &request_span,
-                    &request_id,
-                    &request_logging,
+                return complete(
                     Some(operation),
                     None,
-                    request_started_ms,
                     response,
                     Some(error_type.as_str()),
                 );
@@ -700,14 +623,9 @@ pub async fn handler(
             let _ = (mirror, mirrorable_result);
         }
 
-        complete_response(
-            &store,
-            &request_span,
-            &request_id,
-            &request_logging,
+        complete(
             Some(operation),
             None,
-            request_started_ms,
             response,
             error_type.as_deref(),
         )
@@ -720,6 +638,16 @@ fn elapsed_request_micros(request_started_ms: u64) -> u64 {
     crate::util::current_time_ms()
         .saturating_sub(request_started_ms)
         .saturating_mul(1000)
+}
+
+struct RequestCompletion<'a> {
+    span: &'a tracing::Span,
+    request_id: &'a str,
+    request_logging: &'a RequestLoggingExt,
+    operation: Option<Operation>,
+    pre_operation_failure: Option<PreOperationFailureReason>,
+    request_started_ms: u64,
+    error_type: Option<&'a str>,
 }
 
 fn finalize_response(
@@ -745,35 +673,33 @@ fn finalize_response(
 
 fn complete_response(
     store: &Store,
-    span: &tracing::Span,
-    request_id: &str,
-    request_logging: &RequestLoggingExt,
-    operation: Option<Operation>,
-    pre_operation_failure: Option<PreOperationFailureReason>,
-    request_started_ms: u64,
+    completion: RequestCompletion<'_>,
     response: Response,
-    error_type: Option<&str>,
 ) -> Response {
     let response = finalize_response(
         store,
-        operation,
-        pre_operation_failure,
-        request_started_ms,
+        completion.operation,
+        completion.pre_operation_failure,
+        completion.request_started_ms,
         response,
     );
-    let latency_us = elapsed_request_micros(request_started_ms);
-    span.record("status_code", &response.status().as_u16());
-    if let Some(error_type) = error_type {
-        span.record("error_type", &tracing::field::display(error_type));
+    let latency_us = elapsed_request_micros(completion.request_started_ms);
+    completion
+        .span
+        .record("status_code", response.status().as_u16());
+    if let Some(error_type) = completion.error_type {
+        completion
+            .span
+            .record("error_type", tracing::field::display(error_type));
     }
-    if request_logging_enabled(request_logging) {
+    if request_logging_enabled(completion.request_logging) {
         log_request_completion(
-            span,
-            operation,
-            request_id,
+            completion.span,
+            completion.operation,
+            completion.request_id,
             response.status(),
             latency_us,
-            error_type,
+            completion.error_type,
         );
     }
     response
@@ -781,7 +707,7 @@ fn complete_response(
 
 fn record_operation(span: &tracing::Span, operation: Option<Operation>) {
     if let Some(operation) = operation {
-        span.record("operation", &tracing::field::display(operation));
+        span.record("operation", tracing::field::display(operation));
     }
 }
 
