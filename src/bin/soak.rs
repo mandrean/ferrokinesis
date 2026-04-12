@@ -4,10 +4,11 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::error::Error;
+use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -198,6 +199,66 @@ struct Sample {
 }
 
 #[derive(Debug, Serialize)]
+struct TimeseriesRow {
+    elapsed_secs: String,
+    ready_status: u16,
+    rss_bytes: Option<u64>,
+    open_fds: Option<u64>,
+    state_dir_bytes: u64,
+    wal_bytes: Option<u64>,
+    snapshot_bytes: Option<u64>,
+    retained_bytes: Option<u64>,
+    retained_records: Option<u64>,
+    rejected_writes_total: Option<u64>,
+    replay_complete: Option<u64>,
+    last_snapshot_timestamp_ms: Option<u64>,
+    active_iterators: Option<u64>,
+    streams: Option<u64>,
+    open_shards: Option<u64>,
+}
+
+impl From<&Sample> for TimeseriesRow {
+    fn from(sample: &Sample) -> Self {
+        Self {
+            elapsed_secs: format_elapsed_secs(sample.elapsed_secs),
+            ready_status: sample.ready_status,
+            rss_bytes: sample.rss_bytes,
+            open_fds: sample.open_fds,
+            state_dir_bytes: sample.state_dir_bytes,
+            wal_bytes: sample.wal_bytes,
+            snapshot_bytes: sample.snapshot_bytes,
+            retained_bytes: sample.retained_bytes,
+            retained_records: sample.retained_records,
+            rejected_writes_total: sample.rejected_writes_total,
+            replay_complete: sample.replay_complete,
+            last_snapshot_timestamp_ms: sample.last_snapshot_timestamp_ms,
+            active_iterators: sample.active_iterators,
+            streams: sample.streams,
+            open_shards: sample.open_shards,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct StateDirSizeRow {
+    elapsed_secs: String,
+    state_dir_bytes: u64,
+    wal_bytes: Option<u64>,
+    snapshot_bytes: Option<u64>,
+}
+
+impl From<&Sample> for StateDirSizeRow {
+    fn from(sample: &Sample) -> Self {
+        Self {
+            elapsed_secs: format_elapsed_secs(sample.elapsed_secs),
+            state_dir_bytes: sample.state_dir_bytes,
+            wal_bytes: sample.wal_bytes,
+            snapshot_bytes: sample.snapshot_bytes,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
 struct Summary {
     profile: String,
     duration_secs: u64,
@@ -247,6 +308,18 @@ impl ServerProcess {
         self.stop();
         self.child = Some(spawn_server(cfg, log_path)?);
         Ok(())
+    }
+
+    fn take_exit_status(&mut self) -> io::Result<Option<ExitStatus>> {
+        let Some(child) = self.child.as_mut() else {
+            return Ok(None);
+        };
+
+        let status = child.try_wait()?;
+        if status.is_some() {
+            self.child = None;
+        }
+        Ok(status)
     }
 
     fn stop(&mut self) {
@@ -320,7 +393,14 @@ async fn run_soak(cfg: RunConfig) -> Result<(), Box<dyn Error>> {
     let server_log_path = cfg.output_dir.join("server.log");
     let mut server = ServerProcess::spawn(&cfg, &server_log_path)?;
     let pid_cell = Arc::new(AtomicU32::new(server.id()));
-    wait_ready(&client, &cfg.base_url, Duration::from_secs(90)).await?;
+    wait_ready(
+        &client,
+        &cfg.base_url,
+        &mut server,
+        &server_log_path,
+        Duration::from_secs(90),
+    )
+    .await?;
 
     let mut streams = create_streams(&client, &cfg.base_url).await?;
 
@@ -364,7 +444,14 @@ async fn run_soak(cfg: RunConfig) -> Result<(), Box<dyn Error>> {
             let restart_started = Instant::now();
             server.restart(&cfg, &server_log_path)?;
             pid_cell.store(server.id(), Ordering::Relaxed);
-            wait_ready(&client, &cfg.base_url, Duration::from_secs(90)).await?;
+            wait_ready(
+                &client,
+                &cfg.base_url,
+                &mut server,
+                &server_log_path,
+                Duration::from_secs(90),
+            )
+            .await?;
             for stream in &mut streams {
                 stream.shard_iterators =
                     get_shard_iterators(&client, &cfg.base_url, &stream.name).await?;
@@ -442,6 +529,31 @@ fn default_output_dir(profile_name: &str) -> io::Result<PathBuf> {
         .join(format!("{profile_name}-{now}")))
 }
 
+fn server_args(cfg: &RunConfig) -> Vec<OsString> {
+    vec![
+        "--port".into(),
+        cfg.port.to_string().into(),
+        "--state-dir".into(),
+        cfg.state_dir.as_os_str().to_os_string(),
+        "--snapshot-interval-secs".into(),
+        cfg.snapshot_interval_secs.to_string().into(),
+        "--retention-check-interval-secs".into(),
+        cfg.retention_check_interval_secs.to_string().into(),
+        "--iterator-ttl-seconds".into(),
+        cfg.iterator_ttl_seconds.to_string().into(),
+        "--max-retained-bytes".into(),
+        cfg.max_retained_bytes.to_string().into(),
+        "--create-stream-ms".into(),
+        "0".into(),
+        "--delete-stream-ms".into(),
+        "0".into(),
+        "--update-stream-ms".into(),
+        "0".into(),
+        "--log-level".into(),
+        "info".into(),
+    ]
+}
+
 fn spawn_server(cfg: &RunConfig, log_path: &Path) -> Result<Child, Box<dyn Error>> {
     let stdout = OpenOptions::new()
         .create(true)
@@ -451,27 +563,7 @@ fn spawn_server(cfg: &RunConfig, log_path: &Path) -> Result<Child, Box<dyn Error
 
     let mut command = Command::new(&cfg.server_bin);
     command
-        .arg("--port")
-        .arg(cfg.port.to_string())
-        .arg("--state-dir")
-        .arg(&cfg.state_dir)
-        .arg("--snapshot-interval-secs")
-        .arg(cfg.snapshot_interval_secs.to_string())
-        .arg("--retention-check-interval-secs")
-        .arg(cfg.retention_check_interval_secs.to_string())
-        .arg("--iterator-ttl-seconds")
-        .arg(cfg.iterator_ttl_seconds.to_string())
-        .arg("--max-retained-bytes")
-        .arg(cfg.max_retained_bytes.to_string())
-        .arg("--create-stream-ms")
-        .arg("0")
-        .arg("--delete-stream-ms")
-        .arg("0")
-        .arg("--update-stream-ms")
-        .arg("0")
-        .arg("--log-level")
-        .arg("info")
-        .arg("--access-log=false")
+        .args(server_args(cfg))
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
 
@@ -526,10 +618,16 @@ async fn create_streams(
 async fn wait_ready(
     client: &Client,
     base_url: &str,
+    server: &mut ServerProcess,
+    log_path: &Path,
     timeout: Duration,
 ) -> Result<(), Box<dyn Error>> {
     let started = Instant::now();
     loop {
+        if let Some(status) = server.take_exit_status()? {
+            return Err(server_exit_before_ready_error(status, log_path));
+        }
+
         match fetch_ready_status(client, base_url).await {
             Ok(200) => return Ok(()),
             Ok(_) | Err(_) => {
@@ -540,6 +638,14 @@ async fn wait_ready(
             }
         }
     }
+}
+
+fn server_exit_before_ready_error(status: ExitStatus, log_path: &Path) -> Box<dyn Error> {
+    io::Error::other(format!(
+        "server exited before becoming ready with status {status}. See {} for details.",
+        log_path.display()
+    ))
+    .into()
 }
 
 async fn wait_stream_active(
@@ -662,10 +768,7 @@ async fn run_put_batch(
         stats.put_records_ok += ok_records;
         stats.put_records_failed += failed_records;
     } else {
-        stats.put_requests_error += 1;
-    }
-    if status.is_server_error() {
-        stats.unexpected_5xx += 1;
+        record_put_records_request_failure(stats, status, attempted_records);
     }
     Ok(())
 }
@@ -774,42 +877,17 @@ fn write_artifacts(
     let metrics_path = cfg.output_dir.join("metrics-final.prom");
     let state_sizes_path = cfg.output_dir.join("state-dir-sizes.csv");
 
-    let mut csv = String::from(
-        "elapsed_secs,ready_status,rss_bytes,open_fds,state_dir_bytes,wal_bytes,snapshot_bytes,retained_bytes,retained_records,rejected_writes_total,replay_complete,last_snapshot_timestamp_ms,active_iterators,streams,open_shards\n",
-    );
+    let mut timeseries_writer = csv::Writer::from_path(&timeseries_path)?;
     for sample in samples {
-        csv.push_str(&format!(
-            "{:.3},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
-            sample.elapsed_secs,
-            sample.ready_status,
-            display_option(sample.rss_bytes),
-            display_option(sample.open_fds),
-            sample.state_dir_bytes,
-            display_option(sample.wal_bytes),
-            display_option(sample.snapshot_bytes),
-            display_option(sample.retained_bytes),
-            display_option(sample.retained_records),
-            display_option(sample.rejected_writes_total),
-            display_option(sample.replay_complete),
-            display_option(sample.last_snapshot_timestamp_ms),
-            display_option(sample.active_iterators),
-            display_option(sample.streams),
-            display_option(sample.open_shards),
-        ));
+        timeseries_writer.serialize(TimeseriesRow::from(sample))?;
     }
-    fs::write(&timeseries_path, csv)?;
+    timeseries_writer.flush()?;
 
-    let mut state_csv = String::from("elapsed_secs,state_dir_bytes,wal_bytes,snapshot_bytes\n");
+    let mut state_sizes_writer = csv::Writer::from_path(&state_sizes_path)?;
     for sample in samples {
-        state_csv.push_str(&format!(
-            "{:.3},{},{},{}\n",
-            sample.elapsed_secs,
-            sample.state_dir_bytes,
-            display_option(sample.wal_bytes),
-            display_option(sample.snapshot_bytes)
-        ));
+        state_sizes_writer.serialize(StateDirSizeRow::from(sample))?;
     }
-    fs::write(&state_sizes_path, state_csv)?;
+    state_sizes_writer.flush()?;
     fs::write(&metrics_path, final_metrics)?;
 
     let summary = Summary {
@@ -850,8 +928,20 @@ fn write_artifacts(
     Ok(())
 }
 
-fn display_option(value: Option<u64>) -> String {
-    value.map_or_else(String::new, |v| v.to_string())
+fn record_put_records_request_failure(
+    stats: &mut WorkloadStats,
+    status: reqwest::StatusCode,
+    attempted_records: u64,
+) {
+    stats.put_requests_error += 1;
+    stats.put_records_failed += attempted_records;
+    if status.is_server_error() {
+        stats.unexpected_5xx += 1;
+    }
+}
+
+fn format_elapsed_secs(elapsed_secs: f64) -> String {
+    format!("{elapsed_secs:.3}")
 }
 
 async fn fetch_ready_status(client: &Client, base_url: &str) -> Result<u16, reqwest::Error> {
@@ -1052,12 +1142,14 @@ fn file_size(path: PathBuf) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Cli, Sample, classify_readiness_failures, directory_size_bytes, metric_sum_as_u64,
-        parse_put_records_outcomes,
+        Cli, Profile, ProfileName, RunConfig, Sample, WorkloadStats, classify_readiness_failures,
+        directory_size_bytes, format_elapsed_secs, metric_sum_as_u64, parse_put_records_outcomes,
+        record_put_records_request_failure, server_args, write_artifacts,
     };
     use clap::Parser;
+    use csv::StringRecord;
     use serde_json::json;
-    use std::fs;
+    use std::{fs, path::Path};
 
     #[test]
     fn parses_prometheus_values_with_and_without_labels() {
@@ -1117,6 +1209,17 @@ ferrokinesis_requests_total{operation=\"PutRecord\",result=\"error\"} 3
         });
 
         assert!(parse_put_records_outcomes(&response, 2).is_err());
+    }
+
+    #[test]
+    fn counts_failed_put_records_batches_as_failed_records() {
+        let mut stats = WorkloadStats::default();
+
+        record_put_records_request_failure(&mut stats, reqwest::StatusCode::BAD_GATEWAY, 3);
+
+        assert_eq!(stats.put_requests_error, 1);
+        assert_eq!(stats.put_records_failed, 3);
+        assert_eq!(stats.unexpected_5xx, 1);
     }
 
     #[test]
@@ -1184,5 +1287,127 @@ ferrokinesis_requests_total{operation=\"PutRecord\",result=\"error\"} 3
     #[test]
     fn cli_rejects_zero_sample_interval() {
         assert!(Cli::try_parse_from(["soak", "--sample-interval-secs", "0"]).is_err());
+    }
+
+    #[test]
+    fn formats_elapsed_seconds_with_three_decimal_places() {
+        assert_eq!(format_elapsed_secs(1.2), "1.200");
+    }
+
+    #[test]
+    fn builds_server_args_without_access_log_flag() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let cfg = test_run_config(temp.path());
+        let args: Vec<String> = server_args(&cfg)
+            .into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        assert!(!args.iter().any(|arg| arg == "--access-log=false"));
+        assert!(args.iter().any(|arg| arg == "--state-dir"));
+    }
+
+    #[test]
+    fn writes_csv_artifacts_with_expected_headers_and_values() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let output_dir = temp.path().join("artifacts");
+        fs::create_dir_all(&output_dir).expect("output dir");
+        let cfg = test_run_config(&output_dir);
+        let stats = WorkloadStats {
+            put_requests_ok: 1,
+            ..WorkloadStats::default()
+        };
+        let samples = vec![Sample {
+            elapsed_secs: 1.2345,
+            ready_status: 200,
+            rss_bytes: Some(11),
+            open_fds: None,
+            state_dir_bytes: 22,
+            wal_bytes: Some(33),
+            snapshot_bytes: None,
+            retained_bytes: Some(44),
+            retained_records: Some(55),
+            rejected_writes_total: Some(66),
+            replay_complete: Some(1),
+            last_snapshot_timestamp_ms: Some(77),
+            active_iterators: Some(88),
+            streams: Some(2),
+            open_shards: Some(3),
+        }];
+
+        write_artifacts(&cfg, &stats, &samples, "metric 1\n").expect("artifacts written");
+
+        let mut timeseries_reader =
+            csv::Reader::from_path(output_dir.join("soak-timeseries.csv")).expect("timeseries");
+        assert_eq!(
+            timeseries_reader.headers().expect("headers").clone(),
+            StringRecord::from(vec![
+                "elapsed_secs",
+                "ready_status",
+                "rss_bytes",
+                "open_fds",
+                "state_dir_bytes",
+                "wal_bytes",
+                "snapshot_bytes",
+                "retained_bytes",
+                "retained_records",
+                "rejected_writes_total",
+                "replay_complete",
+                "last_snapshot_timestamp_ms",
+                "active_iterators",
+                "streams",
+                "open_shards",
+            ])
+        );
+        let timeseries_rows = timeseries_reader
+            .records()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("timeseries rows");
+        assert_eq!(timeseries_rows.len(), 1);
+        assert_eq!(timeseries_rows[0].get(0), Some("1.234"));
+        assert_eq!(timeseries_rows[0].get(1), Some("200"));
+        assert_eq!(timeseries_rows[0].get(2), Some("11"));
+        assert_eq!(timeseries_rows[0].get(3), Some(""));
+
+        let mut state_sizes_reader =
+            csv::Reader::from_path(output_dir.join("state-dir-sizes.csv")).expect("state sizes");
+        assert_eq!(
+            state_sizes_reader.headers().expect("headers").clone(),
+            StringRecord::from(vec![
+                "elapsed_secs",
+                "state_dir_bytes",
+                "wal_bytes",
+                "snapshot_bytes",
+            ])
+        );
+        let state_rows = state_sizes_reader
+            .records()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("state rows");
+        assert_eq!(state_rows.len(), 1);
+        assert_eq!(state_rows[0].get(0), Some("1.234"));
+        assert_eq!(state_rows[0].get(1), Some("22"));
+        assert_eq!(state_rows[0].get(2), Some("33"));
+        assert_eq!(state_rows[0].get(3), Some(""));
+    }
+
+    fn test_run_config(output_dir: &Path) -> RunConfig {
+        let profile = Profile::from_name(ProfileName::Local);
+        let state_dir = output_dir.join("state-dir");
+        fs::create_dir_all(&state_dir).expect("state dir");
+        RunConfig {
+            profile,
+            port: 4567,
+            base_url: "http://127.0.0.1:4567".into(),
+            output_dir: output_dir.to_path_buf(),
+            state_dir,
+            server_bin: Path::new("/tmp/ferrokinesis").to_path_buf(),
+            restart_at: None,
+            max_retained_bytes: 1024,
+            snapshot_interval_secs: 30,
+            retention_check_interval_secs: 5,
+            iterator_ttl_seconds: 30,
+            build_server: false,
+        }
     }
 }
