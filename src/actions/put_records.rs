@@ -40,7 +40,22 @@ fn build_capture_refs<'a>(
         .collect()
 }
 
+#[cfg_attr(not(feature = "chaos"), allow(dead_code))]
+pub(crate) struct ExecuteOutcome {
+    pub(crate) body: Option<Value>,
+    pub(crate) chaos_affected: bool,
+}
+
 pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, KinesisErrorResponse> {
+    execute_with_outcome(store, data)
+        .await
+        .map(|outcome| outcome.body)
+}
+
+pub(crate) async fn execute_with_outcome(
+    store: &Store,
+    data: Value,
+) -> Result<ExecuteOutcome, KinesisErrorResponse> {
     let stream_name = store.resolve_stream_name(&data)?;
     store.check_writable()?;
 
@@ -103,11 +118,15 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
     let allocations = store
         .allocate_sequences_batch(&stream_name, &hash_keys)
         .await?;
+    #[cfg(feature = "chaos")]
+    let chaos_failures = store.chaos_put_records_failures(&stream_name, &allocations);
 
     let mut return_records: Vec<Value> = Vec::with_capacity(records.len());
     let mut batch: Vec<(String, StoredRecordRef<'_>)> = Vec::with_capacity(records.len());
     let mut reservations = Vec::with_capacity(records.len());
     let mut failed_record_count = 0u64;
+    #[cfg(feature = "chaos")]
+    let mut chaos_affected = false;
 
     for (i, record) in records.iter().enumerate() {
         let alloc = &allocations[i];
@@ -121,6 +140,17 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
                 record_data.len()
             }
         } as u64;
+
+        #[cfg(feature = "chaos")]
+        if let Some(failure) = chaos_failures[i].as_ref() {
+            failed_record_count += 1;
+            chaos_affected = true;
+            return_records.push(json!({
+                constants::ERROR_CODE: failure.error_code,
+                "ErrorMessage": failure.error_message,
+            }));
+            continue;
+        }
 
         let reservation = match store
             .try_reserve_shard_throughput(&stream_name, &alloc.shard_id, decoded_len, alloc.now)
@@ -175,10 +205,16 @@ pub async fn execute(store: &Store, data: Value) -> Result<Option<Value>, Kinesi
         failed = failed_record_count,
         "records put"
     );
-    Ok(Some(json!({
-        "FailedRecordCount": failed_record_count,
-        "Records": return_records,
-    })))
+    Ok(ExecuteOutcome {
+        body: Some(json!({
+            "FailedRecordCount": failed_record_count,
+            "Records": return_records,
+        })),
+        #[cfg(feature = "chaos")]
+        chaos_affected,
+        #[cfg(not(feature = "chaos"))]
+        chaos_affected: false,
+    })
 }
 
 #[cfg(all(test, feature = "server"))]

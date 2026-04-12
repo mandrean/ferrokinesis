@@ -500,6 +500,25 @@ pub async fn handler(
             );
         }
 
+        #[cfg(feature = "chaos")]
+        let request_chaos_plan = store.chaos_request_plan(operation);
+
+        #[cfg(feature = "chaos")]
+        if let Some(ref err) = request_chaos_plan.terminal_error {
+            if request_chaos_plan.latency_ms > 0 {
+                crate::runtime::sleep_ms(request_chaos_plan.latency_ms).await;
+            }
+            let response =
+                log_and_send_error(&request_span, &response_headers, response_content_type, err);
+            let error_type = err.body.error_type.clone();
+            return complete(
+                Some(operation),
+                None,
+                response,
+                Some(error_type.as_str()),
+            );
+        }
+
         // Handle SubscribeToShard separately (streaming response)
         if operation == Operation::SubscribeToShard {
             #[cfg(not(target_arch = "wasm32"))]
@@ -544,6 +563,10 @@ pub async fn handler(
                     .get("x-amzn-ErrorType")
                     .and_then(|value| value.to_str().ok())
                     .map(str::to_owned);
+                #[cfg(feature = "chaos")]
+                if request_chaos_plan.latency_ms > 0 {
+                    crate::runtime::sleep_ms(request_chaos_plan.latency_ms).await;
+                }
                 return complete(
                     Some(operation),
                     None,
@@ -561,6 +584,10 @@ pub async fn handler(
                 let response =
                     log_and_send_error(&request_span, &response_headers, response_content_type, &err);
                 let error_type = err.body.error_type.clone();
+                #[cfg(feature = "chaos")]
+                if request_chaos_plan.latency_ms > 0 {
+                    crate::runtime::sleep_ms(request_chaos_plan.latency_ms).await;
+                }
                 return complete(
                     Some(operation),
                     None,
@@ -571,9 +598,33 @@ pub async fn handler(
         }
 
         // Execute action
-        let dispatch_result = actions::dispatch(&store, operation, data)
-            .instrument(request_span.clone())
-            .await;
+        #[cfg(feature = "chaos")]
+        let mut put_records_chaos_affected = false;
+        let dispatch_result = if operation == Operation::PutRecords {
+            #[cfg(feature = "chaos")]
+            {
+                match actions::put_records::execute_with_outcome(&store, data)
+                    .instrument(request_span.clone())
+                    .await
+                {
+                    Ok(outcome) => {
+                        put_records_chaos_affected = outcome.chaos_affected;
+                        Ok(outcome.body)
+                    }
+                    Err(err) => Err(err),
+                }
+            }
+            #[cfg(not(feature = "chaos"))]
+            {
+                actions::dispatch(&store, operation, data)
+                    .instrument(request_span.clone())
+                    .await
+            }
+        } else {
+            actions::dispatch(&store, operation, data)
+                .instrument(request_span.clone())
+                .await
+        };
 
         // Build response first (borrows result), then move result into the mirror
         let (response, error_type, mirrorable_result) = match dispatch_result {
@@ -600,10 +651,21 @@ pub async fn handler(
             }
         };
 
+        #[cfg(feature = "chaos")]
+        let skip_mirror = request_chaos_plan.chaos_affected || put_records_chaos_affected;
+        #[cfg(not(feature = "chaos"))]
+        let skip_mirror = false;
+
+        #[cfg(feature = "chaos")]
+        if request_chaos_plan.latency_ms > 0 {
+            crate::runtime::sleep_ms(request_chaos_plan.latency_ms).await;
+        }
+
         // Mirror write operations (fire-and-forget) — result moved, not cloned
         #[cfg(feature = "mirror")]
         if let Some(Extension(ref mirror)) = mirror
             && Mirror::should_mirror(&operation)
+            && !skip_mirror
         {
             match mirrorable_result {
                 Ok(result) => {
@@ -620,7 +682,7 @@ pub async fn handler(
         }
         #[cfg(not(feature = "mirror"))]
         {
-            let _ = (mirror, mirrorable_result);
+            let _ = (mirror, mirrorable_result, skip_mirror);
         }
 
         complete(

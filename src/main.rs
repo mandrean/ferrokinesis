@@ -1,5 +1,7 @@
 use axum::extract::DefaultBodyLimit;
 use clap::{Args, Parser, Subcommand};
+#[cfg(feature = "chaos")]
+use ferrokinesis::chaos::{ChaosConfig, load_chaos_config};
 use ferrokinesis::config::{FileConfig, load_config};
 use ferrokinesis::store::{
     DEFAULT_DURABLE_SNAPSHOT_INTERVAL_SECS, DurableStateOptions, StoreOptions,
@@ -118,6 +120,17 @@ struct ServeArgs {
     /// Hard cap on retained serialized record bytes
     #[arg(long, env = "FERROKINESIS_MAX_RETAINED_BYTES", value_parser = clap::value_parser!(u64).range(1..))]
     max_retained_bytes: Option<u64>,
+
+    /// Enable chaos scenarios loaded from --chaos-config
+    #[cfg(feature = "chaos")]
+    #[arg(long, env = "FERROKINESIS_CHAOS",
+          default_missing_value = "true", num_args = 0..=1)]
+    chaos: Option<bool>,
+
+    /// Path to the JSON chaos configuration file
+    #[cfg(feature = "chaos")]
+    #[arg(long, env = "FERROKINESIS_CHAOS_CONFIG")]
+    chaos_config: Option<PathBuf>,
 
     /// Log level (off, error, warn, info, debug, trace)
     #[arg(long, env = "FERROKINESIS_LOG_LEVEL",
@@ -412,6 +425,36 @@ fn shutdown_tracing(bootstrap: &TracingBootstrap) {
     }
 }
 
+#[cfg(feature = "chaos")]
+fn resolve_chaos_inputs(
+    cli_enabled: Option<bool>,
+    file_enabled: Option<bool>,
+    cli_path: Option<PathBuf>,
+    file_path: Option<PathBuf>,
+) -> Result<(bool, Option<PathBuf>), String> {
+    let enabled = resolve(cli_enabled, file_enabled, || false);
+    let path = cli_path.or(file_path);
+    if enabled && path.is_none() {
+        Err("chaos requires --chaos-config or chaos_config in the main config file".into())
+    } else {
+        Ok((enabled, path))
+    }
+}
+
+#[cfg(feature = "chaos")]
+fn load_startup_chaos_config(enabled: bool, path: Option<PathBuf>) -> Result<ChaosConfig, String> {
+    match path {
+        Some(path) => {
+            let mut config = load_chaos_config(&path).map_err(|err| err.to_string())?;
+            if !enabled {
+                config.disable_all();
+            }
+            Ok(config)
+        }
+        None => Ok(ChaosConfig::default()),
+    }
+}
+
 fn resolve_store_options(
     args: &ServeArgs,
     file_cfg: &FileConfig,
@@ -481,6 +524,8 @@ fn resolve_store_options(
         }),
         durable,
         max_retained_bytes,
+        #[cfg(feature = "chaos")]
+        chaos: ChaosConfig::default(),
         aws_account_id: resolve(args.account_id.clone(), file_cfg.account_id.clone(), || {
             defaults.aws_account_id.clone()
         }),
@@ -823,6 +868,35 @@ async fn run_serve(args: ServeArgs) -> ExitCode {
         eprintln!("{err}");
         process::exit(1);
     });
+
+    #[cfg(feature = "chaos")]
+    let chaos_inputs = match resolve_chaos_inputs(
+        args.chaos,
+        file_cfg.chaos,
+        args.chaos_config.clone(),
+        file_cfg.chaos_config.clone(),
+    ) {
+        Ok(inputs) => inputs,
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    #[cfg(feature = "chaos")]
+    let chaos = match load_startup_chaos_config(chaos_inputs.0, chaos_inputs.1.clone()) {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    #[cfg(feature = "chaos")]
+    let options = {
+        let mut options = options;
+        options.chaos = chaos;
+        options
+    };
     let port = resolve(args.port, file_cfg.port, || 4567);
     let max_request_body_mb = resolve(args.max_request_body_mb, file_cfg.max_request_body_mb, || 7);
     let log_level: String = resolve(args.log_level, file_cfg.log_level, || "info".into());
@@ -1060,6 +1134,10 @@ mod tests {
             state_dir: None,
             snapshot_interval_secs: None,
             max_retained_bytes: None,
+            #[cfg(feature = "chaos")]
+            chaos: None,
+            #[cfg(feature = "chaos")]
+            chaos_config: None,
             log_level: None,
             log_format: None,
             otlp_endpoint: None,
@@ -1184,5 +1262,23 @@ mod tests {
             normalize_otlp_http_endpoint("http://127.0.0.1:4318/custom").unwrap(),
             "http://127.0.0.1:4318/custom"
         );
+    }
+
+    #[cfg(feature = "chaos")]
+    #[test]
+    fn resolve_chaos_inputs_requires_config_when_enabled() {
+        let err = resolve_chaos_inputs(Some(true), None, None, None).unwrap_err();
+        assert!(err.contains("chaos requires"));
+    }
+
+    #[cfg(feature = "chaos")]
+    #[test]
+    fn resolve_chaos_inputs_accepts_file_backed_paths() {
+        let (enabled, path) =
+            resolve_chaos_inputs(Some(true), None, None, Some(PathBuf::from("chaos.json")))
+                .unwrap();
+
+        assert!(enabled);
+        assert_eq!(path, Some(PathBuf::from("chaos.json")));
     }
 }

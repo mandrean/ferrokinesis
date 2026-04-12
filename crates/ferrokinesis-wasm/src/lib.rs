@@ -163,44 +163,42 @@ fn build_store_options(
     validate_durable_settings(snapshot_interval_secs, max_retained_bytes)
         .map_err(|err| err.to_string())?;
 
-    Ok(StoreOptions {
-        create_stream_ms: options
-            .create_stream_ms
-            .unwrap_or(defaults.create_stream_ms),
-        delete_stream_ms: options
-            .delete_stream_ms
-            .unwrap_or(defaults.delete_stream_ms),
-        update_stream_ms: options
-            .update_stream_ms
-            .unwrap_or(defaults.update_stream_ms),
-        shard_limit: options.shard_limit.unwrap_or(defaults.shard_limit),
-        iterator_ttl_seconds: options
-            .iterator_ttl_seconds
-            .unwrap_or(defaults.iterator_ttl_seconds),
-        subscribe_to_shard_event_record_limit: defaults.subscribe_to_shard_event_record_limit,
-        subscribe_to_shard_session_ms: defaults.subscribe_to_shard_session_ms,
-        retention_check_interval_secs: options
-            .retention_check_interval_secs
-            .unwrap_or(defaults.retention_check_interval_secs),
-        enforce_limits: options.enforce_limits.unwrap_or(defaults.enforce_limits),
-        durable: defaults
-            .durable
-            .as_ref()
-            .map(|durable| DurableStateOptions {
-                state_dir: durable.state_dir.clone(),
-                snapshot_interval_secs: durable.snapshot_interval_secs,
-                max_retained_bytes,
-            }),
-        max_retained_bytes,
-        aws_account_id: options
-            .account_id
-            .clone()
-            .unwrap_or_else(|| defaults.aws_account_id.clone()),
-        aws_region: options
-            .region
-            .clone()
-            .unwrap_or_else(|| defaults.aws_region.clone()),
-    })
+    let mut resolved = defaults.clone();
+    resolved.create_stream_ms = options
+        .create_stream_ms
+        .unwrap_or(defaults.create_stream_ms);
+    resolved.delete_stream_ms = options
+        .delete_stream_ms
+        .unwrap_or(defaults.delete_stream_ms);
+    resolved.update_stream_ms = options
+        .update_stream_ms
+        .unwrap_or(defaults.update_stream_ms);
+    resolved.shard_limit = options.shard_limit.unwrap_or(defaults.shard_limit);
+    resolved.iterator_ttl_seconds = options
+        .iterator_ttl_seconds
+        .unwrap_or(defaults.iterator_ttl_seconds);
+    resolved.retention_check_interval_secs = options
+        .retention_check_interval_secs
+        .unwrap_or(defaults.retention_check_interval_secs);
+    resolved.enforce_limits = options.enforce_limits.unwrap_or(defaults.enforce_limits);
+    resolved.durable = defaults
+        .durable
+        .as_ref()
+        .map(|durable| DurableStateOptions {
+            state_dir: durable.state_dir.clone(),
+            snapshot_interval_secs: durable.snapshot_interval_secs,
+            max_retained_bytes,
+        });
+    resolved.max_retained_bytes = max_retained_bytes;
+    resolved.aws_account_id = options
+        .account_id
+        .clone()
+        .unwrap_or_else(|| defaults.aws_account_id.clone());
+    resolved.aws_region = options
+        .region
+        .clone()
+        .unwrap_or_else(|| defaults.aws_region.clone());
+    Ok(resolved)
 }
 
 #[cfg(test)]

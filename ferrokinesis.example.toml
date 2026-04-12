@@ -42,6 +42,14 @@
 # CLI: --retention-check-interval-secs | Env: FERROKINESIS_RETENTION_CHECK_INTERVAL_SECS
 # retention_check_interval_secs = 0
 
+# Enable chaos scenarios from a JSON config file (requires the "chaos" feature)
+# CLI: --chaos | Env: FERROKINESIS_CHAOS
+# chaos = false
+
+# Path to the JSON chaos configuration file (requires the "chaos" feature)
+# CLI: --chaos-config | Env: FERROKINESIS_CHAOS_CONFIG
+# chaos_config = "/tmp/chaos.json"
+
 # Maximum request body size in megabytes (min: 1, max: 4096, default: 7)
 # CLI: --max-request-body-mb | Env: FERROKINESIS_MAX_REQUEST_BODY_MB
 # max_request_body_mb = 7

@@ -28,6 +28,8 @@ use crate::types::{
     StoredRecord, Stream, StreamStatus,
 };
 use crate::util::current_time_ms;
+#[cfg(feature = "chaos")]
+use crate::{chaos, chaos::ChaosController};
 use dashmap::DashMap;
 use num_bigint::BigUint;
 use num_traits::One;
@@ -252,6 +254,9 @@ pub struct StoreOptions {
     pub durable: Option<DurableStateOptions>,
     /// Hard cap on retained serialized record bytes.
     pub max_retained_bytes: Option<u64>,
+    /// Chaos/fault-injection configuration compiled behind the `chaos` feature.
+    #[cfg(feature = "chaos")]
+    pub chaos: chaos::ChaosConfig,
     /// Simulated AWS account ID (12 digits). Defaults to `"000000000000"`.
     pub aws_account_id: String,
     /// Simulated AWS region. Defaults to `"us-east-1"`.
@@ -272,6 +277,8 @@ impl Default for StoreOptions {
             enforce_limits: false,
             durable: None,
             max_retained_bytes: None,
+            #[cfg(feature = "chaos")]
+            chaos: chaos::ChaosConfig::default(),
             aws_account_id: "000000000000".to_string(),
             aws_region: "us-east-1".to_string(),
         }
@@ -467,6 +474,8 @@ pub struct Store {
     health: Arc<StoreHealthState>,
     #[cfg(not(target_arch = "wasm32"))]
     persistence: Option<Arc<PersistenceState>>,
+    #[cfg(feature = "chaos")]
+    chaos: Arc<ChaosController>,
     /// Optional capture writer for recording PutRecord/PutRecords calls.
     #[cfg(feature = "server")]
     pub(crate) capture_writer: Option<crate::capture::CaptureWriter>,
@@ -542,6 +551,8 @@ impl Store {
             durable_ok: AtomicBool::new(true),
             last_error: StdRwLock::new(None),
         });
+        #[cfg(feature = "chaos")]
+        let chaos = Arc::new(ChaosController::new(options.chaos.clone()));
 
         let inner = Arc::new(StoreInner {
             streams: DashMap::new(),
@@ -564,6 +575,8 @@ impl Store {
             health,
             #[cfg(not(target_arch = "wasm32"))]
             persistence: None,
+            #[cfg(feature = "chaos")]
+            chaos,
             #[cfg(feature = "server")]
             capture_writer,
         };
@@ -1162,6 +1175,38 @@ impl Store {
                 transitions.remove(&key);
             }
         }
+    }
+
+    #[cfg(feature = "chaos")]
+    pub(crate) fn chaos_status(&self) -> chaos::ChaosStatus {
+        self.chaos.status()
+    }
+
+    #[cfg(feature = "chaos")]
+    pub(crate) fn set_chaos_enabled(
+        &self,
+        ids: Option<&[String]>,
+        enabled: bool,
+    ) -> Result<chaos::ChaosStatus, chaos::ChaosApiError> {
+        self.chaos.set_enabled(ids, enabled)
+    }
+
+    #[cfg(feature = "chaos")]
+    pub(crate) fn chaos_request_plan(
+        &self,
+        operation: crate::actions::Operation,
+    ) -> chaos::RequestPlan {
+        self.chaos.request_plan(operation)
+    }
+
+    #[cfg(feature = "chaos")]
+    pub(crate) fn chaos_put_records_failures(
+        &self,
+        stream_name: &str,
+        allocations: &[SequenceAllocation],
+    ) -> Vec<Option<chaos::PutRecordsFailure>> {
+        self.chaos
+            .put_records_failures(stream_name, &self.aws_account_id, allocations)
     }
 
     // --- Stream operations ---

@@ -80,6 +80,12 @@ pub struct FileConfig {
     pub snapshot_interval_secs: Option<u64>,
     /// Hard cap on retained serialized record bytes.
     pub max_retained_bytes: Option<u64>,
+    /// Enable chaos scenarios loaded from `chaos_config`.
+    #[cfg(feature = "chaos")]
+    pub chaos: Option<bool>,
+    /// Path to the JSON chaos configuration file.
+    #[cfg(feature = "chaos")]
+    pub chaos_config: Option<PathBuf>,
     /// Maximum request body size in megabytes. Defaults to `5`.
     pub max_request_body_mb: Option<u64>,
     /// Log level (`off`, `error`, `warn`, `info`, `debug`, `trace`). Defaults to `"info"`.
@@ -203,6 +209,13 @@ pub fn load_config(path: &Path) -> Result<FileConfig, ConfigError> {
         return Err(ConfigError::Validation {
             path: path.display().to_string(),
             message: format!("otel_sample_ratio must be between 0.0 and 1.0, got {ratio}"),
+        });
+    }
+    #[cfg(feature = "chaos")]
+    if config.chaos == Some(true) && config.chaos_config.is_none() {
+        return Err(ConfigError::Validation {
+            path: path.display().to_string(),
+            message: "chaos requires chaos_config to be set".into(),
         });
     }
     #[cfg(feature = "mirror")]
